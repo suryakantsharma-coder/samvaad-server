@@ -2368,6 +2368,71 @@ function resample24kTo8k(pcm24k) {
 }
 
 // =========================
+// Option A: Sarvam STT input -> text -> OpenAI Realtime -> output voice
+// =========================
+const USE_TRANSCRIPT_ONLY = true;
+const TRANSCRIPT_ONLY_SILENCE_MS = 400;
+const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 220;
+const TRANSCRIPT_ONLY_MIN_DURATION_MS = 200;
+
+/** Build WAV buffer from 24kHz 16-bit mono PCM (for Sarvam STT). */
+function pcm24kToWavBuffer(pcm24k) {
+  const numSamples = pcm24k.length / 2;
+  const dataSize = numSamples * 2;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(24000, 24);
+  header.writeUInt32LE(48000, 28); // byte rate
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, pcm24k]);
+}
+
+/** RMS of 16-bit LE PCM (for VAD). */
+function computeRms(pcmBuffer) {
+  let sum = 0;
+  const n = pcmBuffer.length / 2;
+  for (let i = 0; i < n; i++) {
+    const s = pcmBuffer.readInt16LE(i * 2);
+    sum += s * s;
+  }
+  return n > 0 ? Math.sqrt(sum / n) : 0;
+}
+
+/** Transcribe audio (WAV buffer) via Sarvam STT API. */
+async function transcribeWithSarvam(wavBuffer) {
+  if (!SARVAM_API_KEY) {
+    console.warn("[Agent] SARVAM_API_KEY not set; skipping Sarvam STT");
+    return "";
+  }
+  try {
+    const { SarvamAIClient } = require("sarvamai");
+    const client = new SarvamAIClient({
+      apiSubscriptionKey: SARVAM_API_KEY,
+    });
+    const response = await client.speechToText.transcribe({
+      file: wavBuffer,
+    });
+    // SDK returns { data: body }; API body typically has transcript
+    const body = response?.data ?? response;
+    const text =
+      (body && (body.transcript ?? body.text ?? body.transcription)) || "";
+    return String(text).trim();
+  } catch (err) {
+    console.error("[Agent] Sarvam STT error:", err.message);
+    throw err;
+  }
+}
+
+// =========================
 // Parse appointment details from call transcript (for JSON log)
 // =========================
 function parseAppointmentFromTranscript(callTranscript, callerPhone) {
@@ -2521,46 +2586,278 @@ const getHospitalInstructions = async (hospital) => {
     });
 
     // Build dynamic prompt with hospital name and doctors
+    //     const dynamicPrompt = `
+    // You are ${hospital.name}'s Calling Assistant. Follow this flow strictly.
+
+    // HOSPITAL INFORMATION:
+    // - Hospital Name: ${hospital.name}
+    // - Hospital Address: ${hospital.address}, ${hospital.city} - ${hospital.pincode}
+    // - Hospital Phone: ${hospital.phoneCountryCode || "+91"} ${hospital.phoneNumber}
+
+    // AVAILABLE DOCTORS AT ${hospital.name.toUpperCase()}:${doctorListText || "\nNo doctors currently available. Please contact the hospital directly."}
+
+    // LANGUAGE:
+    //  - GREETING: Always and ONLY in Hindi. Start every call with a warm Hindi greeting mentioning the hospital name, e.g. "नमस्ते, ${hospital.name} की तरफ से आपका स्वागत है।"
+    //  - After greeting, detect the caller's language from their FIRST reply (only Hindi or Gujarati). Use that same language for the REST of the call. Do not use English after the greeting; speak only in Hindi or Gujarati based on what the caller uses.
+
+    // CALL FLOW:
+    // 0) CONTEXT: The hospital is already selected (this call is for ${hospital.name}). Do NOT ask the caller to choose Hospital A/B.
+    // 1) GREETING (first thing): Say a warm greeting ONLY in Hindi mentioning ${hospital.name}. Then ask: "कृपया अपनी समस्या / बीमारी बताएं।"
+    // 2) ILLNESS/REASON: Listen and capture the illness/reason the caller states (e.g. "chest pain", "skin rash"). This is the reason for the visit—you must use this exact reason from the call when creating the appointment later; do not use any pre-set or stored value.
+    // 3) PATIENT TYPE: Ask: "क्या यह नया मरीज है या पहले से रजिस्टर मरीज?"
+    // 4) EXISTING PATIENT:
+    //    - If existing: Ask for the Patient ID (format like P-YYYY-000001).
+    //    - Find the patient with that patientId by calling fetch_patient_by_patientId (lookup is by patientId). You get back the patient record including _id.
+    //    - After result: Confirm patient details (name/age/gender/phone). For creating the appointment later, use this patient's _id (not the patientId).
+    // 5) NEW PATIENT:
+    //    - If new: Ask ONE question at a time: full name, age, gender (Male/Female/Other). You may ask for phone number but it is optional—the system automatically uses the caller's phone number (the number Exotel received the call from) when creating the patient.
+    //    - Call the internal tool create_patient to create the patient. You get back patientId and the patient record including _id.
+    //    - Confirm the new patientId to the caller. For creating the appointment later, use this patient's _id (the primary key), not the patientId.
+    // 6) DOCTOR: First call the internal tool list_doctors to get the FULL list of all doctors for this hospital (each has _id, fullName, designation). Pick the doctor whose designation matches the patient's illness/reason (e.g. Cardiologist for heart, Dermatologist for skin). Use ONLY that doctor's _id (the primary key) when creating the appointment—never use name or doctorId.
+    // 7) APPOINTMENT TIME: Ask preferred date and preferred time (one at a time). Confirm back the date/time.
+    // 8) CONFIRMATION: Confirm in one sentence: "${hospital.name}, Dr. [Name], patient [name], patientId [P-...], phone [number], reason [reason], date [date], time [time]."
+    // 9) CREATE APPOINTMENT: Call create_appointment with: patientObjectId = the patient's _id, doctorObjectId = the doctor's _id from list_doctors, reason = the illness/reason the caller stated in step 2 (from the call, not from patient record), and appointmentDateTimeISO. The reason must be what the caller said during this call.
+    // 10) FINAL: If appointment is created successfully, tell the caller the appointmentId (A-YYYY-000001).
+
+    // RULES:
+    // - Do NOT diagnose or prescribe medicines.
+    // - If life-threatening symptoms, advise emergency immediately.
+    // - Never mention tool names or JSON. Tools are internal.
+
+    // IMPORTANT: Always call list_doctors to get the current list of doctors; pick from that list by matching designation to the patient's illness. Use only the doctor's _id from that list when booking. Do not invent doctor names or ids.
+    // `;
+
     const dynamicPrompt = `
-You are ${hospital.name}'s Calling Assistant. Follow this flow strictly.
+  You are the AI calling assistant for ${hospital.name}. Your job is to book appointments efficiently and professionally.
+HOSPITAL DETAILS: ${hospital.name} ${hospital.address}, ${hospital.city} - ${hospital.pincode} Phone: ${hospital.phoneCountryCode || "+91"} ${hospital.phoneNumber}
 
-HOSPITAL INFORMATION:
-- Hospital Name: ${hospital.name}
-- Hospital Address: ${hospital.address}, ${hospital.city} - ${hospital.pincode}
-- Hospital Phone: ${hospital.phoneCountryCode || "+91"} ${hospital.phoneNumber}
+AVAILABLE DOCTORS: ${doctorListText || "No doctors currently available."}
 
-AVAILABLE DOCTORS AT ${hospital.name.toUpperCase()}:${doctorListText || "\nNo doctors currently available. Please contact the hospital directly."}
+LANGUAGE HANDLING:
 
-LANGUAGE:
-- GREETING: Always and ONLY in Hindi. Start every call with a warm Hindi greeting mentioning the hospital name, e.g. "नमस्ते, ${hospital.name} की तरफ से आपका स्वागत है।"
-- After greeting, detect the caller's language from their FIRST reply (only Hindi or Gujarati). Use that same language for the REST of the call. Do not use English after the greeting; speak only in Hindi or Gujarati based on what the caller uses.
+START in Hindi: "नमस्ते, ${hospital.name} की तरफ से स्वागत है। आपकी क्या समस्या है?"
+DETECT language from caller's response:
+Gujarati response → Use Gujarati for ENTIRE call
+Hindi response → Use Hindi for ENTIRE call
+NEVER switch languages after detection. If you start responding in Gujarati, every single sentence must be in Gujarati until call ends. Same for Hindi.
 
-CALL FLOW:
-0) CONTEXT: The hospital is already selected (this call is for ${hospital.name}). Do NOT ask the caller to choose Hospital A/B.
-1) GREETING (first thing): Say a warm greeting ONLY in Hindi mentioning ${hospital.name}. Then ask: "कृपया अपनी समस्या / बीमारी बताएं।"
-2) ILLNESS/REASON: Listen and capture the illness/reason the caller states (e.g. "chest pain", "skin rash"). This is the reason for the visit—you must use this exact reason from the call when creating the appointment later; do not use any pre-set or stored value.
-3) PATIENT TYPE: Ask: "क्या यह नया मरीज है या पहले से रजिस्टर मरीज?"
-4) EXISTING PATIENT:
-   - If existing: Ask for the Patient ID (format like P-YYYY-000001).
-   - Find the patient with that patientId by calling fetch_patient_by_patientId (lookup is by patientId). You get back the patient record including _id.
-   - After result: Confirm patient details (name/age/gender/phone). For creating the appointment later, use this patient's _id (not the patientId).
-5) NEW PATIENT:
-   - If new: Ask ONE question at a time: full name, age, gender (Male/Female/Other). You may ask for phone number but it is optional—the system automatically uses the caller's phone number (the number Exotel received the call from) when creating the patient.
-   - Call the internal tool create_patient to create the patient. You get back patientId and the patient record including _id.
-   - Confirm the new patientId to the caller. For creating the appointment later, use this patient's _id (the primary key), not the patientId.
-6) DOCTOR: First call the internal tool list_doctors to get the FULL list of all doctors for this hospital (each has _id, fullName, designation). Pick the doctor whose designation matches the patient's illness/reason (e.g. Cardiologist for heart, Dermatologist for skin). Use ONLY that doctor's _id (the primary key) when creating the appointment—never use name or doctorId.
-7) APPOINTMENT TIME: Ask preferred date and preferred time (one at a time). Confirm back the date/time.
-8) CONFIRMATION: Confirm in one sentence: "${hospital.name}, Dr. [Name], patient [name], patientId [P-...], phone [number], reason [reason], date [date], time [time]."
-9) CREATE APPOINTMENT: Call create_appointment with: patientObjectId = the patient's _id, doctorObjectId = the doctor's _id from list_doctors, reason = the illness/reason the caller stated in step 2 (from the call, not from patient record), and appointmentDateTimeISO. The reason must be what the caller said during this call.
-10) FINAL: If appointment is created successfully, tell the caller the appointmentId (A-YYYY-000001).
 
-RULES:
-- Do NOT diagnose or prescribe medicines.
-- If life-threatening symptoms, advise emergency immediately.
-- Never mention tool names or JSON. Tools are internal.
+APPOINTMENT BOOKING FLOW:
+STEP 1: COLLECT PROBLEM/ILLNESS Already asked in greeting. Listen and save their exact words (e.g., "પેટમાં દુખાવો", "सीने में दर्द", "chest pain").
+TRANSLATE TO ENGLISH FOR DATABASE: After capturing in their language, translate to English for database storage:
 
-IMPORTANT: Always call list_doctors to get the current list of doctors; pick from that list by matching designation to the patient's illness. Use only the doctor's _id from that list when booking. Do not invent doctor names or ids.
-`;
+* "પેટમાં દુખાવો" → "stomach pain"
+* "સીનામાં દુખાવો" → "chest pain"
+* "सीने में दर्द" → "chest pain"
+* "बुखार और खांसी" → "fever and cough"
+* "ત્વચા પર ફોલ્લીઓ" → "skin rash"
+
+Store ENGLISH version - this will be used as appointment reason in database.
+EMERGENCY CHECK: If they mention severe chest pain, breathing difficulty, severe bleeding, unconsciousness → Say "આ emergency છે! તાત્કાલિક 102 પર કૉલ કરો!" (Gujarati) or "यह emergency है! तुरंत 102 डायल करें!" (Hindi) → END CALL.
+
+
+STEP 2: NEW OR EXISTING PATIENT?
+Ask (in detected language):
+
+Hindi: "क्या आप पहले यहां आ चुके हैं?"
+Gujarati: "શું તમે પહેલાં અહીં આવ્યા છો?"
+If YES → Go to STEP 3 (Existing) If NO → Go to STEP 4 (New)
+
+STEP 3: EXISTING PATIENT
+Ask for phone number (in detected language):
+
+Hindi: "अपना registered mobile number बताएं।"
+Gujarati: "તમારો નોંધાયેલ mobile number આપો."
+PHONE VALIDATION:
+
+Must be exactly 10 digits
+Must start with 6, 7, 8, or 9
+If invalid, say:
+Hindi: "यह number सही नहीं है। 10 अंकों का number दें जो 6, 7, 8 या 9 से शुरू हो।"
+Gujarati: "આ number સાચો નથી. 10 અંકનો number આપો જે 6, 7, 8 અથવા 9 થી શરૂ થાય."
+Keep asking until you get valid 10-digit number starting with 6/7/8/9
+TOOL: fetch_patient_by_phone(phoneNumber) → Pass the 10-digit number as string, e.g., "9876543210"
+If patient found:
+
+Confirm: "તમે [name], ઉંમર [age], [gender]? સાચું છે?" (Gujarati) or "आप [name], उम्र [age], [gender]? सही है?" (Hindi)
+If yes: Save the patient._id (the MongoDB ObjectId, NOT the patientId like P-2025-001)
+Go to STEP 5
+If patient not found:
+
+Say: "આ number થી કોઈ નોંધણી નથી. નવા patient તરીકે register કરવું છે?" (Gujarati) or "इस number से कोई registration नहीं है। नए patient के रूप में register करें?" (Hindi)
+If yes → Go to STEP 4
+If no → Ask for different number
+
+
+STEP 4: NEW PATIENT REGISTRATION
+Collect these details ONE AT A TIME in detected language:
+Collect these details ONE AT A TIME in detected language:
+A) FULL NAME
+
+* Hindi: "मरीज का पूरा नाम?"
+* Gujarati: "દર્દીનું પૂરું નામ?"
+
+After they tell you the name, SPELL IT OUT LETTER BY LETTER to confirm:
+
+* Hindi: "नाम है [name]. Spelling confirm करूं - [spell each letter: 'A' 'M' 'I' 'T']. सही है?"
+* Gujarati: "નામ છે [name]. Spelling confirm કરું - [spell each letter: 'A' 'M' 'I' 'T']. સાચું છે?"
+
+Example: User says: "Amit Kumar" You say: "नाम है Amit Kumar. Spelling - 'A' 'M' 'I' 'T' space 'K' 'U' 'M' 'A' 'R'. सही है?"
+If they say no, ask them to spell it correctly, then repeat back the corrected spelling. If they say yes, proceed to next step.
+
+B) AGE
+
+Hindi: "उम्र?"
+Gujarati: "ઉંમર?"
+Must be 0-120. If outside range, ask again.
+C) GENDER
+
+Hindi: "लिंग - पुरुष, महिला या अन्य?"
+Gujarati: "લિંગ - પુરુષ, સ્ત્રી કે અન્ય?"
+Accept: Male, Female, Other (in any language they say it)
+D) MOBILE NUMBER
+
+Hindi: "मोबाइल नंबर?"
+Gujarati: "મોબાઇલ નંબર?"
+STRICT PHONE VALIDATION:
+
+Listen carefully to all 10 digits
+Number must be EXACTLY 10 digits - not 9, not 11, EXACTLY 10
+First digit must be 6, 7, 8, or 9
+If they give less than 10 digits, say:
+Hindi: "आपने [X] अंक बताए। कृपया पूरे 10 अंक बताएं।"
+Gujarati: "તમે [X] અંક આપ્યા. કૃપા કરીને પૂરા 10 અંક આપો."
+If first digit is wrong (0, 1, 2, 3, 4, 5), say:
+Hindi: "Mobile number 6, 7, 8 या 9 से शुरू होना चाहिए।"
+Gujarati: "Mobile number 6, 7, 8 અથવા 9 થી શરૂ થવો જોઈએ."
+Repeat the number back: "તમારો number છે [repeat all 10 digits]. સાચો છે?" (Gujarati) or "आपका number है [repeat all 10 digits]. सही है?" (Hindi)
+Keep asking until you get valid 10-digit number
+TOOL: create_patient(fullName, age, gender, phoneNumber) → phoneNumber must be string with exactly 10 digits, e.g., "9876543210"
+After successful creation:
+
+Hindi: "Registration हो गया। आपकी Patient ID है [patientId]। इसे note कर लें।"
+Gujarati: "Registration થઈ ગયું. તમારી Patient ID છે [patientId]. આને નોંધો."
+Save the patient._id (MongoDB ObjectId)
+Go to STEP 5
+
+
+STEP 5: SELECT DOCTOR
+TOOL: list_doctors(hospitalId) → Returns list of doctors with _id, fullName, designation
+MATCH doctor to problem using these keywords:
+Problem Keywords → Doctor Type:
+
+હૃદય, દિલ, છાતી, heart, chest, cardiac, दिल, सीने → Cardiologist
+ચામડી, skin, त्वचा, rash → Dermatologist
+હાડકાં, સાંધા, bone, joint, हड्डी, जोड़ → Orthopedic
+બાળક, child, baby, बच्चा → Pediatrician
+સ્ત્રી, pregnancy, महिला, गर्भ → Gynecologist
+આંખ, eye, आंख → Ophthalmologist
+કાન, નાક, ગળું, ear, nose, throat, कान, नाक, गला → ENT
+પેટ, stomach, पेट → Gastroenterologist
+ડાયાબિટીસ, diabetes, sugar, थायराइड → Endocrinologist
+તાવ, ઉધરસ, fever, cough, बुखार, खांसी → General Physician
+જાંચ, checkup, जांच → General Physician
+If no match found → General Physician
+Confirm with caller (in detected language):
+
+Hindi: "Dr. [name] ([designation]) के साथ appointment book करूं? ठीक है?"
+Gujarati: "Dr. [name] ([designation]) સાથે appointment book કરું? બરાબર છે?"
+If they say no, list all available doctors and let them choose.
+Save selected doctor._id (MongoDB ObjectId, NOT doctorId like D-2025-001)
+
+SSTEP 6: DATE AND TIME
+Ask for DATE (in detected language):
+
+* Hindi: "किस दिन आना चाहेंगे?"
+* Gujarati: "કયા દિવસે આવવા માંગો છો?"
+
+Accept: "આજે" (today), "કાલે" (tomorrow), "आज", "कल", or specific date Convert to YYYY-MM-DD format Must be today or future (reject past dates)
+Ask for TIME (in detected language):
+
+* Hindi: "किस समय?"
+* Gujarati: "કેટલા સમયે?"
+
+Accept: "સવારે 10", "બપોરે 2", "सुबह 10", "दोपहर 2", "10 AM", etc. Convert to 24-hour HH:MM format Should be 09:00 to 18:00 (hospital hours)
+Create ISO datetime in UTC format: 2025-02-10T10:00:00.000Z Important: Convert IST to UTC by subtracting 5 hours 30 minutes Example:
+
+* User says: 15 March 2025, 10:00 AM IST
+* Convert to UTC: 2025-03-15T4:30:00.000Z (10:00 - 5:30 = 04:30)
+* Final format: 2025-03-15T4:30:00.000Z
+
+
+
+STEP 7: FINAL CONFIRMATION
+Read everything back in ONE sentence (in detected language):
+Hindi: "Confirm करें - ${hospital.name} में Patient [name], ID [patientId], Phone [number], Dr. [doctor name] के साथ [reason] के लिए [date] को [time] बजे। Book करूं?"
+Gujarati: "Confirm કરો - ${hospital.name} માં Patient [name], ID [patientId], Phone [number], Dr. [doctor name] સાથે [reason] માટે [date] ને [time] વાગ્યે. Book કરું?"
+Wait for YES/NO:
+
+YES → STEP 8
+NO → Ask what to change, go back to that step
+
+
+STEP 8: CREATE APPOINTMENT
+TOOL: create_appointment(appointmentData)
+Send exactly this: { "patient": "[patient._id from step 3 or 4]", "doctor": "[doctor._id from step 5]", "hospital": "${hospital._id}", "reason": "[exact words from step 1]", "appointmentDateTimeISO": "[ISO datetime from step 6]", "type": "call" }
+CRITICAL:
+
+patientObjectId = patient._id (like "507f1f77bcf86cd799439011") NOT patientId (like "P-2025-001")
+doctorObjectId = doctor._id (like "507f1f77bcf86cd799439012") NOT doctorId (like "D-2025-045")
+reason = exact words caller used in step 1
+appointmentDateTimeISO = ISO format with +05:30
+
+
+STEP 9: SUCCESS MESSAGE
+When appointment is created, say (in detected language):
+Hindi: "आपकी appointment book हो गई। Appointment ID है [appointmentId]। [Date] को [time] बजे Dr. [name] से मिलें ${hospital.name}, ${hospital.address} पर। 15 मिनट पहले आएं। धन्यवाद।"
+Gujarati: "તમારી appointment book થઈ ગઈ. Appointment ID છે [appointmentId]. [Date] ને [time] વાગ્યે Dr. [name] ને મળો ${hospital.name}, ${hospital.address} પર. 15 મિનિટ પહેલાં આવો. આભાર."
+END CALL.
+
+ERROR HANDLING:
+Phone validation failed → Keep asking until valid 10-digit number starting with 6/7/8/9
+Patient not found → Offer to register as new patient
+Time slot taken → Suggest alternative times nearby
+Doctor unavailable → Suggest different date or different doctor
+System/database error → Say: "તકનીકી સમસ્યા છે. ${hospital.phoneNumber} પર કૉલ કરો." (Gujarati) or "Technical problem है। ${hospital.phoneNumber} पर call करें।" (Hindi)
+
+CRITICAL REMINDERS:
+:red_circle: PHONE NUMBER VALIDATION IS MANDATORY:
+
+Exactly 10 digits
+Starts with 6, 7, 8, or 9
+Keep asking until valid
+Repeat number back for confirmation
+:red_circle: LANGUAGE CONSISTENCY:
+
+Detect language in step 1 from caller's response
+Use ONLY that language for entire call
+Never switch to Hindi if speaking Gujarati
+Never switch to Gujarati if speaking Hindi
+:red_circle: USE CORRECT IDs:
+
+For appointments: use _id (MongoDB ObjectId)
+Display to user: use patientId, appointmentId (human-readable)
+Never confuse the two
+:red_circle: EXACT REASON:
+
+Use caller's exact words from step 1
+Don't translate or modify
+:red_circle: CONFIRM NAME SPELLING:
+
+After taking name, repeat it back
+Ask "Spelling સાચી છે?" or "Spelling सही है?"
+:red_circle: NO MEDICAL ADVICE:
+
+Don't diagnose
+Don't suggest medicines
+For medical questions: "Doctor સાથે discuss કરો" or "Doctor से बात करें"
+:red_circle: BE PROFESSIONAL:
+
+Warm but not overly casual
+Patient and clear
+Don't rush the caller
+No celebration language like "બધાઈ હો" or "बधाई हो"
+    `;
 
     return dynamicPrompt;
   } catch (err) {
@@ -2569,7 +2866,7 @@ IMPORTANT: Always call list_doctors to get the current list of doctors; pick fro
       err.message,
     );
     // Fallback to default instructions if doctor fetch fails
-    return `You are ${hospital.name}'s Calling Assistant. ${DEFAULT_INSTRUCTIONS}`;
+    return `You are ${hospital.name}'s Calling Assistant. ${dynamicPrompt}`;
   }
 };
 
@@ -2642,6 +2939,24 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     },
     {
       type: "function",
+      name: "fetch_patient_by_phone",
+      description:
+        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller says they are an existing patient and provides their phone number. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
+      parameters: {
+        type: "object",
+        properties: {
+          phoneNumber: {
+            type: "string",
+            description:
+              "10-digit mobile number as string, e.g. 9876543210 or 8383801256",
+          },
+        },
+        required: ["phoneNumber"],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: "function",
       name: "create_patient",
       description:
         "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment.",
@@ -2704,7 +3019,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           patientObjectId: {
             type: "string",
             description:
-              "The patient's _id from fetch_patient_by_patientId or create_patient result (MongoDB ObjectId)",
+              "The patient's _id from fetch_patient_by_patientId, fetch_patient_by_phone, or create_patient result (MongoDB ObjectId)",
           },
           reason: {
             type: "string",
@@ -2738,6 +3053,21 @@ app.ws("/media/:hospitalId", async (ws, req) => {
   const callTranscript = []; // { role: "user"|"assistant", text: string }
   let appointmentDetails = null;
   let callSummaryWritten = false;
+  let userIsSpeaking = false;
+
+  // Transcript-only (Sarvam STT): buffer user audio, VAD, then send text to Realtime
+  const transcriptOnlyState = {
+    userChunks: [],
+    lastSpeechAt: 0,
+    silenceStartedAt: null,
+    hadSpeechInTurn: false,
+    cancelResponse: () => {},
+    processing: false,
+  };
+  const MIN_SPEECH_BYTES_24K =
+    (TRANSCRIPT_ONLY_MIN_DURATION_MS / 1000) *
+    OPENAI_SAMPLE_RATE *
+    OPENAI_SAMPLE_WIDTH;
 
   const cleanupOpenAI = () => {
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -2880,6 +3210,66 @@ app.ws("/media/:hospitalId", async (ws, req) => {
               };
               console.log(
                 "[Agent] fetch_patient_by_patientId: FOUND | _id:",
+                out.patient._id,
+                "| patientId:",
+                out.patient.patientId,
+                "| fullName:",
+                out.patient.fullName,
+              );
+              return await sendToolOutput(callId, out);
+            }
+
+            if (name === "fetch_patient_by_phone") {
+              const raw = String(args.phoneNumber || "").trim();
+              const digits = raw.replace(/\D/g, "");
+              const phoneNumber =
+                digits.length >= 10 ? digits.slice(-10) : digits;
+              console.log(
+                "[Agent] fetch_patient_by_phone: looking up phoneNumber:",
+                phoneNumber,
+              );
+              if (!phoneNumber || phoneNumber.length !== 10) {
+                return await sendToolOutput(callId, {
+                  ok: false,
+                  message:
+                    "Invalid phone number. Provide a 10-digit mobile number.",
+                });
+              }
+              const patient = await PatientModel.findOne({
+                hospital: hospitalObjectId,
+                $or: [
+                  { phoneNumber },
+                  { phoneNumber: raw },
+                  { phoneNumber: digits },
+                  { phoneNumber: "0" + phoneNumber },
+                ],
+              }).lean();
+              if (!patient) {
+                console.log(
+                  "[Agent] fetch_patient_by_phone: NOT FOUND for phone:",
+                  phoneNumber,
+                );
+                return await sendToolOutput(callId, {
+                  ok: false,
+                  message:
+                    "No patient registered with this phone number at this hospital.",
+                });
+              }
+              const out = {
+                ok: true,
+                patient: {
+                  _id: String(patient._id),
+                  patientId: patient.patientId,
+                  fullName: patient.fullName,
+                  age: patient.age,
+                  gender: patient.gender,
+                  phoneNumber: patient.phoneNumber,
+                  reason: patient.reason,
+                  hospital: String(patient.hospital || ""),
+                },
+              };
+              console.log(
+                "[Agent] fetch_patient_by_phone: FOUND | _id:",
                 out.patient._id,
                 "| patientId:",
                 out.patient.patientId,
@@ -3067,7 +3457,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
               const patientObjectId = String(args.patientObjectId || "").trim();
               const reason = String(args.reason || "").trim();
               const appointmentDateTimeISO = String(
-                args.appointmentDateTimeISO || "",
+                args.appointmentDateTimeISO || args.appointmentDateTime || "",
               ).trim();
               const type = String(args.type || "call").trim() || "call";
               console.log(
@@ -3294,12 +3684,25 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         if (event.type === "session.updated") {
           openaiReady = true;
           console.log("[OpenAI] Session ready");
-          while (audioQueue.length > 0) {
-            const b64 = audioQueue.shift();
-            client.send(
-              JSON.stringify({ type: "input_audio_buffer.append", audio: b64 }),
-            );
+          if (!USE_TRANSCRIPT_ONLY) {
+            while (audioQueue.length > 0) {
+              const b64 = audioQueue.shift();
+              client.send(
+                JSON.stringify({
+                  type: "input_audio_buffer.append",
+                  audio: b64,
+                }),
+              );
+            }
+          } else {
+            audioQueue.length = 0;
           }
+          transcriptOnlyState.cancelResponse = () => {
+            userIsSpeaking = true;
+            try {
+              client.send(JSON.stringify({ type: "response.cancel" }));
+            } catch (_) {}
+          };
           try {
             client.send(JSON.stringify({ type: "response.create" }));
           } catch (_) {}
@@ -3310,6 +3713,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           event.type === "response.audio.delta" ||
           event.type === "response.output_audio.delta"
         ) {
+          userIsSpeaking = false;
           const b64 = event.delta || event.audio;
           if (b64) {
             const sid = streamSid || "default";
@@ -3322,6 +3726,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
             const pcm24k = Buffer.from(b64, "base64");
             const pcm8k = resample24kTo8k(pcm24k);
             for (let i = 0; i < pcm8k.length; i += EXOTEL_CHUNK_BYTES) {
+              if (userIsSpeaking) break;
               const chunk = pcm8k.subarray(
                 i,
                 Math.min(i + EXOTEL_CHUNK_BYTES, pcm8k.length),
@@ -3350,6 +3755,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           event.type === "response.done" ||
           event.type === "response.output_audio.done"
         ) {
+          userIsSpeaking = false;
           if (isBotSpeaking) {
             isBotSpeaking = false;
             console.log("[OpenAI] Bot finished speaking");
@@ -3357,7 +3763,9 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         }
 
         if (event.type === "input_audio_buffer.speech_started") {
-          console.log("[OpenAI] User speech started");
+          console.log("[OpenAI] User speech started — canceling bot response");
+          userIsSpeaking = true;
+          client.send(JSON.stringify({ type: "response.cancel" }));
         }
         if (event.type === "input_audio_buffer.speech_stopped") {
           console.log("[OpenAI] User speech stopped");
@@ -3461,16 +3869,94 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           streamSid = data.streamSid ?? data.media?.streamSid ?? streamSid;
         const pcm8k = Buffer.from(payload, "base64");
         const pcm24k = resample8kTo24k(pcm8k);
-        const b64 = pcm24k.toString("base64");
-        if (openaiReady) {
-          openaiWs.send(
-            JSON.stringify({
-              type: "input_audio_buffer.append",
-              audio: b64,
-            }),
-          );
+
+        if (USE_TRANSCRIPT_ONLY) {
+          const rms = computeRms(pcm24k);
+          const now = Date.now();
+          const isSpeech = rms > TRANSCRIPT_ONLY_SPEECH_THRESHOLD;
+
+          if (transcriptOnlyState.processing) {
+            // skip while transcribing previous turn
+          } else if (isSpeech) {
+            transcriptOnlyState.hadSpeechInTurn = true;
+            if (transcriptOnlyState.silenceStartedAt !== null) {
+              transcriptOnlyState.cancelResponse();
+            }
+            transcriptOnlyState.lastSpeechAt = now;
+            transcriptOnlyState.silenceStartedAt = null;
+            transcriptOnlyState.userChunks.push(Buffer.from(pcm24k));
+          } else {
+            transcriptOnlyState.userChunks.push(Buffer.from(pcm24k));
+            if (transcriptOnlyState.silenceStartedAt === null) {
+              transcriptOnlyState.silenceStartedAt = now;
+            }
+            const totalBytes = transcriptOnlyState.userChunks.reduce(
+              (s, c) => s + c.length,
+              0,
+            );
+            const silenceDuration = now - transcriptOnlyState.silenceStartedAt;
+            if (
+              transcriptOnlyState.hadSpeechInTurn &&
+              totalBytes >= MIN_SPEECH_BYTES_24K &&
+              silenceDuration >= TRANSCRIPT_ONLY_SILENCE_MS
+            ) {
+              const wavBuffer = pcm24kToWavBuffer(
+                Buffer.concat(transcriptOnlyState.userChunks),
+              );
+              transcriptOnlyState.userChunks = [];
+              transcriptOnlyState.silenceStartedAt = null;
+              transcriptOnlyState.lastSpeechAt = 0;
+              transcriptOnlyState.hadSpeechInTurn = false;
+              transcriptOnlyState.processing = true;
+
+              transcribeWithSarvam(wavBuffer)
+                .then((transcript) => {
+                  if (
+                    !transcript ||
+                    !openaiWs ||
+                    openaiWs.readyState !== WebSocket.OPEN
+                  )
+                    return;
+                  console.log(
+                    "[Agent] Input transcription (Sarvam):",
+                    transcript,
+                  );
+                  callTranscript.push({ role: "user", text: transcript });
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "message",
+                        role: "user",
+                        content: [{ type: "input_text", text: transcript }],
+                      },
+                    }),
+                  );
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                })
+                .catch((err) => {
+                  console.error(
+                    "[Agent] Sarvam transcription error:",
+                    err.message,
+                  );
+                })
+                .finally(() => {
+                  transcriptOnlyState.processing = false;
+                });
+            }
+          }
         } else {
-          audioQueue.push(b64);
+          const b64 = pcm24k.toString("base64");
+          if (openaiReady) {
+            openaiWs.send(
+              JSON.stringify({
+                type: "input_audio_buffer.append",
+                audio: b64,
+              }),
+            );
+          } else {
+            audioQueue.push(b64);
+          }
         }
       } else if (data.event === "stop") {
         console.log(`[Exotel] Call stop for hospital: ${hospital.name}`);
