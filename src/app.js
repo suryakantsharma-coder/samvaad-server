@@ -9,14 +9,26 @@ const app = express();
 // Serve uploaded files (e.g. hospital logos)
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
+// allowed origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://samvaad-psi.vercel.app",
+];
+
 // cors policy
 app.use(
   cors({
-    origin: "*",
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
-  })
+  }),
 );
 
 const apiLimiter = rateLimit({
