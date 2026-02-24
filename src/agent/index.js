@@ -2549,7 +2549,7 @@ const DEFAULT_INSTRUCTIONS =
 // Helper: Get hospital-specific instructions with doctors from database
 // =========================
 const getHospitalInstructions = async (hospital) => {
-  if (!hospital) return DEFAULT_INSTRUCTIONS;
+  if (!hospital) return dynamicPrompt;
 
   try {
     // Fetch all doctors for this hospital
