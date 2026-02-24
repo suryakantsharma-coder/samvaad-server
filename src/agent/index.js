@@ -2372,8 +2372,9 @@ function resample24kTo8k(pcm24k) {
 // =========================
 const USE_TRANSCRIPT_ONLY = true;
 // Use Sarvam Streaming STT (WebSocket) for lower latency when true; else REST.
-const USE_SARVAM_STREAMING_STT =
-  process.env.USE_SARVAM_STREAMING_STT === "true";
+const USE_SARVAM_STREAMING_STT = "true";
+// When true: Realtime text → Sarvam TTS (WebSocket) → Exotel. When false: Realtime audio → Exotel.
+const USE_SARVAM_TTS_FOR_OUTPUT = "true";
 // Silence after speech before we finalize (REST: one big WAV; Streaming: send flush).
 const TRANSCRIPT_ONLY_SILENCE_MS = USE_SARVAM_STREAMING_STT ? 250 : 400;
 const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 220;
@@ -2442,6 +2443,8 @@ async function transcribeWithSarvam(wavBuffer) {
 
 // Sarvam Streaming STT WebSocket (per Sarvam docs: wss://api.sarvam.ai/speech-to-text/ws)
 const SARVAM_WS_BASE = "wss://api.sarvam.ai/speech-to-text/ws";
+// Sarvam Streaming TTS WebSocket (per Sarvam docs: wss://api.sarvam.ai/text-to-speech/ws)
+const SARVAM_TTS_WS_BASE = "wss://api.sarvam.ai/text-to-speech/ws";
 
 // =========================
 // Parse appointment details from call transcript (for JSON log)
@@ -2681,12 +2684,7 @@ Hindi: "अपना registered mobile number बताएं।"
 Gujarati: "તમારો નોંધાયેલ mobile number આપો."
 PHONE VALIDATION:
 
-Must be exactly 10 digits
-Must start with 6, 7, 8, or 9
 If invalid, say:
-Hindi: "यह number सही नहीं है। 10 अंकों का number दें जो 6, 7, 8 या 9 से शुरू हो।"
-Gujarati: "આ number સાચો નથી. 10 અંકનો number આપો જે 6, 7, 8 અથવા 9 થી શરૂ થાય."
-Keep asking until you get valid 10-digit number starting with 6/7/8/9
 TOOL: fetch_patient_by_phone(phoneNumber) → Pass the 10-digit number as string, e.g., "9876543210"
 If patient found:
 
@@ -3136,6 +3134,156 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     }
     sarvamStreamingBuffer.length = 0;
     sarvamStreamingBufferBytes = 0;
+  };
+
+  // Sarvam Streaming TTS: one WS per call; send text, receive 8kHz PCM, forward to Exotel.
+  let sarvamTtsWs = null;
+
+  const connectSarvamTtsStreaming = () => {
+    if (!SARVAM_API_KEY) return null;
+    const url = `${SARVAM_TTS_WS_BASE}?model=bulbul:v3-beta`;
+    try {
+      const ttsWs = new WebSocket(url, {
+        headers: { "Api-Subscription-Key": SARVAM_API_KEY },
+      });
+      ttsWs.on("open", () => {
+        console.log("[Agent] Sarvam streaming TTS connected");
+        const config = {
+          type: "config",
+          data: {
+            target_language_code: "hi-IN",
+            speaker: "ritu",
+            model: "bulbul:v3-beta",
+            speech_sample_rate: "8000",
+            output_audio_codec: "linear16",
+            pace: 1,
+          },
+        };
+        try {
+          ttsWs.send(JSON.stringify(config));
+          console.log(
+            "[TTS] Config sent: sample_rate=8000, codec=linear16, streamSid=" +
+              (streamSid || "null"),
+          );
+        } catch (e) {
+          console.error("[Agent] Sarvam TTS config send error:", e.message);
+        }
+      });
+      ttsWs.on("message", (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          // Log every TTS message for debugging (type, size, format)
+          const dataKeys = msg.data ? Object.keys(msg.data) : [];
+          if (msg.type === "audio" && msg.data && msg.data.audio) {
+            const b64 = msg.data.audio;
+            let pcm = Buffer.from(b64, "base64");
+            const contentType = msg.data.content_type || "";
+            const sampleRate = msg.data.speech_sample_rate;
+            console.log(
+              "[TTS] Audio received: decodedBytes=" +
+                pcm.length +
+                " content_type=" +
+                contentType +
+                " speech_sample_rate=" +
+                sampleRate +
+                " (Exotel expects 8kHz 16-bit PCM, 320-byte chunks)",
+            );
+            // If Sarvam returns WAV (RIFF header), strip first 44 bytes to get raw PCM
+            if (pcm.length >= 44 && pcm[0] === 0x52 && pcm[1] === 0x49) {
+              console.log("[TTS] Stripping WAV header (44 bytes)");
+              pcm = pcm.subarray(44);
+            }
+            // Resample to 8kHz if Sarvam returns 24kHz
+            const is24k =
+              sampleRate === 24000 ||
+              (contentType && String(contentType).includes("24000"));
+            const pcm8k = is24k ? resample24kTo8k(pcm) : pcm;
+            if (is24k) {
+              console.log(
+                "[TTS] Resampled 24k->8k: " +
+                  pcm.length +
+                  " -> " +
+                  pcm8k.length +
+                  " bytes",
+              );
+            }
+            const sid = streamSid || "default";
+            let chunkCount = 0;
+            let lastChunkSize = 0;
+            for (let i = 0; i < pcm8k.length; i += EXOTEL_CHUNK_BYTES) {
+              if (userIsSpeaking) break;
+              const end = Math.min(i + EXOTEL_CHUNK_BYTES, pcm8k.length);
+              let chunk = pcm8k.subarray(i, end);
+              lastChunkSize = chunk.length;
+              // Exotel expects 20ms = 320 bytes; pad last chunk if smaller
+              if (chunk.length < EXOTEL_CHUNK_BYTES && chunk.length > 0) {
+                const padded = Buffer.alloc(EXOTEL_CHUNK_BYTES, 0);
+                chunk.copy(padded);
+                chunk = padded;
+              }
+              const payload = chunk.toString("base64");
+              try {
+                ws.send(
+                  JSON.stringify({
+                    event: "media",
+                    streamSid: sid,
+                    media: { payload },
+                  }),
+                );
+                chunkCount++;
+              } catch (e) {
+                console.error("[Exotel] Send media error (TTS):", e);
+              }
+            }
+            // Exotel format: event "media", streamSid, media.payload = base64(320 bytes 8kHz 16-bit PCM)
+            console.log(
+              "[TTS->Exotel] sent chunks=" +
+                chunkCount +
+                " chunkBytes=" +
+                EXOTEL_CHUNK_BYTES +
+                " streamSid=" +
+                sid +
+                " format={ event: 'media', media.payload: base64 }" +
+                (lastChunkSize && lastChunkSize !== EXOTEL_CHUNK_BYTES
+                  ? " lastChunkPaddedFrom=" + lastChunkSize
+                  : ""),
+            );
+          } else if (msg.type === "error") {
+            console.error("[Agent] Sarvam TTS error:", msg.data);
+          } else {
+            console.log(
+              "[TTS] Message type=" +
+                msg.type +
+                " dataKeys=" +
+                dataKeys.join(","),
+            );
+          }
+        } catch (e) {
+          console.error("[Agent] Sarvam TTS message parse error:", e.message);
+        }
+      });
+      ttsWs.on("error", (err) => {
+        console.error("[Agent] Sarvam TTS WS error:", err.message);
+      });
+      ttsWs.on("close", () => {
+        console.log("[Agent] Sarvam streaming TTS closed");
+      });
+      return ttsWs;
+    } catch (err) {
+      console.error("[Agent] Sarvam TTS connect error:", err.message);
+      return null;
+    }
+  };
+
+  const cleanupSarvamTtsStreaming = () => {
+    if (sarvamTtsWs && sarvamTtsWs.readyState === WebSocket.OPEN) {
+      try {
+        sarvamTtsWs.close();
+      } catch (e) {
+        console.error("[Agent] Sarvam TTS WS close error:", e);
+      }
+      sarvamTtsWs = null;
+    }
   };
 
   const cleanupOpenAI = () => {
@@ -3777,10 +3925,11 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           } catch (_) {}
         }
 
-        // Stream output audio to Exotel: 8kHz 16-bit PCM in 20ms (320-byte) chunks
+        // Stream output audio to Exotel: 8kHz 16-bit PCM in 20ms (320-byte) chunks (only when not using Sarvam TTS)
         if (
-          event.type === "response.audio.delta" ||
-          event.type === "response.output_audio.delta"
+          !USE_SARVAM_TTS_FOR_OUTPUT &&
+          (event.type === "response.audio.delta" ||
+            event.type === "response.output_audio.delta")
         ) {
           userIsSpeaking = false;
           const b64 = event.delta || event.audio;
@@ -3853,12 +4002,64 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           event.transcript
         ) {
           callTranscript.push({ role: "assistant", text: event.transcript });
+          if (
+            USE_SARVAM_TTS_FOR_OUTPUT &&
+            sarvamTtsWs &&
+            sarvamTtsWs.readyState === WebSocket.OPEN
+          ) {
+            isBotSpeaking = true;
+            try {
+              console.log(
+                "[TTS] Sending to Sarvam TTS (output_audio_transcript.done) len=" +
+                  (event.transcript && event.transcript.length) +
+                  " text=" +
+                  (event.transcript
+                    ? event.transcript.substring(0, 80) + "..."
+                    : ""),
+              );
+              sarvamTtsWs.send(
+                JSON.stringify({
+                  type: "text",
+                  data: { text: event.transcript },
+                }),
+              );
+              sarvamTtsWs.send(JSON.stringify({ type: "flush" }));
+            } catch (e) {
+              console.error("[Agent] Sarvam TTS send error:", e.message);
+            }
+          }
         }
         if (
           event.type === "response.audio_transcript.done" &&
           event.transcript
         ) {
           callTranscript.push({ role: "assistant", text: event.transcript });
+          if (
+            USE_SARVAM_TTS_FOR_OUTPUT &&
+            sarvamTtsWs &&
+            sarvamTtsWs.readyState === WebSocket.OPEN
+          ) {
+            isBotSpeaking = true;
+            try {
+              console.log(
+                "[TTS] Sending to Sarvam TTS (audio_transcript.done) len=" +
+                  (event.transcript && event.transcript.length) +
+                  " text=" +
+                  (event.transcript
+                    ? event.transcript.substring(0, 80) + "..."
+                    : ""),
+              );
+              sarvamTtsWs.send(
+                JSON.stringify({
+                  type: "text",
+                  data: { text: event.transcript },
+                }),
+              );
+              sarvamTtsWs.send(JSON.stringify({ type: "flush" }));
+            } catch (e) {
+              console.error("[Agent] Sarvam TTS send error:", e.message);
+            }
+          }
         }
         if (event.type === "error") {
           console.error("[OpenAI] Event error:", event.error || event);
@@ -3930,6 +4131,17 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           `[Exotel] Call start streamSid=${streamSid} caller=${callerPhone}`,
         );
         openaiWs = connectOpenAIRealtime();
+        if (USE_SARVAM_TTS_FOR_OUTPUT) {
+          console.log(
+            "[TTS] USE_SARVAM_TTS_FOR_OUTPUT=true, connecting Sarvam TTS WebSocket",
+          );
+          sarvamTtsWs = connectSarvamTtsStreaming();
+          if (!sarvamTtsWs) {
+            console.warn(
+              "[TTS] Sarvam TTS WebSocket failed to connect; Exotel will get no TTS audio",
+            );
+          }
+        }
         if (USE_TRANSCRIPT_ONLY && USE_SARVAM_STREAMING_STT) {
           sarvamWs = connectSarvamStreaming((transcript) => {
             if (
@@ -4216,6 +4428,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           );
         }
         cleanupSarvamStreaming();
+        cleanupSarvamTtsStreaming();
         cleanupOpenAI();
         ws.close();
       }
@@ -4283,12 +4496,14 @@ app.ws("/media/:hospitalId", async (ws, req) => {
       }
     }
     cleanupSarvamStreaming();
+    cleanupSarvamTtsStreaming();
     cleanupOpenAI();
   });
 
   ws.on("error", (err) => {
     console.error("[Exotel] WebSocket error:", err);
     cleanupSarvamStreaming();
+    cleanupSarvamTtsStreaming();
     cleanupOpenAI();
   });
 });
