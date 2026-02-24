@@ -89,10 +89,11 @@ function resample24kTo8k(pcm24k) {
 // Option A: Sarvam STT input -> text -> OpenAI Realtime -> output voice
 // =========================
 const USE_TRANSCRIPT_ONLY = true;
-const USE_SARVAM_STREAMING_STT =
-  process.env.USE_SARVAM_STREAMING_STT === "true";
-const USE_SARVAM_TTS_FOR_OUTPUT =
-  process.env.USE_SARVAM_TTS_FOR_OUTPUT === "true";
+const USE_SARVAM_STREAMING_STT = true;
+const USE_SARVAM_TTS_FOR_OUTPUT = true;
+const USE_NOISE_REDUCTION = true;
+// Noise gate: frames with RMS below this are zeroed (reduces background noise). Tunable via env or constant.
+const NOISE_GATE_THRESHOLD = 180;
 // Silence after speech before we finalize (REST: one big WAV; Streaming: send flush).
 const TRANSCRIPT_ONLY_SILENCE_MS = USE_SARVAM_STREAMING_STT ? 250 : 400;
 const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 350;
@@ -132,6 +133,26 @@ function computeRms(pcmBuffer) {
     sum += s * s;
   }
   return n > 0 ? Math.sqrt(sum / n) : 0;
+}
+
+/**
+ * Simple noise reduction: noise gate on 24kHz 16-bit LE PCM.
+ * Frames (20ms) with RMS below NOISE_GATE_THRESHOLD are zeroed to reduce background noise.
+ * For stronger suppression, consider RNNoise/Speex integration later.
+ */
+function applyNoiseReduction(pcm24k) {
+  const frameMs = 20;
+  const frameBytes =
+    (frameMs / 1000) * OPENAI_SAMPLE_RATE * OPENAI_SAMPLE_WIDTH;
+  const out = Buffer.from(pcm24k);
+  for (let i = 0; i < out.length; i += frameBytes) {
+    const frame = out.subarray(i, Math.min(i + frameBytes, out.length));
+    const rms = computeRms(frame);
+    if (rms < NOISE_GATE_THRESHOLD) {
+      frame.fill(0);
+    }
+  }
+  return out;
 }
 
 /** Transcribe audio (WAV buffer) via Sarvam STT API. */
@@ -404,6 +425,8 @@ If found:
 Confirm details.
 Save patient._id
 
+Appointment create karte waqt Step 1 mein jo Reason save kiya tha wahi reason field mein bhejo.
+
 If not found:
 Ask to register as new.
 If yes → Go to Step 4
@@ -467,6 +490,8 @@ If No → Ask what to change.
 Return to that step.
 
 8) Create Appointment
+
+Appointment create karte waqt Step 1 mein jo Reason save kiya tha wahi reason field mein bhejo.
 
 Use:
 create_appointment({
@@ -803,12 +828,12 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           type: "config",
           data: {
             target_language_code: "gu-IN",
-            speaker: "ritu",
+            speaker: "pooja",
             model: "bulbul:v3-beta",
             speech_sample_rate: "8000",
             output_audio_codec: "linear16",
             max_chunk_length: 500,
-            pace: 1,
+            pace: 1.1,
           },
         };
         try {
@@ -827,8 +852,9 @@ app.ws("/media/:hospitalId", async (ws, req) => {
             if (pcm.length >= 44 && pcm[0] === 0x52 && pcm[1] === 0x49) {
               pcm = pcm.subarray(44);
             }
+            const rate = Number(sampleRate) || 0;
             const is24k =
-              sampleRate === 24000 ||
+              rate === 24000 ||
               (contentType && String(contentType).includes("24000"));
             const pcm8k = is24k ? resample24kTo8k(pcm) : pcm;
             const sid = streamSid || "default";
@@ -1775,7 +1801,10 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         if (!streamSid)
           streamSid = data.streamSid ?? data.media?.streamSid ?? streamSid;
         const pcm8k = Buffer.from(payload, "base64");
-        const pcm24k = resample8kTo24k(pcm8k);
+        let pcm24k = resample8kTo24k(pcm8k);
+        if (USE_NOISE_REDUCTION) {
+          pcm24k = applyNoiseReduction(pcm24k);
+        }
 
         if (USE_TRANSCRIPT_ONLY) {
           const rms = computeRms(pcm24k);

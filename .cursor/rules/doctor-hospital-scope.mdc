@@ -1,0 +1,25 @@
+---
+description: Voice agent — doctors list/search and appointments must be scoped to the selected hospital only
+globs: src/agent/index.js
+alwaysApply: false
+---
+
+# Doctor & appointment scope: selected hospital only
+
+## Rule
+
+**list_doctors** and **search_doctors** must return only doctors belonging to the **current/selected hospital** (the hospital for the active call, from `hospitalId` in the WebSocket route).
+
+- **list_doctors**: Query must always include `hospital: hospitalObjectId` (the call’s hospital). Never return doctors from other hospitals.
+- **search_doctors**: Same — filter by `hospital: hospitalObjectId` and then apply name/designation search. Only doctors of this hospital should be in the result.
+- **create_appointment**: Doctor and patient lookups must use the same `hospitalObjectId` so that only doctors/patients of this hospital can be used. Never accept a doctor or patient from another hospital.
+
+## Why
+
+Each call is for one hospital (e.g. Delhi Hospital). If list/search return doctors from other hospitals, the model may pick a doctor whose `_id` is not for this hospital, and `create_appointment` will correctly reject with "Doctor not found for this hospital." To avoid failed bookings and confusion, doctor listing and search must be strictly scoped to the selected hospital.
+
+## Implementation reminder
+
+- `hospitalObjectId` comes from the WebSocket context: `hospital?._id` for the route `/media/:hospitalId`.
+- Every `DoctorModel.find()` for list_doctors or search_doctors must include `{ hospital: hospitalObjectId }`.
+- create_appointment must use `DoctorModel.findOne({ _id: doctorObjectId, hospital: hospitalObjectId })` (and similarly for patient) so only this hospital’s records are valid.
