@@ -2371,9 +2371,17 @@ function resample24kTo8k(pcm24k) {
 // Option A: Sarvam STT input -> text -> OpenAI Realtime -> output voice
 // =========================
 const USE_TRANSCRIPT_ONLY = true;
-const TRANSCRIPT_ONLY_SILENCE_MS = 400;
+// Use Sarvam Streaming STT (WebSocket) for lower latency when true; else REST.
+const USE_SARVAM_STREAMING_STT =
+  process.env.USE_SARVAM_STREAMING_STT === "true";
+// Silence after speech before we finalize (REST: one big WAV; Streaming: send flush).
+const TRANSCRIPT_ONLY_SILENCE_MS = USE_SARVAM_STREAMING_STT ? 250 : 400;
 const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 220;
 const TRANSCRIPT_ONLY_MIN_DURATION_MS = 200;
+// Streaming: send audio to Sarvam WS every N ms worth of PCM (24kHz 16-bit).
+const STREAMING_CHUNK_MS = 120;
+const STREAMING_CHUNK_BYTES_24K =
+  (STREAMING_CHUNK_MS / 1000) * OPENAI_SAMPLE_RATE * OPENAI_SAMPLE_WIDTH;
 
 /** Build WAV buffer from 24kHz 16-bit mono PCM (for Sarvam STT). */
 function pcm24kToWavBuffer(pcm24k) {
@@ -2431,6 +2439,9 @@ async function transcribeWithSarvam(wavBuffer) {
     throw err;
   }
 }
+
+// Sarvam Streaming STT WebSocket (per Sarvam docs: wss://api.sarvam.ai/speech-to-text/ws)
+const SARVAM_WS_BASE = "wss://api.sarvam.ai/speech-to-text/ws";
 
 // =========================
 // Parse appointment details from call transcript (for JSON log)
@@ -3068,6 +3079,64 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     (TRANSCRIPT_ONLY_MIN_DURATION_MS / 1000) *
     OPENAI_SAMPLE_RATE *
     OPENAI_SAMPLE_WIDTH;
+
+  // Sarvam Streaming STT: one WS per call; stream 24k PCM, flush on silence, get transcript.
+  let sarvamWs = null;
+  const sarvamStreamingBuffer = [];
+  let sarvamStreamingBufferBytes = 0;
+
+  const connectSarvamStreaming = (onTranscript) => {
+    if (!SARVAM_API_KEY) return null;
+    const url = `${SARVAM_WS_BASE}?model=saaras:v3&mode=transcribe&sample_rate=24000&input_audio_codec=wav`;
+    try {
+      const ws = new WebSocket(url, {
+        headers: { "Api-Subscription-Key": SARVAM_API_KEY },
+      });
+      ws.on("open", () => {
+        console.log("[Agent] Sarvam streaming STT connected");
+      });
+      ws.on("message", (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (
+            msg.type === "data" &&
+            msg.data &&
+            typeof msg.data.transcript === "string"
+          ) {
+            const t = String(msg.data.transcript).trim();
+            if (t) onTranscript(t);
+          } else if (msg.type === "error") {
+            console.error("[Agent] Sarvam streaming error:", msg.data);
+          }
+        } catch (e) {
+          console.error("[Agent] Sarvam streaming parse error:", e.message);
+        }
+      });
+      ws.on("error", (err) => {
+        console.error("[Agent] Sarvam streaming WS error:", err.message);
+      });
+      ws.on("close", () => {
+        console.log("[Agent] Sarvam streaming STT closed");
+      });
+      return ws;
+    } catch (err) {
+      console.error("[Agent] Sarvam streaming connect error:", err.message);
+      return null;
+    }
+  };
+
+  const cleanupSarvamStreaming = () => {
+    if (sarvamWs && sarvamWs.readyState === WebSocket.OPEN) {
+      try {
+        sarvamWs.close();
+      } catch (e) {
+        console.error("[Agent] Sarvam WS close error:", e);
+      }
+      sarvamWs = null;
+    }
+    sarvamStreamingBuffer.length = 0;
+    sarvamStreamingBufferBytes = 0;
+  };
 
   const cleanupOpenAI = () => {
     if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -3861,6 +3930,33 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           `[Exotel] Call start streamSid=${streamSid} caller=${callerPhone}`,
         );
         openaiWs = connectOpenAIRealtime();
+        if (USE_TRANSCRIPT_ONLY && USE_SARVAM_STREAMING_STT) {
+          sarvamWs = connectSarvamStreaming((transcript) => {
+            if (
+              !transcript ||
+              !openaiWs ||
+              openaiWs.readyState !== WebSocket.OPEN
+            )
+              return;
+            console.log(
+              "[Agent] Input transcription (Sarvam streaming):",
+              transcript,
+            );
+            callTranscript.push({ role: "user", text: transcript });
+            openaiWs.send(
+              JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "message",
+                  role: "user",
+                  content: [{ type: "input_text", text: transcript }],
+                },
+              }),
+            );
+            openaiWs.send(JSON.stringify({ type: "response.create" }));
+            transcriptOnlyState.processing = false;
+          });
+        }
       } else if (data.event === "media") {
         const payload = data.media?.payload;
         if (!payload || !openaiWs || openaiWs.readyState !== WebSocket.OPEN)
@@ -3874,75 +3970,170 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           const rms = computeRms(pcm24k);
           const now = Date.now();
           const isSpeech = rms > TRANSCRIPT_ONLY_SPEECH_THRESHOLD;
+          const pcmChunk = Buffer.from(pcm24k);
 
-          if (transcriptOnlyState.processing) {
-            // skip while transcribing previous turn
-          } else if (isSpeech) {
-            transcriptOnlyState.hadSpeechInTurn = true;
-            if (transcriptOnlyState.silenceStartedAt !== null) {
-              transcriptOnlyState.cancelResponse();
-            }
-            transcriptOnlyState.lastSpeechAt = now;
-            transcriptOnlyState.silenceStartedAt = null;
-            transcriptOnlyState.userChunks.push(Buffer.from(pcm24k));
-          } else {
-            transcriptOnlyState.userChunks.push(Buffer.from(pcm24k));
-            if (transcriptOnlyState.silenceStartedAt === null) {
-              transcriptOnlyState.silenceStartedAt = now;
-            }
-            const totalBytes = transcriptOnlyState.userChunks.reduce(
-              (s, c) => s + c.length,
-              0,
-            );
-            const silenceDuration = now - transcriptOnlyState.silenceStartedAt;
-            if (
-              transcriptOnlyState.hadSpeechInTurn &&
-              totalBytes >= MIN_SPEECH_BYTES_24K &&
-              silenceDuration >= TRANSCRIPT_ONLY_SILENCE_MS
-            ) {
-              const wavBuffer = pcm24kToWavBuffer(
-                Buffer.concat(transcriptOnlyState.userChunks),
+          if (
+            USE_SARVAM_STREAMING_STT &&
+            sarvamWs &&
+            sarvamWs.readyState === WebSocket.OPEN
+          ) {
+            // Streaming path: send audio to Sarvam WS in chunks; flush on silence.
+            sarvamStreamingBuffer.push(pcmChunk);
+            sarvamStreamingBufferBytes += pcmChunk.length;
+            if (sarvamStreamingBufferBytes >= STREAMING_CHUNK_BYTES_24K) {
+              const wavChunk = pcm24kToWavBuffer(
+                Buffer.concat(sarvamStreamingBuffer),
               );
-              transcriptOnlyState.userChunks = [];
-              transcriptOnlyState.silenceStartedAt = null;
-              transcriptOnlyState.lastSpeechAt = 0;
-              transcriptOnlyState.hadSpeechInTurn = false;
-              transcriptOnlyState.processing = true;
+              sarvamStreamingBuffer.length = 0;
+              sarvamStreamingBufferBytes = 0;
+              try {
+                sarvamWs.send(
+                  JSON.stringify({
+                    audio: {
+                      data: wavChunk.toString("base64"),
+                      sample_rate: "24000",
+                      encoding: "audio/wav",
+                    },
+                  }),
+                );
+              } catch (e) {
+                console.error(
+                  "[Agent] Sarvam streaming send error:",
+                  e.message,
+                );
+              }
+            }
 
-              transcribeWithSarvam(wavBuffer)
-                .then((transcript) => {
-                  if (
-                    !transcript ||
-                    !openaiWs ||
-                    openaiWs.readyState !== WebSocket.OPEN
-                  )
-                    return;
-                  console.log(
-                    "[Agent] Input transcription (Sarvam):",
-                    transcript,
-                  );
-                  callTranscript.push({ role: "user", text: transcript });
-                  openaiWs.send(
-                    JSON.stringify({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "message",
-                        role: "user",
-                        content: [{ type: "input_text", text: transcript }],
-                      },
-                    }),
-                  );
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
-                })
-                .catch((err) => {
+            if (transcriptOnlyState.processing) {
+              // wait for transcript from Sarvam
+            } else if (isSpeech) {
+              transcriptOnlyState.hadSpeechInTurn = true;
+              if (transcriptOnlyState.silenceStartedAt !== null) {
+                transcriptOnlyState.cancelResponse();
+              }
+              transcriptOnlyState.lastSpeechAt = now;
+              transcriptOnlyState.silenceStartedAt = null;
+              transcriptOnlyState.userChunks.push(pcmChunk);
+            } else {
+              transcriptOnlyState.userChunks.push(pcmChunk);
+              if (transcriptOnlyState.silenceStartedAt === null) {
+                transcriptOnlyState.silenceStartedAt = now;
+              }
+              const totalBytes = transcriptOnlyState.userChunks.reduce(
+                (s, c) => s + c.length,
+                0,
+              );
+              const silenceDuration =
+                now - transcriptOnlyState.silenceStartedAt;
+              if (
+                transcriptOnlyState.hadSpeechInTurn &&
+                totalBytes >= MIN_SPEECH_BYTES_24K &&
+                silenceDuration >= TRANSCRIPT_ONLY_SILENCE_MS
+              ) {
+                transcriptOnlyState.userChunks = [];
+                transcriptOnlyState.silenceStartedAt = null;
+                transcriptOnlyState.lastSpeechAt = 0;
+                transcriptOnlyState.hadSpeechInTurn = false;
+                transcriptOnlyState.processing = true;
+                try {
+                  if (sarvamStreamingBufferBytes > 0) {
+                    const wavTail = pcm24kToWavBuffer(
+                      Buffer.concat(sarvamStreamingBuffer),
+                    );
+                    sarvamStreamingBuffer.length = 0;
+                    sarvamStreamingBufferBytes = 0;
+                    sarvamWs.send(
+                      JSON.stringify({
+                        audio: {
+                          data: wavTail.toString("base64"),
+                          sample_rate: "24000",
+                          encoding: "audio/wav",
+                        },
+                      }),
+                    );
+                  }
+                  sarvamWs.send(JSON.stringify({ type: "flush" }));
+                } catch (e) {
                   console.error(
-                    "[Agent] Sarvam transcription error:",
-                    err.message,
+                    "[Agent] Sarvam streaming flush error:",
+                    e.message,
                   );
-                })
-                .finally(() => {
                   transcriptOnlyState.processing = false;
-                });
+                }
+              }
+            }
+          } else {
+            // REST path (or streaming unavailable): buffer + VAD, then one Sarvam REST call.
+            if (transcriptOnlyState.processing) {
+              // skip while transcribing previous turn
+            } else if (isSpeech) {
+              transcriptOnlyState.hadSpeechInTurn = true;
+              if (transcriptOnlyState.silenceStartedAt !== null) {
+                transcriptOnlyState.cancelResponse();
+              }
+              transcriptOnlyState.lastSpeechAt = now;
+              transcriptOnlyState.silenceStartedAt = null;
+              transcriptOnlyState.userChunks.push(pcmChunk);
+            } else {
+              transcriptOnlyState.userChunks.push(pcmChunk);
+              if (transcriptOnlyState.silenceStartedAt === null) {
+                transcriptOnlyState.silenceStartedAt = now;
+              }
+              const totalBytes = transcriptOnlyState.userChunks.reduce(
+                (s, c) => s + c.length,
+                0,
+              );
+              const silenceDuration =
+                now - transcriptOnlyState.silenceStartedAt;
+              if (
+                transcriptOnlyState.hadSpeechInTurn &&
+                totalBytes >= MIN_SPEECH_BYTES_24K &&
+                silenceDuration >= TRANSCRIPT_ONLY_SILENCE_MS
+              ) {
+                const wavBuffer = pcm24kToWavBuffer(
+                  Buffer.concat(transcriptOnlyState.userChunks),
+                );
+                transcriptOnlyState.userChunks = [];
+                transcriptOnlyState.silenceStartedAt = null;
+                transcriptOnlyState.lastSpeechAt = 0;
+                transcriptOnlyState.hadSpeechInTurn = false;
+                transcriptOnlyState.processing = true;
+
+                transcribeWithSarvam(wavBuffer)
+                  .then((transcript) => {
+                    if (
+                      !transcript ||
+                      !openaiWs ||
+                      openaiWs.readyState !== WebSocket.OPEN
+                    )
+                      return;
+                    console.log(
+                      "[Agent] Input transcription (Sarvam):",
+                      transcript,
+                    );
+                    callTranscript.push({ role: "user", text: transcript });
+                    openaiWs.send(
+                      JSON.stringify({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "message",
+                          role: "user",
+                          content: [{ type: "input_text", text: transcript }],
+                        },
+                      }),
+                    );
+                    openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  })
+                  .catch((err) => {
+                    console.error(
+                      "[Agent] Sarvam transcription error:",
+                      err.message,
+                    );
+                  })
+                  .finally(() => {
+                    transcriptOnlyState.processing = false;
+                  });
+              }
             }
           }
         } else {
@@ -4024,6 +4215,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
             JSON.stringify(callSummary, null, 2),
           );
         }
+        cleanupSarvamStreaming();
         cleanupOpenAI();
         ws.close();
       }
@@ -4090,11 +4282,13 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         console.error("[Exotel] Failed to write call JSON:", e);
       }
     }
+    cleanupSarvamStreaming();
     cleanupOpenAI();
   });
 
   ws.on("error", (err) => {
     console.error("[Exotel] WebSocket error:", err);
+    cleanupSarvamStreaming();
     cleanupOpenAI();
   });
 });
