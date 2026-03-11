@@ -295,7 +295,7 @@ CALL FLOW:
 // =========================
 // Helper: Get hospital-specific instructions with doctors from database
 // =========================
-const getHospitalInstructions = async (hospital) => {
+const getHospitalInstructions = async (hospital, callerPhone = null) => {
   if (!hospital) {
     console.warn(
       "[Agent] getHospitalInstructions: no hospital provided, using HOSPITAL_PROMPT",
@@ -305,8 +305,15 @@ const getHospitalInstructions = async (hospital) => {
 
   const hospitalName = hospital.name || "unknown";
   const hospitalId = hospital._id ? String(hospital._id) : "no-id";
+  const hasCallerNumber =
+    callerPhone &&
+    String(callerPhone).trim() &&
+    String(callerPhone).trim().toLowerCase() !== "unknown";
+  const callerNumberForPrompt = hasCallerNumber
+    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) || String(callerPhone).trim()
+    : null;
   console.log(
-    `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})`,
+    `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})${hasCallerNumber ? ` caller=${callerNumberForPrompt || callerPhone}` : ""}`,
   );
 
   try {
@@ -410,7 +417,14 @@ If NO → New Patient
 
 3) Existing Patient Flow
 
-Ask Mobile Number.
+${callerNumberForPrompt ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
+- Ask the caller if this is their registered mobile number (confirm once).
+
+Hindi: "क्या यही नंबर आपका रजिस्टर्ड नंबर है?"
+Gujarati: "શું આ જ નંબર તમારો રજિસ્ટર્ડ નંબર છે?"
+
+- If caller says YES: Call fetch_patient_by_phone with this number: ${callerNumberForPrompt}. If found → say "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए।" / "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો." After they confirm name and age, save patient._id, then doctor/date/time and create appointment with Step 1 Reason. If NOT found → say they are not registered with this number and ask to register as new (Go to Step 4).
+- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.` : `Ask Mobile Number.
 
 Hindi:
 "अपना मोबाइल नंबर बताइए।"
@@ -419,13 +433,15 @@ Gujarati:
 "તમારો મોબાઇલ નંબર આપો."
 
 Use:
-fetch_patient_by_phone(phoneNumber)
+fetch_patient_by_phone(phoneNumber)`}
 
 If found:
-Confirm details.
-Save patient._id
+Tell the caller their previous record is found, then ask name and age to confirm.
 
-Appointment create karte waqt Step 1 mein jo Reason save kiya tha wahi reason field mein bhejo.
+Hindi: "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए ताकि हम कन्फर्म कर लें।"
+Gujarati: "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો જેથી અમે કન્ફર્મ કરી લઈએ."
+
+After they say name and age (match with patient record), confirm and save patient._id. Then proceed to doctor selection, date, time and create_appointment. Always use Step 1 Reason (this call's reason) in create_appointment — never use old patient reason.
 
 If not found:
 Ask to register as new.
@@ -584,22 +600,8 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     return;
   }
 
-  // Fetch hospital-specific instructions with doctors from database
-  let hospitalInstructions;
-  try {
-    hospitalInstructions = await getHospitalInstructions(hospital);
-    const isFallback = hospitalInstructions === HOSPITAL_PROMPT;
-    console.log(
-      `[Agent] Loaded instructions for ${hospital.name}${isFallback ? " (FALLBACK: HOSPITAL_PROMPT)" : " (dynamic prompt with doctors)"}`,
-    );
-  } catch (err) {
-    console.error(
-      `[Agent] Error generating hospital instructions (outer catch): ${err.message}`,
-    );
-    console.error("[Agent] Outer catch stack:", err.stack);
-    console.warn("[Agent] Using HOSPITAL_PROMPT fallback (outer catch)");
-    hospitalInstructions = HOSPITAL_PROMPT;
-  }
+  // Hospital instructions are built when call starts (so we can include caller number)
+  let hospitalInstructions = HOSPITAL_PROMPT;
 
   // =========================
   // Realtime tools (function calling) to integrate DB actions
@@ -1727,7 +1729,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
   };
 
   let firstMessageLogged = false;
-  ws.on("message", (message) => {
+  ws.on("message", async (message) => {
     try {
       if (!message) return;
       const data = JSON.parse(message.toString());
@@ -1760,6 +1762,21 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         console.log(
           `[Exotel] Call start streamSid=${streamSid} caller=${callerPhone}`,
         );
+        try {
+          hospitalInstructions = await getHospitalInstructions(
+            hospital,
+            callerPhone,
+          );
+          const isFallback = hospitalInstructions === HOSPITAL_PROMPT;
+          console.log(
+            `[Agent] Loaded instructions for ${hospital.name}${isFallback ? " (FALLBACK)" : " (dynamic + caller number)"}`,
+          );
+        } catch (err) {
+          console.error(
+            `[Agent] Error generating hospital instructions on start: ${err.message}`,
+          );
+          hospitalInstructions = HOSPITAL_PROMPT;
+        }
         openaiWs = connectOpenAIRealtime();
         if (USE_SARVAM_TTS_FOR_OUTPUT) {
           sarvamTtsWs = connectSarvamTtsStreaming();
