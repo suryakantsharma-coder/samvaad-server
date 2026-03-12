@@ -449,18 +449,26 @@ If yes → Go to Step 4
 
 4) New Patient Registration
 
-Collect one by one:
+Collect one by one (in a natural conversation):
 
-Name (Confirm spelling)
-Age
-Gender
-Mobile Number
-Date of Birth
+- Name (confirm spelling)
+- Age
+- Gender (must be exactly one of: "Male", "Female", "Other")
+- Mobile Number
 
-Create with:
-create_patient()
+Do NOT try to send date of birth in the tool call. You can talk about it with the caller, but the tool does not accept a dateOfBirth field.
 
-Save patient._id
+After collecting these and after Step 1 Reason is known, call:
+
+create_patient({
+  fullName: \${patientName},
+  age: \${patientAge},
+  gender: \${gender},
+  phoneNumber: \${mobileNumber},  // or leave blank to use the caller's number from the call
+  reason: \${Reason}              // use the same Reason captured in Step 1 for this call
+})
+
+After create_patient returns ok: true, save patient._id from the tool result and continue.
 
 5) Doctor Assignment
 
@@ -511,9 +519,8 @@ Appointment create karte waqt Step 1 mein jo Reason save kiya tha wahi reason fi
 
 Use:
 create_appointment({
-  patient: \${patient._id},
-  doctor: \${doctor._id},
-  hospital: ${hospital._id},
+  patientObjectId: \${patient._id},
+  doctorObjectId: \${doctor._id},
   reason: \${Reason},
   appointmentDateTimeISO: \${ISODate},
   type: "call"
