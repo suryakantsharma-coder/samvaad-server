@@ -10,6 +10,7 @@ const HospitalModel = require("../models/hospital.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
 const { extractAppointmentFromTranscript } = require("./chatgpt");
+const { createEchoCanceller } = require("./echoCanceller");
 
 // =========================
 // App setup
@@ -92,11 +93,26 @@ const USE_TRANSCRIPT_ONLY = true;
 const USE_SARVAM_STREAMING_STT = true;
 const USE_SARVAM_TTS_FOR_OUTPUT = true;
 const USE_NOISE_REDUCTION = true;
-// Noise gate: frames with RMS below this are zeroed (reduces background noise). Tunable via env or constant.
+// Acoustic echo cancellation: subtract bot's TTS from inbound so the model doesn't hear itself.
+const USE_ECHO_CANCELLATION = process.env.USE_ECHO_CANCELLATION !== "false";
+// Only run AEC when bot is or was recently speaking (ms after bot stops).
+const AEC_BOT_RECENT_MS = 400;
+// AEC NLMS: echo delay (ms) and filter length (samples at 8kHz). Keep small for low latency.
+const AEC_DELAY_MS = 100;
+const AEC_FILTER_LENGTH = 128;
+const AEC_REFERENCE_BUFFER_MS = 400;
+// Noise gate: frames with RMS below this are attenuated (reduces fan/background). Soft gate avoids cutting speech.
 const NOISE_GATE_THRESHOLD = 180;
+// Attenuation factor for frames below gate (0.2 = reduce fan, avoid hard cutoffs that cause "stops").
+const NOISE_GATE_ATTENUATION = 0.2;
+// High-pass filter to remove fan rumble (low-frequency). Cutoff in Hz at 8kHz.
+const USE_HIGH_PASS_FILTER = process.env.USE_HIGH_PASS_FILTER !== "false";
+const HIGH_PASS_CUTOFF_HZ = 100;
 // Silence after speech before we finalize (REST: one big WAV; Streaming: send flush).
 const TRANSCRIPT_ONLY_SILENCE_MS = USE_SARVAM_STREAMING_STT ? 250 : 400;
 const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 350;
+// Don't cancel bot when it's speaking or just finished (avoids echo/fan being treated as user speech).
+const CANCEL_BOT_MIN_AFTER_BOT_MS = 400;
 const TRANSCRIPT_ONLY_MIN_DURATION_MS = 200;
 // Streaming: send audio to Sarvam WS every N ms worth of PCM (24kHz 16-bit).
 const STREAMING_CHUNK_MS = 120;
@@ -124,6 +140,36 @@ function pcm24kToWavBuffer(pcm24k) {
   return Buffer.concat([header, pcm24k]);
 }
 
+/**
+ * Apply first-order high-pass filter to remove fan rumble (low-frequency).
+ * Stateful: pass state { lastX, lastY } per call; mutates state.
+ * @param {Buffer} pcm - 16-bit LE PCM (8k or 24k)
+ * @param {{ lastX: number, lastY: number }} state
+ * @param {number} sampleRate
+ * @param {number} cutoffHz
+ * @returns {Buffer} filtered PCM (new buffer)
+ */
+function applyHighPassFilter(pcm, state, sampleRate, cutoffHz) {
+  if (!USE_HIGH_PASS_FILTER || !pcm || pcm.length < 2) return pcm;
+  const rc = 1 / (2 * Math.PI * cutoffHz);
+  const dt = 1 / sampleRate;
+  const alpha = rc / (rc + dt);
+  const out = Buffer.alloc(pcm.length);
+  let lastX = state.lastX;
+  let lastY = state.lastY;
+  for (let i = 0; i < pcm.length; i += 2) {
+    const x = pcm.readInt16LE(i);
+    const y = alpha * (lastY + x - lastX);
+    lastX = x;
+    lastY = y;
+    const s = Math.max(-32768, Math.min(32767, Math.round(y)));
+    out.writeInt16LE(s, i);
+  }
+  state.lastX = lastX;
+  state.lastY = lastY;
+  return out;
+}
+
 /** RMS of 16-bit LE PCM (for VAD). */
 function computeRms(pcmBuffer) {
   let sum = 0;
@@ -136,20 +182,26 @@ function computeRms(pcmBuffer) {
 }
 
 /**
- * Simple noise reduction: noise gate on 24kHz 16-bit LE PCM.
- * Frames (20ms) with RMS below NOISE_GATE_THRESHOLD are zeroed to reduce background noise.
- * For stronger suppression, consider RNNoise/Speex integration later.
+ * Soft noise reduction: attenuate (don't zero) quiet frames to reduce fan/background
+ * without hard cutoffs that cause "stops between talking".
  */
 function applyNoiseReduction(pcm24k) {
   const frameMs = 20;
   const frameBytes =
     (frameMs / 1000) * OPENAI_SAMPLE_RATE * OPENAI_SAMPLE_WIDTH;
   const out = Buffer.from(pcm24k);
+  const att = NOISE_GATE_ATTENUATION;
   for (let i = 0; i < out.length; i += frameBytes) {
     const frame = out.subarray(i, Math.min(i + frameBytes, out.length));
     const rms = computeRms(frame);
     if (rms < NOISE_GATE_THRESHOLD) {
-      frame.fill(0);
+      for (let j = 0; j < frame.length; j += 2) {
+        const s = frame.readInt16LE(j);
+        frame.writeInt16LE(
+          Math.max(-32768, Math.min(32767, Math.round(s * att))),
+          j,
+        );
+      }
     }
   }
   return out;
@@ -779,6 +831,14 @@ app.ws("/media/:hospitalId", async (ws, req) => {
   let appointmentDetails = null;
   let callSummaryWritten = false;
   let userIsSpeaking = false;
+  let lastBotSpeechEndAt = 0;
+  const echoCanceller = createEchoCanceller({
+    useAec: USE_ECHO_CANCELLATION,
+    delayMs: AEC_DELAY_MS,
+    filterLength: AEC_FILTER_LENGTH,
+    referenceBufferMs: AEC_REFERENCE_BUFFER_MS,
+  });
+  const highPassState = { lastX: 0, lastY: 0 };
 
   // Transcript-only (Sarvam STT): buffer user audio, VAD, then send text to Realtime
   const transcriptOnlyState = {
@@ -910,6 +970,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
                 chunk.copy(padded);
                 chunk = padded;
               }
+              if (USE_ECHO_CANCELLATION) echoCanceller.pushReference(chunk);
               const payload = chunk.toString("base64");
               try {
                 ws.send(
@@ -933,6 +994,8 @@ app.ws("/media/:hospitalId", async (ws, req) => {
                   ? " (last padded from " + lastChunkSize + ")"
                   : ""),
             );
+            isBotSpeaking = false;
+            lastBotSpeechEndAt = Date.now();
           } else if (msg.type === "error") {
             console.error("[Agent] Sarvam TTS error:", msg.data);
           }
@@ -1627,6 +1690,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
                 i,
                 Math.min(i + EXOTEL_CHUNK_BYTES, pcm8k.length),
               );
+              if (USE_ECHO_CANCELLATION) echoCanceller.pushReference(chunk);
               const payload = chunk.toString("base64");
               try {
                 ws.send(
@@ -1654,14 +1718,20 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           userIsSpeaking = false;
           if (isBotSpeaking) {
             isBotSpeaking = false;
+            lastBotSpeechEndAt = Date.now();
             console.log("[OpenAI] Bot finished speaking");
           }
         }
 
         if (event.type === "input_audio_buffer.speech_started") {
-          console.log("[OpenAI] User speech started — canceling bot response");
-          userIsSpeaking = true;
-          client.send(JSON.stringify({ type: "response.cancel" }));
+          const botJustSpoke =
+            isBotSpeaking ||
+            Date.now() - lastBotSpeechEndAt < CANCEL_BOT_MIN_AFTER_BOT_MS;
+          if (!botJustSpoke) {
+            console.log("[OpenAI] User speech started — canceling bot response");
+            userIsSpeaking = true;
+            client.send(JSON.stringify({ type: "response.cancel" }));
+          }
         }
         if (event.type === "input_audio_buffer.speech_stopped") {
           console.log("[OpenAI] User speech stopped");
@@ -1855,7 +1925,21 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           return;
         if (!streamSid)
           streamSid = data.streamSid ?? data.media?.streamSid ?? streamSid;
-        const pcm8k = Buffer.from(payload, "base64");
+        let pcm8k = Buffer.from(payload, "base64");
+        if (
+          USE_ECHO_CANCELLATION &&
+          (isBotSpeaking || Date.now() - lastBotSpeechEndAt < AEC_BOT_RECENT_MS)
+        ) {
+          pcm8k = echoCanceller.processInbound(pcm8k);
+        }
+        if (USE_HIGH_PASS_FILTER) {
+          pcm8k = applyHighPassFilter(
+            pcm8k,
+            highPassState,
+            EXOTEL_SAMPLE_RATE,
+            HIGH_PASS_CUTOFF_HZ,
+          );
+        }
         let pcm24k = resample8kTo24k(pcm8k);
         if (USE_NOISE_REDUCTION) {
           pcm24k = applyNoiseReduction(pcm24k);
@@ -1904,7 +1988,10 @@ app.ws("/media/:hospitalId", async (ws, req) => {
             } else if (isSpeech) {
               transcriptOnlyState.hadSpeechInTurn = true;
               if (transcriptOnlyState.silenceStartedAt !== null) {
-                transcriptOnlyState.cancelResponse();
+                const botJustSpoke =
+                  isBotSpeaking ||
+                  Date.now() - lastBotSpeechEndAt < CANCEL_BOT_MIN_AFTER_BOT_MS;
+                if (!botJustSpoke) transcriptOnlyState.cancelResponse();
               }
               transcriptOnlyState.lastSpeechAt = now;
               transcriptOnlyState.silenceStartedAt = null;
@@ -1964,7 +2051,10 @@ app.ws("/media/:hospitalId", async (ws, req) => {
             } else if (isSpeech) {
               transcriptOnlyState.hadSpeechInTurn = true;
               if (transcriptOnlyState.silenceStartedAt !== null) {
-                transcriptOnlyState.cancelResponse();
+                const botJustSpoke =
+                  isBotSpeaking ||
+                  Date.now() - lastBotSpeechEndAt < CANCEL_BOT_MIN_AFTER_BOT_MS;
+                if (!botJustSpoke) transcriptOnlyState.cancelResponse();
               }
               transcriptOnlyState.lastSpeechAt = now;
               transcriptOnlyState.silenceStartedAt = null;
