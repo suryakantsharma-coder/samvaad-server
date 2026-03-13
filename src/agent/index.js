@@ -310,7 +310,8 @@ const getHospitalInstructions = async (hospital, callerPhone = null) => {
     String(callerPhone).trim() &&
     String(callerPhone).trim().toLowerCase() !== "unknown";
   const callerNumberForPrompt = hasCallerNumber
-    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) || String(callerPhone).trim()
+    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) ||
+      String(callerPhone).trim()
     : null;
   console.log(
     `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})${hasCallerNumber ? ` caller=${callerNumberForPrompt || callerPhone}` : ""}`,
@@ -394,6 +395,8 @@ You must collect details in a natural, friendly, step-by-step manner.
 
 1) Ask Reason for Call
 
+
+
 Hindi:
 "आप किस समस्या के लिए कॉल कर रहे हैं?"
 
@@ -417,14 +420,17 @@ If NO → New Patient
 
 3) Existing Patient Flow
 
-${callerNumberForPrompt ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
+${
+  callerNumberForPrompt
+    ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
 - Ask the caller if this is their registered mobile number (confirm once).
 
 Hindi: "क्या यही नंबर आपका रजिस्टर्ड नंबर है?"
 Gujarati: "શું આ જ નંબર તમારો રજિસ્ટર્ડ નંબર છે?"
 
 - If caller says YES: Call fetch_patient_by_phone with this number: ${callerNumberForPrompt}. If found → say "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए।" / "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો." After they confirm name and age, save patient._id, then doctor/date/time and create appointment with Step 1 Reason. If NOT found → say they are not registered with this number and ask to register as new (Go to Step 4).
-- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.` : `Ask Mobile Number.
+- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.`
+    : `Ask Mobile Number.
 
 Hindi:
 "अपना मोबाइल नंबर बताइए।"
@@ -433,15 +439,17 @@ Gujarati:
 "તમારો મોબાઇલ નંબર આપો."
 
 Use:
-fetch_patient_by_phone(phoneNumber)`}
+fetch_patient_by_phone(phoneNumber)`
+}
 
 If found:
-Tell the caller their previous record is found, then ask name and age to confirm.
+Tell the caller their previous record is found, tell the record details to the caller and ask if this is the correct record.
 
-Hindi: "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए ताकि हम कन्फर्म कर लें।"
-Gujarati: "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો જેથી અમે કન્ફર્મ કરી લઈએ."
+Hindi: "आपका पिछला रिकॉर्ड मिल गया है। मैं आपका पूरा विवरण पढ़कर सुना रही हूँ। कृपया बताइए कि यह जानकारी सही है या नहीं। क्या यह जानकारी सही है?।"
 
-After they say name and age (match with patient record), confirm and save patient._id. Then proceed to doctor selection, date, time and create_appointment. Always use Step 1 Reason (this call's reason) in create_appointment — never use old patient reason.
+Gujarati: "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। હું તમારો સંપૂર્ણ વિગત વાંચી રહી છું. કૃપા કરીને જણાવો કે આ માહિતી સાચી છે કે નહીં. શું આ માહિતી સાચી છે?"
+
+If yes → confirm and save patient._id. Then proceed to doctor selection, date, time and create_appointment. Always use Step 1 Reason (this call's reason) in create_appointment — never use old patient reason.
 
 If not found:
 Ask to register as new.
@@ -454,7 +462,7 @@ Collect one by one (in a natural conversation):
 - Name (confirm spelling)
 - Age
 - Gender (must be exactly one of: "Male", "Female", "Other")
-- Mobile Number
+- Caller's Phone Number (use the caller's phone number from the call)
 
 Do NOT try to send date of birth in the tool call. You can talk about it with the caller, but the tool does not accept a dateOfBirth field.
 
@@ -464,19 +472,42 @@ create_patient({
   fullName: \${patientName},
   age: \${patientAge},
   gender: \${gender},
-  phoneNumber: \${mobileNumber},  // or leave blank to use the caller's number from the call
+  phoneNumber: \${callerPhoneNumber},  // or leave blank to use the caller's number from the call
   reason: \${Reason}              // use the same Reason captured in Step 1 for this call
 })
 
 After create_patient returns ok: true, save patient._id from the tool result and continue.
 
-5) Doctor Assignment
+5) Doctor and Department
 
-- Analyze Reason.
-- Match with available doctor specialty.
+- Analyze Reason (the patient's own words from Step 1).
+- Match with available doctor specialty / department for ${hospital.name}.
 - If no match → General Physician.
-- Confirm with patient.
-- Save doctor._id
+- When you speak to the caller, use simple natural Hindi or Gujarati words, not medical jargon or English medical terms.
+- If you are not sure between two departments, prefer General Physician for the first visit.
+
+- Common disease words and how to understand them (do NOT say this list to the caller, just use it internally):
+  - "piles", "बवासीर", "અરસ"              → Proctology / General Surgeon
+  - "malaria", "मलेरिया", "મલેરિયા"       → General Physician / Medicine
+  - "dengue", "डेंगू", "ડેન્ગ્યુ"         → General Physician / Medicine
+  - "typhoid", "टाइफॉइड", "ટાઇફોઇડ"      → General Physician / Medicine
+  - "sugar", "diabetes", "शुगर", "ડાયાબિટીસ" → Diabetologist / General Physician
+  - "bp", "blood pressure", "ब्लड प्रेशर", "બ્લડ પ્રેશર" → Cardiologist / General Physician
+  - "heart pain", "छाती में दर्द", "છાતીમાં દુખાવો" → Cardiologist
+  - "asthma", "दम", "સાંસ ફૂલવી"          → Chest / Pulmonology / General Physician
+  - "back pain", "पीठ दर्द", "પીઠમાં દુખાવો" → Orthopedics
+  - "joint pain", "घुटने में दर्द", "ઘૂંટણમાં દુખાવો" → Orthopedics
+  - "skin allergy", "खुजली", "ચામડી પર ખંજવાળ" → Dermatology
+  - "eye problem", "आंखों की problem", "આંખમાં દુખાવો" → Ophthalmology (Eye)
+  - "ear pain", "कान में दर्द", "કાનમાં દુખાવો" → ENT
+  - "throat pain", "गला खराब", "ગળામાં દુખાવો" → ENT
+  - "pregnancy", "garbhavati", "गर्भवती", "ગર્ભવતી" → Gynecology
+  - "stone", "kidney stone", "पथरी", "પથરી"  → Urology / General Surgeon
+  - "fever", "बुखार", "તાવ"                  → General Physician
+  - "cold", "खांसी जुकाम", "ઠંડ, ઉધરસ"      → General Physician
+  - "headache", "सर दर्द", "માથામાં દુખાવો"  → General Physician / Neurology (if very specific)
+
+- After selecting the correct department / doctor using the above mapping and available doctors list, confirm the choice with the patient in simple Hindi or Gujarati and then save doctor._id for appointment booking.
 
 6) Date and Time
 
