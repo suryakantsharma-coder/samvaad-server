@@ -1,7 +1,6 @@
 const express = require("express");
 const expressWs = require("express-ws");
 const WebSocket = require("ws");
-const chatgpt = require("openai");
 const mongoose = require("mongoose");
 require("dotenv").config();
 const env = require("../config/env");
@@ -9,7 +8,15 @@ const AppointmentModel = require("../models/appointment.model");
 const HospitalModel = require("../models/hospital.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
-const { extractAppointmentFromTranscript } = require("./chatgpt");
+const {
+  buildHospitalAgentPrompt,
+} = require("../../ai/prompts/hospitalAgentPrompt");
+const {
+  extractAppointmentFromTranscript,
+} = require("../../ai/services/extractAppointment");
+const {
+  processAppointmentExtraction,
+} = require("../../ai/services/processAppointment");
 
 // =========================
 // App setup
@@ -18,8 +25,10 @@ const app = express();
 expressWs(app);
 
 // NOTE:
-// Appointment creation is handled live via Realtime tool-calling (create_patient / create_appointment).
-// We do NOT auto-create appointments on call end to avoid duplicates.
+// During the call, the AI assistant ONLY gathers information (symptoms, patient details,
+// doctor preference, date/time preference). It does NOT write to the database.
+// After the call ends, we analyze the transcript and then create/update patients
+// and appointments in MongoDB based on the extracted structure.
 
 // =========================
 // Configuration (use .env; never commit secrets)
@@ -296,24 +305,20 @@ CALL FLOW:
 // Helper: Get hospital-specific instructions with doctors from database
 // =========================
 const getHospitalInstructions = async (hospital, callerPhone = null) => {
+  const fallbackPrompt = buildHospitalAgentPrompt("Hospital");
+
   if (!hospital) {
     console.warn(
-      "[Agent] getHospitalInstructions: no hospital provided, using HOSPITAL_PROMPT",
+      "[Agent] getHospitalInstructions: no hospital provided, using fallback prompt",
     );
-    return HOSPITAL_PROMPT;
+    return fallbackPrompt;
   }
 
-  const hospitalName = hospital.name || "unknown";
+  const hospitalName = hospital.name || "Hospital";
   const hospitalId = hospital._id ? String(hospital._id) : "no-id";
-  const hasCallerNumber =
-    callerPhone &&
-    String(callerPhone).trim() &&
-    String(callerPhone).trim().toLowerCase() !== "unknown";
-  const callerNumberForPrompt = hasCallerNumber
-    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) || String(callerPhone).trim()
-    : null;
+
   console.log(
-    `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})${hasCallerNumber ? ` caller=${callerNumberForPrompt || callerPhone}` : ""}`,
+    `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})`,
   );
 
   try {
@@ -325,243 +330,28 @@ const getHospitalInstructions = async (hospital, callerPhone = null) => {
       `[Agent] getHospitalInstructions: DoctorModel.find returned ${doctors?.length ?? 0} doctors for ${hospitalName}`,
     );
 
-    // Group doctors by designation/department
-    const doctorsByDept = {};
-    doctors.forEach((doctor) => {
-      const dept = doctor.designation || "General";
-      if (!doctorsByDept[dept]) {
-        doctorsByDept[dept] = [];
-      }
-      doctorsByDept[dept].push({
-        name: doctor.fullName,
-        designation: doctor.designation,
-        availability: doctor.availability || "9 AM - 5 PM",
-        status: doctor.status || "On Duty",
-      });
-    });
+    const basePrompt = buildHospitalAgentPrompt(hospitalName);
 
-    // Build doctor list string for prompt
     let doctorListText = "";
-    Object.keys(doctorsByDept).forEach((dept) => {
-      doctorListText += `\n${dept}: `;
-      const deptDoctors = doctorsByDept[dept];
-      doctorListText += deptDoctors
-        .map(
-          (doc) =>
-            `Dr. ${doc.name} (${doc.availability})${doc.status !== "On Duty" ? ` - Status: ${doc.status}` : ""}`,
-        )
-        .join(", ");
-    });
-
-    const dynamicPrompt = `
-  You are Neha, a polite, friendly, and professional AI Hospital Receptionist from ${hospital.name}.
-
-Your only role is to help patients book medical appointments quickly and smoothly.
-
-Hospital Details:
-${hospital.name}
-${hospital.address}, ${hospital.city} - ${hospital.pincode}
-Phone: ${hospital.phoneCountryCode || "+91"} ${hospital.phoneNumber}
-
-Available Doctors:
-${doctorListText || "No doctors currently available."}
-
-IMPORTANT: This call is already for ${hospital.name} only. Do NOT ask the caller to choose between Hospital A, Hospital B, or any other hospital. Do not say "Hospital A ya B" or "क्या आप Hospital A जाना चाहेंगे या Hospital B?". Start directly with the greeting and then language preference (Hindi or Gujarati).
-
-────────────────────────
-LANGUAGE RULES (STRICT)
-────────────────────────
-
-- You must speak ONLY in Hindi and Gujarati.
-- You must NEVER use English.
-- At the beginning of every conversation, say:
-
-Hindi:
-"नमस्ते, मैं ${hospital.name} से नेहा बोल रही हूँ। आप हिंदी में बात करना चाहेंगे या गुजराती में?"
-
-Gujarati:
-"નમસ્તે, હું ${hospital.name}થી નેહા બોલી રહી છું। તમે હિન્દી કે ગુજરાતી માં વાત કરશો?"
-
-- Wait for the user's preference.
-- After the user chooses a language, use ONLY that language for the entire conversation.
-- Never switch languages.
-
-────────────────────────
-APPOINTMENT BOOKING FLOW
-────────────────────────
-
-You must collect details in a natural, friendly, step-by-step manner.
-
-1) Ask Reason for Call
-
-Hindi:
-"आप किस समस्या के लिए कॉल कर रहे हैं?"
-
-Gujarati:
-"તમે કઈ સમસ્યા માટે ફોન કર્યો છે?"
-
-Save exact words as: Reason
-
-Translate Reason to English for database.
-
-2) Ask Existing or New Patient
-
-Hindi:
-"क्या आप पहले यहां इलाज करा चुके हैं?"
-
-Gujarati:
-"શું તમે પહેલાં અહીં સારવાર લીધી છે?"
-
-If YES → Existing Patient
-If NO → New Patient
-
-3) Existing Patient Flow
-
-${callerNumberForPrompt ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
-- Ask the caller if this is their registered mobile number (confirm once).
-
-Hindi: "क्या यही नंबर आपका रजिस्टर्ड नंबर है?"
-Gujarati: "શું આ જ નંબર તમારો રજિસ્ટર્ડ નંબર છે?"
-
-- If caller says YES: Call fetch_patient_by_phone with this number: ${callerNumberForPrompt}. If found → say "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए।" / "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો." After they confirm name and age, save patient._id, then doctor/date/time and create appointment with Step 1 Reason. If NOT found → say they are not registered with this number and ask to register as new (Go to Step 4).
-- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.` : `Ask Mobile Number.
-
-Hindi:
-"अपना मोबाइल नंबर बताइए।"
-
-Gujarati:
-"તમારો મોબાઇલ નંબર આપો."
-
-Use:
-fetch_patient_by_phone(phoneNumber)`}
-
-If found:
-Tell the caller their previous record is found, then ask name and age to confirm.
-
-Hindi: "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए ताकि हम कन्फर्म कर लें।"
-Gujarati: "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો જેથી અમે કન્ફર્મ કરી લઈએ."
-
-After they say name and age (match with patient record), confirm and save patient._id. Then proceed to doctor selection, date, time and create_appointment. Always use Step 1 Reason (this call's reason) in create_appointment — never use old patient reason.
-
-If not found:
-Ask to register as new.
-If yes → Go to Step 4
-
-4) New Patient Registration
-
-Collect one by one (in a natural conversation):
-
-- Name (confirm spelling)
-- Age
-- Gender (must be exactly one of: "Male", "Female", "Other")
-- Mobile Number
-
-Do NOT try to send date of birth in the tool call. You can talk about it with the caller, but the tool does not accept a dateOfBirth field.
-
-After collecting these and after Step 1 Reason is known, call:
-
-create_patient({
-  fullName: \${patientName},
-  age: \${patientAge},
-  gender: \${gender},
-  phoneNumber: \${mobileNumber},  // or leave blank to use the caller's number from the call
-  reason: \${Reason}              // use the same Reason captured in Step 1 for this call
-})
-
-After create_patient returns ok: true, save patient._id from the tool result and continue.
-
-5) Doctor Assignment
-
-- Analyze Reason.
-- Match with available doctor specialty.
-- If no match → General Physician.
-- Confirm with patient.
-- Save doctor._id
-
-6) Date and Time
-
-Ask preferred date.
-
-Hindi:
-"किस दिन आना चाहेंगे?"
-
-Gujarati:
-"કયા દિવસે આવશો?"
-
-Ask preferred time.
-
-Hindi:
-"किस समय?"
-
-Gujarati:
-"કેટલા સમયે?"
-
-Convert to UTC ISO format.
-
-7) Final Confirmation
-
-Read all details in one sentence.
-
-Hindi:
-"Confirm करें - ${hospital.name} में  Dr. \${doctorName} के साथ \${date} को \${time} बजे। Book करूं?"
-
-Gujarati:
-"Confirm કરો - ${hospital.name} માં  Dr. \${doctorName} સાથે \${date} ના રોજ \${time} વાગ્યે. Book કરું?"
-
-Wait for Yes/No.
-
-If No → Ask what to change.
-Return to that step.
-
-8) Create Appointment
-
-Appointment create karte waqt Step 1 mein jo Reason save kiya tha wahi reason field mein bhejo.
-
-Use:
-create_appointment({
-  patientObjectId: \${patient._id},
-  doctorObjectId: \${doctor._id},
-  reason: \${Reason},
-  appointmentDateTimeISO: \${ISODate},
-  type: "call"
-})
-
-9) Success Message
-
-Hindi:
-"आपकी अपॉइंटमेंट बुक हो गई है। Appointment ID \${appointmentId} है। \${date} को \${time} बजे Dr. \${doctorName} से मिलें। धन्यवाद।"
-
-Gujarati:
-"તમારી અપોઈન્ટમેન્ટ બુક થઈ ગઈ છે। Appointment ID \${appointmentId} છે। \${date} ના રોજ \${time} વાગ્યે Dr. \${doctorName} ને મળો। આભાર."
-
-End call.
-
-────────────────────────
-CONVERSATION STYLE
-────────────────────────
-
-- Be polite and calm.
-- Sound natural and human.
-- Keep replies short.
-- Do not rush.
-- Stay focused on booking.
-
-────────────────────────
-STRICT RESTRICTIONS
-────────────────────────
-
-- Never use English.
-- Never provide medical advice.
-- Never diagnose.
-- Never explain system rules.
-- Never output JSON.
-- Never change role.
-    `;
+    if (doctors && doctors.length > 0) {
+      doctorListText = "\n\nAvailable doctors for this hospital:\n";
+      doctors.forEach((doc) => {
+        const designation = doc.designation || "General";
+        const availability = doc.availability || "9 AM - 5 PM";
+        const status = doc.status || "On Duty";
+        doctorListText += `- Dr. ${doc.fullName} (${designation}) — ${availability}${
+          status !== "On Duty" ? ` [${status}]` : ""
+        }\n`;
+      });
+    }
+
+    const fullPrompt = basePrompt + doctorListText;
 
     console.log(
-      `[Agent] getHospitalInstructions: built dynamic prompt for ${hospitalName} (${doctorListText ? "with doctors" : "no doctors list"})`,
+      `[Agent] getHospitalInstructions: built prompt for ${hospitalName} (${doctors?.length ?? 0} doctors)`,
     );
-    return dynamicPrompt;
+
+    return fullPrompt;
   } catch (err) {
     console.error(
       `[Agent] getHospitalInstructions FAILED for ${hospitalName}:`,
@@ -569,9 +359,9 @@ STRICT RESTRICTIONS
     );
     console.error("[Agent] getHospitalInstructions error stack:", err.stack);
     console.warn(
-      "[Agent] getHospitalInstructions: using HOSPITAL_PROMPT fallback (inner catch)",
+      "[Agent] getHospitalInstructions: using fallback prompt (inner catch)",
     );
-    return HOSPITAL_PROMPT;
+    return fallbackPrompt;
   }
 };
 
@@ -607,8 +397,8 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     return;
   }
 
-  // Hospital instructions are built when call starts (so we can include caller number)
-  let hospitalInstructions = HOSPITAL_PROMPT;
+  // Hospital instructions are built when call starts
+  let hospitalInstructions = buildHospitalAgentPrompt("Hospital");
 
   // =========================
   // Realtime tools (function calling) to integrate DB actions
@@ -618,7 +408,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
       type: "function",
       name: "fetch_patient_by_patientId",
       description:
-        "Find the patient using patientId (e.g. P-2026-000001) for the current hospital. Lookup is by patientId only. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
+        "Find the patient using patientId (e.g. P-2026-000001) for the current hospital. Lookup is by patientId only. Returns the patient record including _id.",
       parameters: {
         type: "object",
         properties: {
@@ -635,7 +425,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
       type: "function",
       name: "fetch_patient_by_phone",
       description:
-        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller says they are an existing patient and provides their phone number. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
+        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller says they are an existing patient and provides their phone number. Returns the patient record including _id.",
       parameters: {
         type: "object",
         properties: {
@@ -651,31 +441,9 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     },
     {
       type: "function",
-      name: "create_patient",
-      description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {
-          fullName: { type: "string" },
-          age: { type: "number" },
-          gender: { type: "string", enum: ["Male", "Female", "Other"] },
-          phoneNumber: {
-            type: "string",
-            description:
-              "Optional. If omitted or 'not provided', the system uses the phone number Exotel received the call from.",
-          },
-          reason: { type: "string" },
-        },
-        required: ["fullName", "age", "gender", "reason"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
       name: "list_doctors",
       description:
-        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status. Use this list to pick the doctor whose designation matches the patient's illness, then use that doctor's _id as doctorObjectId when calling create_appointment.",
+        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status.",
       parameters: {
         type: "object",
         properties: {},
@@ -686,7 +454,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
       type: "function",
       name: "search_doctors",
       description:
-        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id. To get the full list first, use list_doctors instead. Use the selected doctor's _id as doctorObjectId when calling create_appointment.",
+        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id. To get the full list first, use list_doctors instead.",
       parameters: {
         type: "object",
         properties: {
@@ -694,44 +462,6 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           limit: { type: "number", default: 10 },
         },
         required: ["query"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "create_appointment",
-      description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/reason the caller stated during this call (step 2)—do not use a pre-set or stored value; take it from what the caller said.",
-      parameters: {
-        type: "object",
-        properties: {
-          doctorObjectId: {
-            type: "string",
-            description:
-              "The doctor's _id from list_doctors result (MongoDB ObjectId)",
-          },
-          patientObjectId: {
-            type: "string",
-            description:
-              "The patient's _id from fetch_patient_by_patientId, fetch_patient_by_phone, or create_patient result (MongoDB ObjectId)",
-          },
-          reason: {
-            type: "string",
-            description:
-              "The illness/reason the caller stated during the call (what they said when asked about their problem). Do not use patient record reason—use only what was said in this call.",
-          },
-          appointmentDateTimeISO: {
-            type: "string",
-            description: "UTC ISO string, e.g. 2026-02-12T12:00:00.000Z",
-          },
-          type: { type: "string", default: "call" },
-        },
-        required: [
-          "doctorObjectId",
-          "patientObjectId",
-          "reason",
-          "appointmentDateTimeISO",
-        ],
         additionalProperties: false,
       },
     },
@@ -1143,91 +873,6 @@ app.ws("/media/:hospitalId", async (ws, req) => {
               return await sendToolOutput(callId, out);
             }
 
-            if (name === "create_patient") {
-              const fullName = String(args.fullName || "").trim();
-              const age = Number(args.age);
-              const gender = String(args.gender || "").trim();
-              const reason = String(args.reason || "").trim();
-              // Use Exotel caller number (number that called in); fall back to what model collected
-              const argsPhone = String(args.phoneNumber || "").trim();
-              const fromCall =
-                callerPhone && callerPhone !== "unknown" ? callerPhone : "";
-              const phoneNumber =
-                fromCall ||
-                (argsPhone && argsPhone.toLowerCase() !== "not provided"
-                  ? argsPhone
-                  : "");
-              console.log("[Agent] create_patient inputs:", {
-                fullName,
-                age,
-                gender,
-                phoneNumberFromArgs: argsPhone,
-                callerPhoneFromExotel: callerPhone,
-                phoneNumberUsed: phoneNumber,
-                reason,
-              });
-              if (
-                !fullName ||
-                !Number.isFinite(age) ||
-                age < 0 ||
-                !phoneNumber ||
-                !reason
-              ) {
-                console.log(
-                  "[Agent] create_patient validation failed: missing/invalid fields",
-                );
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Missing/invalid patient fields.",
-                });
-              }
-              const year = new Date().getFullYear();
-              const prefix = `P-${year}-`;
-              const last = await PatientModel.findOne({
-                patientId: new RegExp(`^${prefix}`),
-              })
-                .sort({ patientId: -1 })
-                .select("patientId")
-                .lean();
-              const nextNum = last
-                ? parseInt(String(last.patientId).slice(prefix.length), 10) + 1
-                : 1;
-              const patientId = `${prefix}${String(nextNum).padStart(6, "0")}`;
-              console.log(
-                "[Agent] Creating patient in DB with patientId:",
-                patientId,
-              );
-              const patient = await PatientModel.create({
-                hospital: hospitalObjectId,
-                patientId,
-                fullName,
-                age,
-                gender,
-                phoneNumber,
-                reason,
-              });
-              const out = {
-                ok: true,
-                patient: {
-                  _id: String(patient._id),
-                  patientId: patient.patientId,
-                  fullName: patient.fullName,
-                  age: patient.age,
-                  gender: patient.gender,
-                  phoneNumber: patient.phoneNumber,
-                  reason: patient.reason,
-                  hospital: String(patient.hospital || ""),
-                },
-              };
-              console.log(
-                "[Agent] create_patient: CREATED | _id:",
-                out.patient._id,
-                "| patientId:",
-                out.patient.patientId,
-              );
-              return await sendToolOutput(callId, out);
-            }
-
             if (name === "list_doctors") {
               console.log(
                 "[Agent] list_doctors: fetching ALL doctors for hospital:",
@@ -1249,13 +894,13 @@ app.ws("/media/:hospitalId", async (ws, req) => {
               console.log(
                 "[Agent] list_doctors: DB returned",
                 doctors.length,
-                "doctors. Full list (use _id to book):",
+                "doctors for this hospital:",
                 JSON.stringify(doctorsPayload, null, 2),
               );
               return await sendToolOutput(callId, {
                 ok: true,
                 doctors: doctorsPayload,
-                message: `List of ${doctors.length} doctor(s). Pick the doctor whose designation matches the patient's illness, then use that doctor's _id as doctorObjectId in create_appointment.`,
+                message: `List of ${doctors.length} doctor(s) for this hospital.`,
               });
             }
 
@@ -1307,145 +952,12 @@ app.ws("/media/:hospitalId", async (ws, req) => {
                 status: d.status,
               }));
               console.log(
-                "[Agent] search_doctors: sending to ChatGPT (each doctor has _id for create_appointment):",
+                "[Agent] search_doctors: sending to ChatGPT (each doctor has _id for reference):",
                 JSON.stringify(doctorsPayload, null, 2),
               );
               return await sendToolOutput(callId, {
                 ok: true,
                 doctors: doctorsPayload,
-              });
-            }
-
-            if (name === "create_appointment") {
-              const doctorObjectId = String(args.doctorObjectId || "").trim();
-              const patientObjectId = String(args.patientObjectId || "").trim();
-              const reason = String(args.reason || "").trim();
-              const appointmentDateTimeISO = String(
-                args.appointmentDateTimeISO || args.appointmentDateTime || "",
-              ).trim();
-              const type = String(args.type || "call").trim() || "call";
-              console.log(
-                "[Agent] create_appointment: ChatGPT sent doctorObjectId:",
-                doctorObjectId,
-                "patientObjectId:",
-                patientObjectId,
-                "reason:",
-                reason,
-                "appointmentDateTimeISO:",
-                appointmentDateTimeISO,
-              );
-              if (
-                !mongoose.isValidObjectId(doctorObjectId) ||
-                !mongoose.isValidObjectId(patientObjectId)
-              ) {
-                console.log(
-                  "[Agent] create_appointment: REJECTED - invalid ObjectId (doctorObjectId valid:",
-                  mongoose.isValidObjectId(doctorObjectId),
-                  "patientObjectId valid:",
-                  mongoose.isValidObjectId(patientObjectId),
-                  ")",
-                );
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Invalid doctor or patient id.",
-                });
-              }
-              const dt = new Date(appointmentDateTimeISO);
-              if (Number.isNaN(dt.getTime()))
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Invalid appointmentDateTimeISO.",
-                });
-              if (!reason)
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Reason is required.",
-                });
-
-              const [doctor, patient] = await Promise.all([
-                DoctorModel.findOne({
-                  _id: doctorObjectId,
-                  hospital: hospitalObjectId,
-                }).lean(),
-                PatientModel.findOne({
-                  _id: patientObjectId,
-                  hospital: hospitalObjectId,
-                }).lean(),
-              ]);
-              console.log(
-                "[Agent] create_appointment: Doctor lookup by _id:",
-                doctorObjectId,
-                "->",
-                doctor ? "FOUND" : "NOT FOUND",
-                doctor
-                  ? { _id: String(doctor._id), fullName: doctor.fullName }
-                  : "",
-              );
-              console.log(
-                "[Agent] create_appointment: Patient lookup by _id:",
-                patientObjectId,
-                "->",
-                patient ? "FOUND" : "NOT FOUND",
-                patient
-                  ? { _id: String(patient._id), fullName: patient.fullName }
-                  : "",
-              );
-              if (!doctor)
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Doctor not found for this hospital.",
-                });
-              if (!patient)
-                return await sendToolOutput(callId, {
-                  ok: false,
-                  message: "Patient not found for this hospital.",
-                });
-
-              const year = new Date().getFullYear();
-              const prefix = `A-${year}-`;
-              const last = await AppointmentModel.findOne({
-                appointmentId: new RegExp(`^${prefix}`),
-              })
-                .sort({ appointmentId: -1 })
-                .select("appointmentId")
-                .lean();
-              const nextNum = last
-                ? parseInt(
-                    String(last.appointmentId).slice(prefix.length),
-                    10,
-                  ) + 1
-                : 1;
-              const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
-              const appointmentPayload = {
-                hospital: hospitalObjectId,
-                appointmentId,
-                patient: patientObjectId,
-                doctor: doctorObjectId,
-                reason,
-                status: "Upcoming",
-                type,
-                appointmentDateTime: dt,
-              };
-              console.log(
-                "[Agent] create_appointment: exact payload before save to database:",
-              );
-              console.log(JSON.stringify(appointmentPayload, null, 2));
-              const appointment =
-                await AppointmentModel.create(appointmentPayload);
-              return await sendToolOutput(callId, {
-                ok: true,
-                appointment: {
-                  _id: String(appointment._id),
-                  appointmentId: appointment.appointmentId,
-                  hospital: String(appointment.hospital || ""),
-                  patient: String(appointment.patient),
-                  doctor: String(appointment.doctor),
-                  reason: appointment.reason,
-                  status: appointment.status,
-                  type: appointment.type,
-                  appointmentDateTime:
-                    appointment.appointmentDateTime?.toISOString?.() || null,
-                },
               });
             }
 
@@ -2089,8 +1601,87 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", async () => {
     console.log("[Exotel] WebSocket disconnected");
+
+    // Post-call: transcript-based extraction and DB writes
+    try {
+      const hospitalId = hospital._id.toString();
+      const hospitalName = hospital.name;
+
+      let normalizedPhone = null;
+      if (callerPhone && callerPhone !== "unknown") {
+        const digits = String(callerPhone).replace(/\D/g, "");
+        if (digits.length >= 10) normalizedPhone = digits.slice(-10);
+        else if (digits.length > 0) normalizedPhone = digits;
+      }
+
+      let existingPatientsByPhone = [];
+      if (normalizedPhone) {
+        const phoneNumber = normalizedPhone;
+        const variants = [phoneNumber, "0" + phoneNumber];
+        const patients = await PatientModel.find({
+          hospital: hospital._id,
+          phoneNumber: { $in: variants },
+        })
+          .select("_id patientId fullName phoneNumber")
+          .lean();
+
+        existingPatientsByPhone = patients.map((p) => ({
+          patientId: p.patientId,
+          patientObjectId: String(p._id),
+          fullName: p.fullName,
+          phoneNumber: p.phoneNumber,
+        }));
+      }
+
+      const doctors = await DoctorModel.find({ hospital: hospital._id })
+        .select("_id doctorId fullName designation")
+        .lean();
+
+      const doctorsForHospital = doctors.map((d) => ({
+        doctorId: d.doctorId || "",
+        doctorObjectId: String(d._id),
+        fullName: d.fullName,
+        designation: d.designation || "",
+      }));
+
+      const appointmentExtractionInput = {
+        hospitalId,
+        hospitalName,
+        callerPhone: normalizedPhone,
+        transcript: callTranscript,
+        existingPatientsByPhone,
+        doctorsForHospital,
+      };
+
+      let extractionResult = null;
+      try {
+        extractionResult = await extractAppointmentFromTranscript(
+          appointmentExtractionInput,
+        );
+      } catch (err) {
+        console.error("[PostCall] Extraction failed:", err.message, err.stack);
+      }
+
+      if (extractionResult) {
+        try {
+          await processAppointmentExtraction(hospitalId, extractionResult);
+        } catch (err) {
+          console.error(
+            "[PostCall] processAppointmentExtraction failed:",
+            err.message,
+            err.stack,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        "[PostCall] Unexpected error during post-call handling:",
+        err,
+      );
+    }
+
     if (!callSummaryWritten && callTranscript.length > 0) {
       let details = appointmentDetails;
       if (!details) {
