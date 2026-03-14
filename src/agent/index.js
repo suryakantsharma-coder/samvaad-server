@@ -1,7 +1,6 @@
 const express = require("express");
 const expressWs = require("express-ws");
 const WebSocket = require("ws");
-const chatgpt = require("openai");
 const mongoose = require("mongoose");
 require("dotenv").config();
 const env = require("../config/env");
@@ -9,153 +8,41 @@ const AppointmentModel = require("../models/appointment.model");
 const HospitalModel = require("../models/hospital.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
-const { extractAppointmentFromTranscript } = require("./chatgpt");
+const {
+  resample8kTo24k,
+  resample24kTo8k,
+  resample8kTo48k,
+  resample48kTo24k,
+  pcm24kToWavBuffer,
+  computeRms,
+  applyNoiseReduction,
+  EXOTEL_CHUNK_BYTES,
+  OPENAI_SAMPLE_RATE,
+  OPENAI_SAMPLE_WIDTH,
+} = require("./audioUtils");
+const { parseAppointmentFromTranscript } = require("./transcriptParser");
+const { getRealtimeTools } = require("./realtimeTools");
 
-// =========================
-// App setup
-// =========================
 const app = express();
 expressWs(app);
 
-// NOTE:
-// Appointment creation is handled live via Realtime tool-calling (create_patient / create_appointment).
-// We do NOT auto-create appointments on call end to avoid duplicates.
-
-// =========================
-// Configuration (use .env; never commit secrets)
-// =========================
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SARVAM_API_KEY = process.env.SARVAM_API_KEY;
 
-// Exotel/Twilio media: 8kHz, 16-bit PCM, 20ms chunks = 320 bytes
-const EXOTEL_SAMPLE_RATE = 8000;
-const EXOTEL_SAMPLE_WIDTH = 2;
-const EXOTEL_CHUNK_MS = 20;
-const EXOTEL_CHUNK_BYTES =
-  ((EXOTEL_SAMPLE_RATE * EXOTEL_CHUNK_MS) / 1000) * EXOTEL_SAMPLE_WIDTH; // 320
-
-// OpenAI Realtime API: 24kHz PCM 16-bit
-const OPENAI_SAMPLE_RATE = 24000;
-const OPENAI_SAMPLE_WIDTH = 2;
-
-// Resample ratio
-const RESAMPLE_UP = OPENAI_SAMPLE_RATE / EXOTEL_SAMPLE_RATE; // 3
-const RESAMPLE_DOWN = EXOTEL_SAMPLE_RATE / OPENAI_SAMPLE_RATE; // 1/3
-
-// =========================
-// Resampling: 8kHz <-> 24kHz (16-bit PCM)
-// =========================
-/**
- * Resample PCM 8kHz -> 24kHz (linear interpolation).
- * @param {Buffer} pcm8k - 16-bit LE PCM at 8kHz
- * @returns {Buffer} 16-bit LE PCM at 24kHz
- */
-function resample8kTo24k(pcm8k) {
-  const numSamples8k = pcm8k.length / 2;
-  const numSamples24k = Math.floor(numSamples8k * RESAMPLE_UP);
-  const out = Buffer.alloc(numSamples24k * 2);
-  for (let i = 0; i < numSamples24k; i++) {
-    const srcIdx = i / RESAMPLE_UP;
-    const i0 = Math.floor(srcIdx);
-    const i1 = Math.min(i0 + 1, numSamples8k - 1);
-    const frac = srcIdx - i0;
-    const s0 = pcm8k.readInt16LE(i0 * 2);
-    const s1 = pcm8k.readInt16LE(i1 * 2);
-    const sample = Math.round(s0 + frac * (s1 - s0));
-    out.writeInt16LE(sample, i * 2);
-  }
-  return out;
-}
-
-/**
- * Resample PCM 24kHz -> 8kHz (decimate: take every 3rd sample).
- * @param {Buffer} pcm24k - 16-bit LE PCM at 24kHz
- * @returns {Buffer} 16-bit LE PCM at 8kHz
- */
-function resample24kTo8k(pcm24k) {
-  const numSamples24k = pcm24k.length / 2;
-  const numSamples8k = Math.floor(numSamples24k * RESAMPLE_DOWN);
-  const out = Buffer.alloc(numSamples8k * 2);
-  for (let i = 0; i < numSamples8k; i++) {
-    const srcIdx = i * RESAMPLE_UP;
-    const idx = Math.min(Math.floor(srcIdx), numSamples24k - 1);
-    const sample = pcm24k.readInt16LE(idx * 2);
-    out.writeInt16LE(sample, i * 2);
-  }
-  return out;
-}
-
-// =========================
-// Option A: Sarvam STT input -> text -> OpenAI Realtime -> output voice
-// =========================
 const USE_TRANSCRIPT_ONLY = true;
 const USE_SARVAM_STREAMING_STT = true;
 const USE_SARVAM_TTS_FOR_OUTPUT = true;
 const USE_NOISE_REDUCTION = true;
-// Noise gate: frames with RMS below this are zeroed (reduces background noise). Tunable via env or constant.
+/** RNNoise (WASM) between Exotel and STT: Exotel -> RNNoise -> STT (Sarvam) -> ... */
+const USE_RNNOISE = true;
 const NOISE_GATE_THRESHOLD = 180;
-// Silence after speech before we finalize (REST: one big WAV; Streaming: send flush).
 const TRANSCRIPT_ONLY_SILENCE_MS = USE_SARVAM_STREAMING_STT ? 250 : 400;
 const TRANSCRIPT_ONLY_SPEECH_THRESHOLD = 350;
 const TRANSCRIPT_ONLY_MIN_DURATION_MS = 200;
-// Streaming: send audio to Sarvam WS every N ms worth of PCM (24kHz 16-bit).
 const STREAMING_CHUNK_MS = 120;
 const STREAMING_CHUNK_BYTES_24K =
   (STREAMING_CHUNK_MS / 1000) * OPENAI_SAMPLE_RATE * OPENAI_SAMPLE_WIDTH;
 
-/** Build WAV buffer from 24kHz 16-bit mono PCM (for Sarvam STT). */
-function pcm24kToWavBuffer(pcm24k) {
-  const numSamples = pcm24k.length / 2;
-  const dataSize = numSamples * 2;
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + dataSize, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(1, 22); // mono
-  header.writeUInt32LE(24000, 24);
-  header.writeUInt32LE(48000, 28); // byte rate
-  header.writeUInt16LE(2, 32);
-  header.writeUInt16LE(16, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(dataSize, 40);
-  return Buffer.concat([header, pcm24k]);
-}
-
-/** RMS of 16-bit LE PCM (for VAD). */
-function computeRms(pcmBuffer) {
-  let sum = 0;
-  const n = pcmBuffer.length / 2;
-  for (let i = 0; i < n; i++) {
-    const s = pcmBuffer.readInt16LE(i * 2);
-    sum += s * s;
-  }
-  return n > 0 ? Math.sqrt(sum / n) : 0;
-}
-
-/**
- * Simple noise reduction: noise gate on 24kHz 16-bit LE PCM.
- * Frames (20ms) with RMS below NOISE_GATE_THRESHOLD are zeroed to reduce background noise.
- * For stronger suppression, consider RNNoise/Speex integration later.
- */
-function applyNoiseReduction(pcm24k) {
-  const frameMs = 20;
-  const frameBytes =
-    (frameMs / 1000) * OPENAI_SAMPLE_RATE * OPENAI_SAMPLE_WIDTH;
-  const out = Buffer.from(pcm24k);
-  for (let i = 0; i < out.length; i += frameBytes) {
-    const frame = out.subarray(i, Math.min(i + frameBytes, out.length));
-    const rms = computeRms(frame);
-    if (rms < NOISE_GATE_THRESHOLD) {
-      frame.fill(0);
-    }
-  }
-  return out;
-}
-
-/** Transcribe audio (WAV buffer) via Sarvam STT API. */
 async function transcribeWithSarvam(wavBuffer) {
   if (!SARVAM_API_KEY) {
     console.warn("[Agent] SARVAM_API_KEY not set; skipping Sarvam STT");
@@ -180,100 +67,8 @@ async function transcribeWithSarvam(wavBuffer) {
   }
 }
 
-// Sarvam Streaming STT WebSocket (per Sarvam docs: wss://api.sarvam.ai/speech-to-text/ws)
 const SARVAM_WS_BASE = "wss://api.sarvam.ai/speech-to-text/ws";
-// Sarvam Streaming TTS WebSocket (per Sarvam docs: wss://api.sarvam.ai/text-to-speech/ws)
 const SARVAM_TTS_WS_BASE = "wss://api.sarvam.ai/text-to-speech/ws";
-
-// =========================
-// Parse appointment details from call transcript (for JSON log)
-// =========================
-function parseAppointmentFromTranscript(callTranscript, callerPhone) {
-  const fullText = callTranscript.map((t) => t.text).join(" ");
-  if (!fullText) return null;
-
-  // Prefer last mention of Hospital A/B (usually in confirmation)
-  const hospitalMatches = [...fullText.matchAll(/\bHospital\s+([AB])\b/gi)];
-  const hospital = hospitalMatches.length
-    ? `Hospital ${hospitalMatches[hospitalMatches.length - 1][1].toUpperCase()}`
-    : null;
-
-  const drMatch = fullText.match(/\bDr\.\s+([A-Za-z\s]+?)(?:\s+\(|,|\.|$)/);
-  const doctorName = drMatch ? drMatch[1].trim() : null;
-
-  // Patient name: "patient Sureshkant, age", "Patient: X", "मरीज का नाम X", etc.
-  let patientName =
-    fullText.match(/\bpatient\s+([A-Za-z]+)\s*(?:,|\.|\s+age)/i)?.[1] ||
-    fullText
-      .match(
-        /(?:patient|मरीज|રોગી)[\s:]+([A-Za-z\u0900-\u0DFF\s]+?)(?:\s*[,.]|\s+age|\s+उम्र|$)/i,
-      )?.[1]
-      ?.trim() ||
-    fullText
-      .match(/(?:patient|Patient):\s*([A-Za-z\s]+?)(?:\s*[,.]|\s+age|$)/i)?.[1]
-      ?.trim() ||
-    fullText.match(
-      /(?:confirmed for|with)\s+([A-Za-z]+)\s*(?:,|\.|age)/i,
-    )?.[1] ||
-    null;
-  if (patientName) patientName = patientName.replace(/\s+/g, " ").trim();
-
-  // Age: "age 55", "age: 55", "Age: 55", "उम्र 25", "55 years"
-  const ageMatch =
-    fullText.match(/(?:age|उम्र|ઉંમર)[\s:]*(\d{1,3})/i) ||
-    fullText.match(/(\d{1,3})\s*(?:years?\s+old|साल|વર્ષ)/i) ||
-    fullText.match(/\bage[:\s]+(\d{1,3})\b/i);
-  const patientAge = ageMatch ? parseInt(ageMatch[1], 10) : null;
-
-  // Date: "February 10th", "10th February", "10 February", "Feb 10"
-  const dateMatch =
-    fullText.match(
-      /(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?/i,
-    ) ||
-    fullText.match(
-      /\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)/i,
-    ) ||
-    fullText.match(
-      /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}/i,
-    );
-  const preferredDate = dateMatch ? dateMatch[0].trim() : null;
-
-  // Time: "12 PM", "12:00 PM", "at 12 PM", "10 AM"
-  const timeMatch =
-    fullText.match(/\b(\d{1,2}(?::\d{2})?\s*(?:AM|PM))\b/i) ||
-    fullText.match(/(?:at|time)\s+(\d{1,2})\s*(?:AM|PM)/i);
-  const preferredTime = timeMatch ? timeMatch[1].trim() : null;
-
-  if (
-    !hospital &&
-    !doctorName &&
-    !patientName &&
-    !patientAge &&
-    !preferredDate &&
-    !preferredTime
-  )
-    return null;
-
-  return {
-    hospital,
-    doctorName,
-    patientName: patientName || null,
-    patientAge,
-    phone: callerPhone !== "unknown" ? callerPhone : null,
-    preferredDate,
-    preferredTime,
-    callEndedAt: new Date().toISOString(),
-  };
-}
-
-// =========================
-// System instructions (voice agent) - set VOICE_AGENT_INSTRUCTIONS in .env to override
-// Language: greeting only Hindi; rest Hindi or Gujarati.
-// =========================
-
-// const HOSPITAL_PROMPT = `
-// You are ABC Hospital's Calling Assistant. Speak warm, natural, and human-like (no robotic tone). Your job is to understand the caller's symptoms, suggest the correct department/doctor from the provided list, and help book appointments. Detect language ONLY from the first caller message (English/Hindi/Gujarati) and LOCK it for the entire call (never switch). Respond immediately after the caller finishes speaking: start with a quick acknowledgment in the same language, then continue normally. Do NOT diagnose diseases and do NOT prescribe medicines. If symptoms sound life-threatening (severe chest pain, unconsciousness, heavy bleeding), redirect to the nearest emergency immediately. When booking, ask ONE question at a time in this order: patient name, patient age, phone number, preferred date, preferred time. Use these doctors only: General Medicine: Dr. Amit Sharma (Mon–Sat 10:00AM–2:00PM), Dr. Neha Verma (Mon–Fri 4:00PM–8:00PM). Cardiology: Dr. Rajesh Mehta (Mon–Sat 11:00AM–3:00PM). Orthopedics: Dr. Suresh Iyer (Mon–Fri 10:00AM–1:00PM). Dermatology: Dr. Pooja Malhotra (Tue–Sun 12:00PM–5:00PM). ENT: Dr. Vikram Singh (Mon–Sat 9:00AM–12:00PM). Pediatrics: Dr. Anjali Rao (Mon–Sat 10:00AM–4:00PM). Symptom mapping: Fever/cold/headache/weakness→General Medicine; Chest pain/BP/heart issues→Cardiology; Joint/back pain/fracture→Orthopedics; Skin allergy/rashes/acne→Dermatology; Ear/throat/sinus→ENT; Child-related issues→Pediatrics. IMPORTANT: Always output ONLY valid JSON with exactly 3 keys: intent, action, response. No extra text.
-// `;
 
 const HOSPITAL_PROMPT = `
 You are a Hospital Calling Assistant. Follow this flow strictly.
@@ -310,7 +105,8 @@ const getHospitalInstructions = async (hospital, callerPhone = null) => {
     String(callerPhone).trim() &&
     String(callerPhone).trim().toLowerCase() !== "unknown";
   const callerNumberForPrompt = hasCallerNumber
-    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) || String(callerPhone).trim()
+    ? String(callerPhone).trim().replace(/\D/g, "").slice(-10) ||
+      String(callerPhone).trim()
     : null;
   console.log(
     `[Agent] getHospitalInstructions: fetching for ${hospitalName} (${hospitalId})${hasCallerNumber ? ` caller=${callerNumberForPrompt || callerPhone}` : ""}`,
@@ -417,14 +213,17 @@ If NO → New Patient
 
 3) Existing Patient Flow
 
-${callerNumberForPrompt ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
+${
+  callerNumberForPrompt
+    ? `CALLER NUMBER: The call is from number ending **${callerNumberForPrompt.slice(-4)}** (full: ${callerNumberForPrompt}). Use this first.
 - Ask the caller if this is their registered mobile number (confirm once).
 
 Hindi: "क्या यही नंबर आपका रजिस्टर्ड नंबर है?"
 Gujarati: "શું આ જ નંબર તમારો રજિસ્ટર્ડ નંબર છે?"
 
 - If caller says YES: Call fetch_patient_by_phone with this number: ${callerNumberForPrompt}. If found → say "आपका पिछला रिकॉर्ड मिल गया है। कृपया अपना नाम और उम्र बताइए।" / "તમારો પહેલાનો રેકોર્ડ મળી ગયો છે। કૃપા કરીને તમારું નામ અને ઉમર કહો." After they confirm name and age, save patient._id, then doctor/date/time and create appointment with Step 1 Reason. If NOT found → say they are not registered with this number and ask to register as new (Go to Step 4).
-- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.` : `Ask Mobile Number.
+- If caller says NO or gives another number: Ask "अपना मोबाइल नंबर बताइए।" / "તમારો મોબાઇલ નંબર આપો." then use that number in fetch_patient_by_phone. If found → same as above (previous record found, ask name and age, then book with new reason). If not found → register as new.`
+    : `Ask Mobile Number.
 
 Hindi:
 "अपना मोबाइल नंबर बताइए।"
@@ -433,7 +232,8 @@ Gujarati:
 "તમારો મોબાઇલ નંબર આપો."
 
 Use:
-fetch_patient_by_phone(phoneNumber)`}
+fetch_patient_by_phone(phoneNumber)`
+}
 
 If found:
 Tell the caller their previous record is found, then ask name and age to confirm.
@@ -603,132 +403,7 @@ app.ws("/media/:hospitalId", async (ws, req) => {
   // Hospital instructions are built when call starts (so we can include caller number)
   let hospitalInstructions = HOSPITAL_PROMPT;
 
-  // =========================
-  // Realtime tools (function calling) to integrate DB actions
-  // =========================
-  const tools = [
-    {
-      type: "function",
-      name: "fetch_patient_by_patientId",
-      description:
-        "Find the patient using patientId (e.g. P-2026-000001) for the current hospital. Lookup is by patientId only. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {
-          patientId: {
-            type: "string",
-            description: "Patient ID like P-2026-000001",
-          },
-        },
-        required: ["patientId"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "fetch_patient_by_phone",
-      description:
-        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller says they are an existing patient and provides their phone number. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {
-          phoneNumber: {
-            type: "string",
-            description:
-              "10-digit mobile number as string, e.g. 9876543210 or 8383801256",
-          },
-        },
-        required: ["phoneNumber"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "create_patient",
-      description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {
-          fullName: { type: "string" },
-          age: { type: "number" },
-          gender: { type: "string", enum: ["Male", "Female", "Other"] },
-          phoneNumber: {
-            type: "string",
-            description:
-              "Optional. If omitted or 'not provided', the system uses the phone number Exotel received the call from.",
-          },
-          reason: { type: "string" },
-        },
-        required: ["fullName", "age", "gender", "reason"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "list_doctors",
-      description:
-        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status. Use this list to pick the doctor whose designation matches the patient's illness, then use that doctor's _id as doctorObjectId when calling create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "search_doctors",
-      description:
-        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id. To get the full list first, use list_doctors instead. Use the selected doctor's _id as doctorObjectId when calling create_appointment.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string" },
-          limit: { type: "number", default: 10 },
-        },
-        required: ["query"],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: "function",
-      name: "create_appointment",
-      description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/reason the caller stated during this call (step 2)—do not use a pre-set or stored value; take it from what the caller said.",
-      parameters: {
-        type: "object",
-        properties: {
-          doctorObjectId: {
-            type: "string",
-            description:
-              "The doctor's _id from list_doctors result (MongoDB ObjectId)",
-          },
-          patientObjectId: {
-            type: "string",
-            description:
-              "The patient's _id from fetch_patient_by_patientId, fetch_patient_by_phone, or create_patient result (MongoDB ObjectId)",
-          },
-          reason: {
-            type: "string",
-            description:
-              "The illness/reason the caller stated during the call (what they said when asked about their problem). Do not use patient record reason—use only what was said in this call.",
-          },
-          appointmentDateTimeISO: {
-            type: "string",
-            description: "UTC ISO string, e.g. 2026-02-12T12:00:00.000Z",
-          },
-          type: { type: "string", default: "call" },
-        },
-        required: [
-          "doctorObjectId",
-          "patientObjectId",
-          "reason",
-          "appointmentDateTimeISO",
-        ],
-        additionalProperties: false,
-      },
-    },
-  ];
+  const tools = getRealtimeTools();
 
   let streamSid = null;
   let callerPhone = null;
@@ -755,6 +430,10 @@ app.ws("/media/:hospitalId", async (ws, req) => {
     (TRANSCRIPT_ONLY_MIN_DURATION_MS / 1000) *
     OPENAI_SAMPLE_RATE *
     OPENAI_SAMPLE_WIDTH;
+
+  // RNNoise: one buffered processor per call (lazy init).
+  let rnnoiseProcessorPromise = null;
+  let rnnoiseProcessor = null;
 
   // Sarvam Streaming STT: one WS per call; stream 24k PCM, flush on silence, get transcript.
   let sarvamWs = null;
@@ -1818,9 +1497,33 @@ app.ws("/media/:hospitalId", async (ws, req) => {
         if (!streamSid)
           streamSid = data.streamSid ?? data.media?.streamSid ?? streamSid;
         const pcm8k = Buffer.from(payload, "base64");
-        let pcm24k = resample8kTo24k(pcm8k);
+
+        let pcm24k;
+        if (USE_RNNOISE) {
+          if (!rnnoiseProcessorPromise) {
+            rnnoiseProcessorPromise = import("./rnnoiseNode.mjs").then((m) =>
+              m.createBufferedProcessor(),
+            );
+          }
+          const proc =
+            rnnoiseProcessor ??
+            (rnnoiseProcessor = await rnnoiseProcessorPromise);
+          const pcm48k = resample8kTo48k(pcm8k);
+          const denoised48kChunks = proc.push(pcm48k);
+          if (denoised48kChunks.length === 0) return;
+          const denoised48k = Buffer.concat(denoised48kChunks);
+          pcm24k = resample48kTo24k(denoised48k);
+        } else {
+          pcm24k = resample8kTo24k(pcm8k);
+        }
+
         if (USE_NOISE_REDUCTION) {
-          pcm24k = applyNoiseReduction(pcm24k);
+          pcm24k = applyNoiseReduction(
+            pcm24k,
+            OPENAI_SAMPLE_RATE,
+            20,
+            NOISE_GATE_THRESHOLD,
+          );
         }
 
         if (USE_TRANSCRIPT_ONLY) {
@@ -2044,24 +1747,6 @@ app.ws("/media/:hospitalId", async (ws, req) => {
           streamSid,
         };
         try {
-          //   const fs = require("fs");
-          //   const path = require("path");
-          //   const dir = path.join(process.cwd(), "call_logs");
-          //   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          //   const filename = path.join(
-          //     dir,
-          //     `call_${streamSid || Date.now()}_${Date.now()}.json`,
-          //   );
-          //   fs.writeFileSync(
-          //     filename,
-          //     JSON.stringify(callSummary, null, 2),
-          //     "utf8",
-          //   );
-          //   callSummaryWritten = true;
-          //   console.log(
-          //     "[Exotel] Call transcript and appointment JSON saved:",
-          //     filename,
-          //   );
           console.log(
             `[Exotel] Call stop for ${hospital.name}. (No auto-create on stop)`,
           );
@@ -2168,6 +1853,13 @@ app.get("/health", (req, res) => {
 });
 
 // List available hospitals endpoint (for debugging/config)
+// TODO: Add a flag to enable/disable RNNoise
+// TODO: Add a flag to enable/disable Sarvam streaming STT
+// TODO: Add a flag to enable/disable Sarvam TTS for output
+// TODO: Add a flag to enable/disable OpenAI streaming output
+// TODO: Add a flag to enable/disable OpenAI streaming input
+// TODO: Add a flag to enable/disable OpenAI streaming input
+
 app.get("/hospitals", async (req, res) => {
   try {
     const PORT = env.AGENT_PORT || 5002;
