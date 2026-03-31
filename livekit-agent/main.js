@@ -10,53 +10,9 @@ const { ensureMongoConnected } = require("./dbConnect");
 const HospitalModel = require("../src/models/hospital.model");
 const { getHospitalInstructions } = require("../src/agent/hospitalPrompt");
 
-const API_PORT = parseInt(process.env.PORT, 10) || 3000;
-const HOSPITALS_API_URL =
-  process.env.HOSPITALS_API_URL ||
-  `http://127.0.0.1:${API_PORT}/api/hospitals`;
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
   process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-mini-2025-12-15";
-
-async function resolveHospitalName(roomName) {
-  const prefix = "hospital-";
-  if (!roomName || !roomName.startsWith(prefix)) return "the hospital";
-  const hospitalId = roomName.slice(prefix.length);
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(HOSPITALS_API_URL, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (!res.ok) {
-      console.error(
-        "[LiveKit Agent] /hospitals request failed:",
-        res.status,
-        res.statusText,
-      );
-      return "the hospital";
-    }
-
-    const data = await res.json();
-    const hospitals = (data && data.data && data.data.hospitals) || [];
-    const match = hospitals.find((h) => h.id === hospitalId);
-    if (!match) {
-      console.warn(
-        "[LiveKit Agent] No hospital found for id from roomName:",
-        hospitalId,
-      );
-      return "the hospital";
-    }
-    return match.name || "the hospital";
-  } catch (err) {
-    const msg = err && err.message ? err.message : String(err);
-    console.error("[LiveKit Agent] Failed to fetch hospitals:", msg);
-    if (err && err.name === "AbortError") {
-      console.warn("[LiveKit Agent] Hospitals API timed out (5s), using fallback");
-    }
-    return "the hospital";
-  }
-}
 
 function parseHospitalIdFromRoom(roomName) {
   const prefix = "hospital-";
@@ -89,14 +45,10 @@ const agentDef = defineAgent({
         throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
       }
 
-      const hospitalNameFallback = await resolveHospitalName(roomName);
       const instructions = await getHospitalInstructions(hospital, null);
       console.log(
         "[LiveKit Agent] Loaded hospital:",
-        hospital.name,
-        "(",
-        hospitalNameFallback,
-        ")",
+        hospital.name || hospitalId,
       );
 
       const callerPhone =
