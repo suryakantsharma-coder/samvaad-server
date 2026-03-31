@@ -20,7 +20,6 @@ const env = {
   JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || "7d",
   COOKIE_REFRESH_MAX_AGE: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
   CLOUDFLARE_DOMAIN: process.env.CLOUDFLARE_DOMAIN || null, // e.g., "your-domain.com" or "agent.your-domain.com"
-  AGENT_PORT: parseInt(process.env.AGENT_PORT, 10) || 5002,
 };
 
 module.exports = env;

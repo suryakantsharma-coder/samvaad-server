@@ -10,8 +10,10 @@ const { ensureMongoConnected } = require("./dbConnect");
 const HospitalModel = require("../src/models/hospital.model");
 const { getHospitalInstructions } = require("../src/agent/hospitalPrompt");
 
+const API_PORT = parseInt(process.env.PORT, 10) || 3000;
 const HOSPITALS_API_URL =
-  process.env.HOSPITALS_API_URL || "http://localhost:5002/hospitals";
+  process.env.HOSPITALS_API_URL ||
+  `http://127.0.0.1:${API_PORT}/api/hospitals`;
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
   process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-mini-2025-12-15";

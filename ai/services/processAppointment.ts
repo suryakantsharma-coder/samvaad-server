@@ -3,7 +3,7 @@ import type { AppointmentExtractionOutput } from "../types/appointmentExtraction
 
 // Reuse existing Mongoose models used by the agent
 // Adjust import paths if your models live elsewhere.
-// These mirror the imports in src/agent/index.js.
+// Hospital slot validators (used when confirming appointments from voice/AI flows).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const AppointmentModel = require("../../src/models/appointment.model");
 // eslint-disable-next-line @typescript-eslint/no-var-requires

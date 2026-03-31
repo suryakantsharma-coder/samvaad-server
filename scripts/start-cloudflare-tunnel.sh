@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Cloudflare Tunnel Script for Exotel WebSocket Connections
-# This script starts a Cloudflare tunnel to expose local WebSocket endpoints
+# Cloudflare tunnel — targets local Express (PORT, default 3000).
 
 set -e
 
@@ -30,15 +29,14 @@ if [ ! -f ~/.cloudflared/cert.pem ]; then
     cloudflared tunnel login
 fi
 
-# Get agent port from env or use default
-AGENT_PORT=${AGENT_PORT:-5002}
+API_PORT=${PORT:-3000}
 TUNNEL_NAME=${TUNNEL_NAME:-samvaad-agent}
 
 echo -e "${GREEN}Configuration:${NC}"
 echo "  Tunnel Name: $TUNNEL_NAME"
-echo "  Local Port: $AGENT_PORT"
-echo "  Protocol: HTTP (WebSocket upgrades automatically)"
-echo "  Local URL: http://localhost:$AGENT_PORT"
+echo "  Local Port: $API_PORT"
+echo "  Protocol: HTTP"
+echo "  Local URL: http://localhost:$API_PORT"
 echo ""
 
 # Check if tunnel exists, if not create it
@@ -62,7 +60,7 @@ credentials-file: $CONFIG_DIR/$TUNNEL_NAME.json
 ingress:
   # All traffic (HTTP and WebSocket upgrades)
   - hostname: agent.your-domain.com
-    service: http://localhost:$AGENT_PORT
+    service: http://localhost:$API_PORT
   # Catch-all
   - service: http_status:404
 EOF

@@ -1,25 +1,16 @@
 const path = require("path");
 const express = require("express");
-const expressWs = require("express-ws");
 const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
 const routes = require("./routes");
 const cors = require("cors");
 const app = express();
 
-expressWs(app);
-const { mountFrontendVoice } = require("./agent/frontendVoice");
-const { mountRealtimeVoice } = require("./agent/realtimeVoice");
-mountFrontendVoice(app);
-mountRealtimeVoice(app);
-
 // Serve uploaded files (e.g. hospital logos)
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // allowed origins
 const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:3001",
   "https://samvaad-psi.vercel.app",
 ];
 

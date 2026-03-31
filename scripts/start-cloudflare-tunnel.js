@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Cloudflare Tunnel Starter for Exotel WebSocket Connections
- * Starts a cloudflared tunnel to expose local WebSocket endpoints
+ * Cloudflare Tunnel — exposes the local Express API (PORT, default 3000).
  */
 
 const { spawn } = require('child_process');
@@ -10,7 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const AGENT_PORT = process.env.AGENT_PORT || 5002;
+const LOCAL_PORT = parseInt(process.env.PORT, 10) || 3000;
 const TUNNEL_NAME = process.env.CLOUDFLARE_TUNNEL_NAME || 'samvaad-agent';
 
 console.log('\n🌐 Starting Cloudflare Tunnel for Exotel WebSocket Connections\n');
@@ -69,9 +68,9 @@ function ensureTunnel() {
 function startTunnel() {
   console.log('Configuration:');
   console.log(`  Tunnel Name: ${TUNNEL_NAME}`);
-  console.log(`  Local Port: ${AGENT_PORT}`);
-  console.log(`  Protocol: HTTP (WebSocket upgrades automatically)`);
-  console.log(`  Local URL: http://localhost:${AGENT_PORT}\n`);
+  console.log(`  Local Port: ${LOCAL_PORT}`);
+  console.log(`  Protocol: HTTP`);
+  console.log(`  Local URL: http://localhost:${LOCAL_PORT}\n`);
   
   console.log('🚀 Starting Cloudflare tunnel...');
   console.log('Press Ctrl+C to stop\n');

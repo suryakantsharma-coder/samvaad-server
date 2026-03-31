@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Quick Cloudflare Tunnel - No domain setup required
-# Perfect for localhost testing with Exotel
+# Quick Cloudflare Tunnel — exposes local Express (PORT, default 3000).
 
 set -e
 
@@ -10,7 +9,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-AGENT_PORT=${AGENT_PORT:-5002}
+API_PORT=${PORT:-3000}
 
 echo -e "${GREEN}🚀 Starting Quick Cloudflare Tunnel${NC}\n"
 echo -e "${YELLOW}This creates a temporary public URL for your local server${NC}\n"
@@ -25,14 +24,14 @@ if ! command -v cloudflared &> /dev/null; then
 fi
 
 echo "Configuration:"
-echo "  Local Port: $AGENT_PORT"
-echo "  Protocol: HTTP (WebSocket upgrades automatically)"
-echo "  Local URL: http://localhost:$AGENT_PORT"
+echo "  Local Port: $API_PORT"
+echo "  Protocol: HTTP"
+echo "  Local URL: http://localhost:$API_PORT"
 echo ""
 echo -e "${GREEN}Starting tunnel...${NC}"
 echo -e "${YELLOW}The public URL will be displayed below.${NC}"
-echo -e "${YELLOW}Convert https:// to wss:// for Exotel WebSocket connections${NC}\n"
+echo -e "${YELLOW}Use the printed https:// URL to reach your local API.${NC}\n"
 echo -e "${YELLOW}Press Ctrl+C to stop${NC}\n"
 
 # Start quick tunnel - use HTTP, Cloudflare handles WebSocket upgrade
-cloudflared tunnel --url http://localhost:$AGENT_PORT
+cloudflared tunnel --url http://localhost:$API_PORT

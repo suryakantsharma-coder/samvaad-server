@@ -1,10 +1,7 @@
 /**
- * Shared MongoDB connection for the LiveKit worker (same URI as main Samvaad app).
- * Uses the repo-root mongoose singleton so HospitalModel and other models share this connection
- * (a second mongoose in livekit-agent/node_modules caused buffering timeouts).
+ * MongoDB for the LiveKit worker (same URI as main app, same root node_modules mongoose).
  */
-const path = require("path");
-const mongoose = require(path.join(__dirname, "..", "node_modules", "mongoose"));
+const mongoose = require("mongoose");
 
 let connecting = null;
 

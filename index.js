@@ -1,20 +1,19 @@
 const env = require('./src/config/env');
 const connectDB = require('./src/config/db');
 const app = require('./src/app');
-const { startAgent } = require('./src/agent');
-const { startLiveKitWorker } = require('./src/agent/startLiveKitWorker');
+const {
+  startLiveKitWorker,
+  registerWorkerShutdownHooks,
+} = require('./src/startLiveKitWorker');
+
+registerWorkerShutdownHooks();
 
 const start = async () => {
   await connectDB();
   app.listen(env.PORT, () => {
     console.log(`[Samvaad] Server running on port ${env.PORT} (${env.NODE_ENV})`);
+    startLiveKitWorker();
   });
-
-  // Start the WebSocket voice agent (hospital-based media endpoints)
-  await startAgent();
-
-  // LiveKit OpenAI realtime worker (same process tree: npm run dev / npm start)
-  startLiveKitWorker();
 };
 
 start().catch((err) => {

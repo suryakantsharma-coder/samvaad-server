@@ -1,80 +1,39 @@
-# 🚀 Quick Start: Cloudflare Tunnel for Exotel
+# Quick start: Cloudflare Tunnel
 
-## Simple Commands
+Expose your local Express API (listening on `PORT`, default **3000**) to the internet.
 
-### Option 1: Using npm (Recommended)
+## Commands
+
+### Option 1: npm
+
 ```bash
 npm run tunnel:quick
 ```
 
-### Option 2: Direct Command
+### Option 2: Direct
+
 ```bash
-cloudflared tunnel --url http://localhost:5002
+cloudflared tunnel --url http://localhost:3000
 ```
 
-**Important:** Use `http://` not `ws://` - Cloudflare automatically handles WebSocket upgrades!
+(Use another port if `PORT` in `.env` is not 3000.)
 
-### Option 3: Using the Script Directly
+### Option 3: Script
+
 ```bash
 bash scripts/quick-tunnel.sh
 ```
 
-## What You'll See
+`PORT` is read from the environment for the script (defaults to 3000).
 
-When you run the command, you'll see:
+## Custom port
 
-```
-🚀 Starting Quick Cloudflare Tunnel
-
-Configuration:
-  Local Port: 5002
-  Protocol: HTTP (WebSocket upgrades automatically)
-  Local URL: http://localhost:5002
-
-Starting tunnel...
-The public URL will be displayed below.
-
-+--------------------------------------------------------------------------------------------+
-|  Your quick Tunnel has been created! Visit it at:                                         |
-|  https://abc123-def456.trycloudflare.com                                                   |
-+--------------------------------------------------------------------------------------------+
-```
-
-## For Exotel Configuration
-
-1. **Copy the URL** shown (e.g., `https://abc123-def456.trycloudflare.com`)
-
-2. **Convert to WebSocket:**
-   - Change `https://` to `wss://`
-   - Example: `wss://abc123-def456.trycloudflare.com`
-
-3. **Add hospital endpoint:**
-   - Get hospital ID from server startup logs
-   - Add `/media/<hospital-id>` to the URL
-   - Final: `wss://abc123-def456.trycloudflare.com/media/507f1f77bcf86cd799439011`
-
-4. **Use in Exotel:**
-   - Go to Exotel voice app settings
-   - Paste the WebSocket URL
-   - Save
-
-## Important Notes
-
-- ✅ Keep the tunnel running (don't close the terminal)
-- ✅ Keep your server running (`npm run dev`)
-- ✅ The URL changes each time you restart the tunnel
-- ✅ Get hospital IDs from: `http://localhost:5002/hospitals`
-
-## Troubleshooting
-
-**If command not found:**
 ```bash
-# Install cloudflared first
-brew install cloudflared
+PORT=4000 npm run tunnel:quick
 ```
 
-**If port 5002 is not available:**
-```bash
-# Set custom port
-AGENT_PORT=5003 npm run tunnel:quick
-```
+## Notes
+
+- Keep the tunnel process and `npm start` running while testing.
+- Quick tunnel URLs change each time you restart cloudflared.
+- If you use a persistent `~/.cloudflared/config.yml`, set `service: http://localhost:<PORT>` to match your API.

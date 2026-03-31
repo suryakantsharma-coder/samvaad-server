@@ -9,7 +9,4 @@ One entry point starts everything:
 npm start
 ```
 
-This starts:
-
-1. **API server** (Express on `PORT`, default 3000)
-2. **WebSocket voice agent** (hospital-based media on `AGENT_PORT`, default 5002)
+This starts the **API server** (Express on `PORT`, default 3000).
