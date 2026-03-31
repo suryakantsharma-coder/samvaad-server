@@ -6,6 +6,7 @@ const doctorRoutes = require('./doctorRoutes');
 const patientRoutes = require('./patientRoutes');
 const appointmentRoutes = require('./appointmentRoutes');
 const prescriptionRoutes = require('./prescriptionRoutes');
+const livekitRoutes = require('./livekitRoutes');
 
 const router = express.Router();
 
@@ -16,6 +17,7 @@ router.use('/doctors', doctorRoutes);
 router.use('/patients', patientRoutes);
 router.use('/appointments', appointmentRoutes);
 router.use('/prescriptions', prescriptionRoutes);
+router.use('/livekit', livekitRoutes);
 
 router.get('/health', (req, res) => {
   res.json({ success: true, app: 'samvaad', timestamp: new Date().toISOString() });
