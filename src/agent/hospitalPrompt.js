@@ -231,14 +231,25 @@ Gujarati:
 
 
 Hindi:
+
 अगर यूज़र "आज" कहे तो वर्तमान तारीख का उपयोग करें:
 ${new Date().toISOString().split("T")[0]}
 
+अगर यूज़र "कल" कहे तो संदर्भ के अनुसार:
+- अगर भविष्य की बात हो → कल (tomorrow):
+${new Date(Date.now() + 86400000).toISOString().split("T")[0]}
+
 अगर यूज़र बोले "आज की तारीख डालो", तो इसी फ़ॉर्मेट का उपयोग करें।
 
+
 Gujarati:
+
 જો યુઝર "આજ" કહે તો હાલની તારીખનો ઉપયોગ કરો:
 ${new Date().toISOString().split("T")[0]}
+
+જો યુઝર "કાલ" કહે તો સંદર્ભ મુજબ:
+- જો ભવિષ્યની વાત હોય → આવતી કાલ (tomorrow):
+${new Date(Date.now() + 86400000).toISOString().split("T")[0]}
 
 જો યુઝર કહે "આજની તારીખ નાખો", તો આ જ ફોર્મેટનો ઉપયોગ કરો।
 
@@ -308,10 +319,10 @@ create_appointment({
 Step 10 — Success Message
 
 Hindi:
-"आपकी अपॉइंटमेंट बुक हो गई है। Appointment ID [appointmentId from create_appointment] है। [date] को [time] बजे Dr. [doctorName] से मिलें। धन्यवाद।"
+"आपकी अपॉइंटमेंट बुक हो गई है। [date] को [time] बजे Dr. [doctorName] से मिलें। धन्यवाद।"
 
 Gujarati:
-"તમારી અપોઈન્ટમેન્ટ બુક થઈ ગઈ છે। Appointment ID [appointmentId] છે। [date] ના રોજ [time] વાગ્યે Dr. [doctorName] ને મળો। આભાર."
+"તમારી અપોઈન્ટમેન્ટ બુક થઈ ગઈ છે। [date] ના રોજ [time] વાગ્યે Dr. [doctorName] ને મળો। આભાર."
 
 End call.
 
