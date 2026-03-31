@@ -3,8 +3,8 @@
 For the browser UI to talk to **Neha**, your worker must receive a job when a participant joins a room.
 
 1. **Worker**
-   - From repo root: `cd livekit-agent && npm install`
-   - Run `npm run dev` (or `npm run start` for production).
+   - From repo root: `cd livekit-agent && npm install` (LiveKit npm deps; Mongo uses root `mongoose`).
+   - **Default:** the worker also starts when you run **`npm run dev`** or **`npm start`** at the repo root (see `src/agent/startLiveKitWorker.js`). Set **`DISABLE_LIVEKIT_WORKER=1`** in `.env` to skip it, or run `node livekit-agent/main.js dev` alone if you prefer.
    - Same `.env` as the main app: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `OPENAI_API_KEY`, `MONGODB_URI`.
    - Optional: `AGENT_NAME` (default `phone-agent`) must match the agent you register in LiveKit.
 

@@ -2,6 +2,7 @@ const env = require('./src/config/env');
 const connectDB = require('./src/config/db');
 const app = require('./src/app');
 const { startAgent } = require('./src/agent');
+const { startLiveKitWorker } = require('./src/agent/startLiveKitWorker');
 
 const start = async () => {
   await connectDB();
@@ -11,6 +12,9 @@ const start = async () => {
 
   // Start the WebSocket voice agent (hospital-based media endpoints)
   await startAgent();
+
+  // LiveKit OpenAI realtime worker (same process tree: npm run dev / npm start)
+  startLiveKitWorker();
 };
 
 start().catch((err) => {
