@@ -26,7 +26,7 @@ const register = async ({ email, password, name, role = ROLES.USER, hospitalId }
   let normalizedRole = Object.values(ROLES).includes(role) ? role : ROLES.USER;
 
   // Prevent self-registration as admin or moderator; only existing admins can create these roles
-  if ([ROLES.ADMIN, ROLES.MODERATOR].includes(normalizedRole)) {
+  if ([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.MODERATOR].includes(normalizedRole)) {
     const err = new Error('Cannot self-register as admin or moderator');
     err.statusCode = 403;
     throw err;

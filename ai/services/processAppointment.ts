@@ -8,6 +8,10 @@ import type { AppointmentExtractionOutput } from "../types/appointmentExtraction
 const AppointmentModel = require("../../src/models/appointment.model");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PatientModel = require("../../src/models/patient.model");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const {
+  notifyAppointmentBookedById,
+} = require("../../src/services/appointmentWhatsAppNotify");
 
 interface CreateAppointmentArgs {
   hospitalId: string;
@@ -130,7 +134,7 @@ export async function processAppointmentExtraction(
       return;
     }
 
-    await createAppointment({
+    const apptDoc = await createAppointment({
       hospitalId,
       patientObjectId: result.existingPatientObjectId,
       doctorObjectId: result.doctorObjectId,
@@ -138,6 +142,15 @@ export async function processAppointmentExtraction(
       appointmentDateTimeISO: result.appointmentDateTimeISO,
       type: "call",
     });
+
+    void notifyAppointmentBookedById(apptDoc._id).catch((err: Error) =>
+      // eslint-disable-next-line no-console
+      console.error(
+        "[WhatsApp] agent appointment notify:",
+        err.message,
+        (err as { details?: unknown }).details || "",
+      ),
+    );
 
     // eslint-disable-next-line no-console
     console.log(
@@ -176,7 +189,7 @@ export async function processAppointmentExtraction(
       reason: result.reason || "",
     });
 
-    await createAppointment({
+    const apptDoc = await createAppointment({
       hospitalId,
       patientObjectId: String(patient._id),
       doctorObjectId: result.doctorObjectId,
@@ -184,6 +197,15 @@ export async function processAppointmentExtraction(
       appointmentDateTimeISO: result.appointmentDateTimeISO,
       type: "call",
     });
+
+    void notifyAppointmentBookedById(apptDoc._id).catch((err: Error) =>
+      // eslint-disable-next-line no-console
+      console.error(
+        "[WhatsApp] agent appointment notify:",
+        err.message,
+        (err as { details?: unknown }).details || "",
+      ),
+    );
 
     // eslint-disable-next-line no-console
     console.log(

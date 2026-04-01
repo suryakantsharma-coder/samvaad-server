@@ -4,12 +4,20 @@ const ROLES = Object.freeze({
   MODERATOR: 'moderator',
   HOSPITAL_ADMIN: 'hospital_admin',
   ADMIN: 'admin',
+  SUPER_ADMIN: 'super_admin',
 });
 
 /** Roles that are linked to a single hospital at sign-up and must only see that hospital's data. */
 const HOSPITAL_ROLES = Object.freeze([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN]);
 
-const ROLE_HIERARCHY = [ROLES.USER, ROLES.DOCTOR, ROLES.MODERATOR, ROLES.HOSPITAL_ADMIN, ROLES.ADMIN];
+const ROLE_HIERARCHY = [
+  ROLES.USER,
+  ROLES.DOCTOR,
+  ROLES.MODERATOR,
+  ROLES.HOSPITAL_ADMIN,
+  ROLES.ADMIN,
+  ROLES.SUPER_ADMIN,
+];
 
 const hasRoleOrAbove = (userRole, requiredRole) => {
   const userLevel = ROLE_HIERARCHY.indexOf(userRole);

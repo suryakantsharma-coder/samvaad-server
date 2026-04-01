@@ -67,7 +67,7 @@ userSchema.pre('save', async function (next) {
         return next(new Error('Hospital is required for doctor and hospital_admin roles'));
       }
     }
-    if ([ROLES.ADMIN, ROLES.MODERATOR].includes(this.role)) {
+    if ([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.MODERATOR].includes(this.role)) {
       this.hospital = undefined;
     }
   }

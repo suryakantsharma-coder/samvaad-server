@@ -5,6 +5,8 @@ const mongoose = require("mongoose");
 const AppointmentModel = require("../../src/models/appointment.model");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PatientModel = require("../../src/models/patient.model");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { notifyAppointmentBookedById } = require("../../src/services/appointmentWhatsAppNotify");
 
 async function createPatient({
   hospitalId,
@@ -115,7 +117,7 @@ async function processAppointmentExtraction(hospitalId, result) {
       return;
     }
 
-    await createAppointment({
+    const apptDoc = await createAppointment({
       hospitalId,
       patientObjectId: result.existingPatientObjectId,
       doctorObjectId: result.doctorObjectId,
@@ -123,6 +125,11 @@ async function processAppointmentExtraction(hospitalId, result) {
       appointmentDateTimeISO: result.appointmentDateTimeISO,
       type: "call",
     });
+
+    notifyAppointmentBookedById(apptDoc._id).catch((err) =>
+      // eslint-disable-next-line no-console
+      console.error("[WhatsApp] agent appointment notify:", err.message, err.details || ""),
+    );
 
     // eslint-disable-next-line no-console
     console.log(
@@ -161,7 +168,7 @@ async function processAppointmentExtraction(hospitalId, result) {
       reason: result.reason || "",
     });
 
-    await createAppointment({
+    const apptDoc = await createAppointment({
       hospitalId,
       patientObjectId: String(patient._id),
       doctorObjectId: result.doctorObjectId,
@@ -169,6 +176,11 @@ async function processAppointmentExtraction(hospitalId, result) {
       appointmentDateTimeISO: result.appointmentDateTimeISO,
       type: "call",
     });
+
+    notifyAppointmentBookedById(apptDoc._id).catch((err) =>
+      // eslint-disable-next-line no-console
+      console.error("[WhatsApp] agent appointment notify:", err.message, err.details || ""),
+    );
 
     // eslint-disable-next-line no-console
     console.log(

@@ -3,6 +3,7 @@ const Doctor = require('../models/doctor.model');
 const Patient = require('../models/patient.model');
 const mongoose = require('mongoose');
 const { mergeHospitalFilter, getLinkedHospitalForResponse, getHospitalFilter } = require('../utils/hospitalScope');
+const { notifyAppointmentBooked } = require('../services/appointmentWhatsAppNotify');
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -290,9 +291,14 @@ const create = async (req, res, next) => {
     const populated = await Appointment.findById(appointment._id)
       .populate('doctor', 'fullName doctorId designation')
       .populate('patient', 'fullName patientId phoneNumber age gender')
+      .populate('hospital', 'name phoneCountryCode')
       .lean();
 
     res.status(201).json({ success: true, data: { appointment: populated } });
+
+    notifyAppointmentBooked(populated).catch((err) =>
+      console.error('[WhatsApp] appointment booked notify:', err.message, err.details || '')
+    );
   } catch (err) {
     next(err);
   }

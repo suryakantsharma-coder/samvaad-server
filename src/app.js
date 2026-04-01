@@ -11,24 +11,35 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // allowed origins
 const allowedOrigins = [
-  "https://samvaad-psi.vercel.app",
+  // "https://samvaad-psi.vercel.app",
+  "http://localhost:5173",
 ];
 
-// cors policy
+// allow all origins
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: "*",
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   }),
 );
+
+// cors policy
+// app.use(
+//   cors({
+//     origin: function (origin, callback) {
+//       if (!origin || allowedOrigins.includes(origin)) {
+//         callback(null, true);
+//       } else {
+//         callback(new Error("Not allowed by CORS"));
+//       }
+//     },
+//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+//     allowedHeaders: ["Content-Type", "Authorization"],
+//     credentials: true,
+//   }),
+// );
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -39,9 +50,32 @@ const apiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  // Meta WhatsApp webhooks can burst; do not throttle subscription verification or event delivery.
+  skip: (req) => req.originalUrl.includes("/whatsapp/webhook"),
 });
 
-app.use(express.json({ limit: "10kb" }));
+// WhatsApp webhook: larger body limit + raw buffer for X-Hub-Signature-256 (must run before global json).
+const whatsappWebhookJson = express.json({
+  limit: "512kb",
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+});
+
+app.use("/api/whatsapp/webhook", (req, res, next) => {
+  if (req.method === "POST") {
+    return whatsappWebhookJson(req, res, next);
+  }
+  next();
+});
+
+const json10kb = express.json({ limit: "10kb" });
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/api/whatsapp/webhook") {
+    return next();
+  }
+  json10kb(req, res, next);
+});
 app.use(cookieParser());
 app.use("/api", apiLimiter, routes);
 
