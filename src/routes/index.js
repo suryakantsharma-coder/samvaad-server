@@ -8,9 +8,11 @@ const appointmentRoutes = require('./appointmentRoutes');
 const prescriptionRoutes = require('./prescriptionRoutes');
 const livekitRoutes = require('./livekitRoutes');
 const whatsappRoutes = require('./whatsappRoutes');
+const publicRoutes = require('./publicRoutes');
 
 const router = express.Router();
 
+router.use('/public', publicRoutes);
 router.use('/auth', authRoutes);
 router.use('/admin', adminRoutes);
 router.use('/hospitals', hospitalRoutes);

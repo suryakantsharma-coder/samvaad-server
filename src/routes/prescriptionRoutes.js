@@ -10,6 +10,7 @@ const {
   searchQueryParam,
 } = require('../validators/prescription.validator');
 const prescriptionController = require('../controllers/prescriptionController');
+const prescriptionDotController = require('../controllers/prescription.controller');
 
 const router = express.Router();
 
@@ -19,6 +20,18 @@ router.use(requireHospitalLink);
 // List (with filters), search, get by id, update
 router.get('/', requireStaff, prescriptionListQuery, validate, prescriptionController.getAll);
 router.get('/search', requireStaff, searchQueryParam, validate, prescriptionController.search);
+router.get(
+  '/reminders/dashboard',
+  requireStaff,
+  prescriptionDotController.getReminderQueueDashboard,
+);
+router.post(
+  '/:id/schedule-reminders',
+  requireStaff,
+  validObjectId('id'),
+  validate,
+  prescriptionDotController.scheduleRemindersForPrescription,
+);
 router.get('/:id', requireStaff, validObjectId('id'), validate, prescriptionController.getById);
 router.patch('/:id', requireStaff, validObjectId('id'), updatePrescription, validate, prescriptionController.update);
 

@@ -13,6 +13,7 @@
     "tunnel": "node scripts/start-cloudflare-tunnel.js",
     "tunnel:bash": "bash scripts/start-cloudflare-tunnel.sh",
     "tunnel:quick": "bash scripts/quick-tunnel.sh",
+    "reminder-worker": "node src/workers/reminderWorkerEntry.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
@@ -20,12 +21,14 @@
     "@livekit/agents-plugin-openai": "^1.2.1",
     "@livekit/noise-cancellation-node": "^0.1.9",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.72.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "express-rate-limit": "^8.2.1",
     "express-validator": "^7.3.1",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.2",
     "livekit-server-sdk": "^2.15.0",
     "mongoose": "^8.7.0",

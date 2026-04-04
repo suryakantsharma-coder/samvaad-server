@@ -1,6 +1,13 @@
 const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
-const { sendWhatsAppText, normalizeWhatsAppTo } = require("./whatsappCloud");
+const env = require("../config/env");
+const { buildPrescriptionPublicLink } = require("../utils/prescriptionPublicLink");
+const {
+  sendWhatsAppText,
+  sendWhatsAppTemplate,
+  templateBodyNamedParameters,
+  normalizeWhatsAppTo,
+} = require("./whatsappCloud");
 
 /** When / frequency: meal slots + intake; avoid repeating the same text as stored `frequency`. */
 function buildConsumptionSummary(medicine) {
@@ -26,7 +33,6 @@ function buildConsumptionSummary(medicine) {
   const slotsNorm = norm(slots);
   const freqNorm = norm(freq);
 
-  // Stored frequency often equals intake+meals from API normalize — show once.
   if (slots && (freqNorm === slotsNorm || freqNorm.startsWith(slotsNorm + " "))) return freq;
   if (slots && slotsNorm && freqNorm.includes(slotsNorm)) return freq;
   if (slots) return `${slots} • ${freq}`;
@@ -53,6 +59,13 @@ function formatDuration(duration) {
     return u ? `${duration.value} ${u}` : String(duration.value);
   }
   return null;
+}
+
+function formatDoctorDisplayName(fullName) {
+  const name = fullName?.trim();
+  if (!name) return "Doctor";
+  if (/^dr\.?\s/i.test(name)) return name;
+  return `Dr. ${name}`;
 }
 
 function buildPrescriptionWhatsAppText(prescription, hospitalName) {
@@ -116,8 +129,8 @@ function buildPrescriptionWhatsAppText(prescription, hospitalName) {
 }
 
 /**
- * WhatsApp text after prescription create (appointment-linked only).
- * Uses WhatsApp Cloud creds for `prescription.hospital` (same as API booking flow).
+ * WhatsApp after prescription create (appointment-linked only).
+ * Uses NAMED template `PRESCRIPTION_TEMPLATE_NAME` when set (patient_name, doctor_name, link).
  */
 async function notifyPrescriptionCreated(prescription) {
   if (!prescription?.patient?.phoneNumber) {
@@ -148,6 +161,38 @@ async function notifyPrescriptionCreated(prescription) {
   }
 
   const hospitalName = hospital?.name || "Hospital";
+  const patientName =
+    (prescription.patientName && String(prescription.patientName).trim()) ||
+    prescription.patient?.fullName?.trim() ||
+    "Patient";
+
+  let doctorName = "Doctor";
+  const appt = prescription.appointment;
+  if (appt && typeof appt === "object" && appt.doctor && typeof appt.doctor === "object") {
+    doctorName = formatDoctorDisplayName(appt.doctor.fullName);
+  }
+
+  const link = buildPrescriptionPublicLink(prescription._id);
+  const templateName = env.PRESCRIPTION_TEMPLATE_NAME;
+
+  if (templateName) {
+    await sendWhatsAppTemplate({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: prescription.patient.phoneNumber,
+      templateName,
+      languageCode: env.PRESCRIPTION_TEMPLATE_LANG,
+      components: templateBodyNamedParameters({
+        patient_name: patientName,
+        doctor_name: doctorName,
+        link,
+      }),
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+    return;
+  }
+
   const textBody = buildPrescriptionWhatsAppText(prescription, hospitalName);
 
   await sendWhatsAppText({

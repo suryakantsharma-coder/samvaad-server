@@ -4,6 +4,7 @@ const Appointment = require('../models/appointment.model');
 const mongoose = require('mongoose');
 const { mergeHospitalFilter, getLinkedHospitalForResponse, getHospitalFilter } = require('../utils/hospitalScope');
 const { notifyPrescriptionCreated } = require('../services/prescriptionWhatsAppNotify');
+const { schedulePrescriptionReminders } = require('../services/reminder.service');
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -228,9 +229,19 @@ const create = async (req, res, next) => {
     };
 
     const prescription = await Prescription.create(payload);
+
+    const scheduleLean = prescription.toObject();
+    schedulePrescriptionReminders(scheduleLean).catch((err) =>
+      console.error('[Reminder] schedulePrescriptionReminders:', err.message),
+    );
+
     const populated = await Prescription.findById(prescription._id)
       .populate('patient', 'fullName patientId phoneNumber')
-      .populate('appointment', 'appointmentId reason appointmentDateTime')
+      .populate({
+        path: 'appointment',
+        select: 'appointmentId reason appointmentDateTime',
+        populate: { path: 'doctor', select: 'fullName doctorId' },
+      })
       .populate('hospital', 'name phoneCountryCode')
       .lean();
 

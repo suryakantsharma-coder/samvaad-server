@@ -13,6 +13,9 @@ const {
 } = require("../middleware/roles");
 const { validate } = require("../middleware/validate");
 const { validObjectId } = require("../validators/common");
+const {
+  processWhatsAppWebhookBody,
+} = require("../../whatsapp-chat-agent/workers/messageProcessor");
 
 const router = express.Router();
 
@@ -87,6 +90,7 @@ router.post("/webhook", (req, res) => {
 
   try {
     logWhatsAppWebhookPayload(req.body);
+    processWhatsAppWebhookBody(req.body);
   } catch (err) {
     console.error("[WhatsApp] Webhook handler error:", err.message);
   }

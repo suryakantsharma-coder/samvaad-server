@@ -1,7 +1,13 @@
 const Appointment = require("../models/appointment.model");
 const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
-const { sendWhatsAppText, normalizeWhatsAppTo } = require("./whatsappCloud");
+const env = require("../config/env");
+const {
+  sendWhatsAppText,
+  sendWhatsAppTemplate,
+  templateBodyNamedParameters,
+  normalizeWhatsAppTo,
+} = require("./whatsappCloud");
 
 const APPOINTMENT_TZ = "Asia/Kolkata";
 
@@ -14,6 +20,34 @@ function formatAppointmentDateTime(isoDate) {
       year: "numeric",
       month: "long",
       day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return String(isoDate);
+  }
+}
+
+function formatAppointmentDateOnly(isoDate) {
+  if (!isoDate) return "—";
+  try {
+    return new Date(isoDate).toLocaleDateString("en-IN", {
+      timeZone: APPOINTMENT_TZ,
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  } catch {
+    return String(isoDate);
+  }
+}
+
+function formatAppointmentTimeOnly(isoDate) {
+  if (!isoDate) return "—";
+  try {
+    return new Date(isoDate).toLocaleTimeString("en-IN", {
+      timeZone: APPOINTMENT_TZ,
       hour: "numeric",
       minute: "2-digit",
       hour12: true,
@@ -56,8 +90,8 @@ function buildAppointmentConfirmationText(appointment, hospitalName) {
 }
 
 /**
- * After an appointment is created: if the hospital has WhatsApp Cloud creds, notify the patient (text only).
- * Failures are logged only; booking always succeeds.
+ * After an appointment is created: if the hospital has WhatsApp Cloud creds, notify the patient.
+ * Uses NAMED template `APPOINTMENT_TEMPLATE_NAME` when set; otherwise plain text.
  * @param {object} appointment - lean doc with populated `patient`, `doctor`, optional `hospital`
  */
 async function notifyAppointmentBooked(appointment) {
@@ -89,6 +123,33 @@ async function notifyAppointmentBooked(appointment) {
   }
 
   const hospitalName = hospital?.name || "Hospital";
+  const patientName = appointment.patient?.fullName?.trim() || "Valued patient";
+  const doctorDisplay = formatDoctorDisplayName(appointment.doctor?.fullName);
+  const ref = appointment.appointmentId || "—";
+  const dt = appointment.appointmentDateTime;
+
+  const templateName = env.APPOINTMENT_TEMPLATE_NAME;
+
+  if (templateName) {
+    await sendWhatsAppTemplate({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: appointment.patient.phoneNumber,
+      templateName,
+      languageCode: env.APPOINTMENT_TEMPLATE_LANG,
+      components: templateBodyNamedParameters({
+        patient_name: patientName,
+        doctor_name: doctorDisplay,
+        appointment_date: formatAppointmentDateOnly(dt),
+        appointment_time: formatAppointmentTimeOnly(dt),
+        reference_id: ref,
+      }),
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+    return;
+  }
+
   const textBody = buildAppointmentConfirmationText(appointment, hospitalName);
 
   await sendWhatsAppText({
@@ -102,7 +163,7 @@ async function notifyAppointmentBooked(appointment) {
 }
 
 /**
- * Load appointment + relations, then send the same text as API booking (agent / voice flows).
+ * Load appointment + relations, then send the same notification as API booking (agent / voice flows).
  * WhatsApp row is resolved by `hospital` on the appointment (same hospitalId as the agent uses).
  */
 async function notifyAppointmentBookedById(appointmentId) {

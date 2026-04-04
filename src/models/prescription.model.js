@@ -79,6 +79,11 @@ const prescriptionSchema = new mongoose.Schema(
       enum: ['Draft', 'Completed', 'Cancelled'],
       default: 'Draft',
     },
+    /** Set when the post follow-up feedback job completes successfully. */
+    reminderFeedbackCompletedAt: {
+      type: Date,
+      required: false,
+    },
   },
   { timestamps: true }
 );

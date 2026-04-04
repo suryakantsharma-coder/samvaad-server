@@ -92,6 +92,66 @@ async function sendWhatsAppText({
 }
 
 /**
+ * Send an interactive reply-buttons message (max 3 buttons; title max 20 chars each).
+ * @param {object} opts
+ * @param {string} opts.phoneNumberId
+ * @param {string} opts.accessToken
+ * @param {string} opts.to
+ * @param {string} opts.bodyText - main body (max 1024 per Cloud API)
+ * @param {{ id: string, title: string }[]} opts.buttons
+ * @param {string} [opts.defaultCountryDigits]
+ * @param {string} [opts.apiVersion]
+ */
+async function sendWhatsAppInteractiveButtons({
+  phoneNumberId,
+  accessToken,
+  to,
+  bodyText,
+  buttons,
+  defaultCountryDigits,
+  apiVersion,
+}) {
+  const toDigits = defaultCountryDigits
+    ? normalizeWhatsAppTo(to, defaultCountryDigits)
+    : normalizeWhatsAppTo(to);
+  if (!toDigits) {
+    throw new Error("Invalid WhatsApp recipient phone");
+  }
+
+  const list = (Array.isArray(buttons) ? buttons : [])
+    .slice(0, 3)
+    .map((b) => ({
+      type: "reply",
+      reply: {
+        id: String(b.id || "btn").slice(0, 256),
+        title: String(b.title || "OK").slice(0, 20),
+      },
+    }));
+
+  if (!list.length) {
+    throw new Error("sendWhatsAppInteractiveButtons: at least one button required");
+  }
+
+  const body = String(bodyText || "").trim().slice(0, 1024);
+
+  return graphSendMessages({
+    phoneNumberId,
+    accessToken,
+    apiVersion,
+    payload: {
+      messaging_product: "whatsapp",
+      to: toDigits,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: body },
+        action: { buttons: list },
+      },
+    },
+  });
+}
+
+/**
  * Send a template message.
  * @param {object} opts
  * @param {string} opts.phoneNumberId
@@ -152,12 +212,29 @@ function templateBodyParameters(texts) {
   ];
 }
 
+/**
+ * Body component for templates with PARAMETER_FORMAT NAMED ({{patient_name}}, …).
+ * @param {Record<string, string>} namedValues - keys must match template variable names
+ * @returns {{ type: string, parameters: object[] }[]}
+ */
+function templateBodyNamedParameters(namedValues) {
+  const o = namedValues && typeof namedValues === "object" ? namedValues : {};
+  const parameters = Object.keys(o).map((parameter_name) => ({
+    type: "text",
+    text: String(o[parameter_name] ?? ""),
+    parameter_name,
+  }));
+  return [{ type: "body", parameters }];
+}
+
 module.exports = {
   DEFAULT_API_VERSION,
   normalizeWhatsAppTo,
   messagesUrl,
   graphSendMessages,
   sendWhatsAppText,
+  sendWhatsAppInteractiveButtons,
   sendWhatsAppTemplate,
   templateBodyParameters,
+  templateBodyNamedParameters,
 };

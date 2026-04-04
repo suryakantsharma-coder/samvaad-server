@@ -69,9 +69,24 @@ app.use("/api/whatsapp/webhook", (req, res, next) => {
   next();
 });
 
+// Root /whatsapp/webhook (Meta callback without /api) — larger JSON body before global 10kb limit
+const rootWhatsappWebhookJson = express.json({ limit: "512kb" });
+app.use("/whatsapp/webhook", (req, res, next) => {
+  if (req.method === "POST") {
+    return rootWhatsappWebhookJson(req, res, next);
+  }
+  next();
+});
+
+const whatsappRootWebhook = require("./routes/whatsappRootWebhook");
+app.use(whatsappRootWebhook);
+
 const json10kb = express.json({ limit: "10kb" });
 app.use((req, res, next) => {
   if (req.method === "POST" && req.path === "/api/whatsapp/webhook") {
+    return next();
+  }
+  if (req.method === "POST" && req.path === "/whatsapp/webhook") {
     return next();
   }
   json10kb(req, res, next);
