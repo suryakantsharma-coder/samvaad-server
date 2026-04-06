@@ -142,6 +142,29 @@ const me = async (req, res, next) => {
   }
 };
 
+const updateMe = async (req, res, next) => {
+  try {
+    const { getLinkedHospitalForResponse } = require('../utils/hospitalScope');
+    const user = await authService.updateMyProfile(req.user._id, {
+      name: req.body.name,
+      email: req.body.email,
+      phoneNumber: req.body.phoneNumber,
+      password: req.body.password,
+      currentPassword: req.body.currentPassword,
+    });
+    res.status(200).json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: { user },
+    });
+  } catch (err) {
+    if (err.statusCode === 400 || err.statusCode === 409 || err.statusCode === 404) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -149,4 +172,5 @@ module.exports = {
   logout,
   logoutAll,
   me,
+  updateMe,
 };

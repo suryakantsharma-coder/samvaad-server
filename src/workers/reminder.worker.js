@@ -11,6 +11,7 @@ const {
 } = require('../services/reminderWhatsAppNotify');
 const Prescription = require('../models/prescription.model');
 const env = require('../config/env');
+const { isReminderTestMode } = require('../utils/time.util');
 
 let workerInstance = null;
 let workerConnection = null;
@@ -181,6 +182,7 @@ async function startReminderWorker() {
   console.log('[Reminder] BullMQ worker listening', {
     queue: QUEUE_NAME,
     concurrency: Math.max(1, parseInt(process.env.REMINDER_WORKER_CONCURRENCY || '10', 10)),
+    testMode: isReminderTestMode(),
   });
 
   return workerInstance;

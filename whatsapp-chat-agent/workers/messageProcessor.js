@@ -22,6 +22,7 @@ const { answerGeneralQuestion } = require("../services/aiService");
 const {
   handleAppointmentMessage,
   startAppointmentFlow,
+  isDirectPatientTypeAnswer,
 } = require("../flows/appointmentFlow");
 const {
   startPrescriptionFlow,
@@ -53,11 +54,11 @@ function buildEmergencyReply(hospital) {
   ];
   if (phone) {
     lines.push(
-      `You may also contact *${name}* on ${phone}, or attend the emergency department at *${name}* without delay.`
+      `You may also contact *${name}* on ${phone}, or attend the emergency department at *${name}* without delay.`,
     );
   } else {
     lines.push(
-      `Please contact *${name}* urgently, or go directly to the emergency department.`
+      `Please contact *${name}* urgently, or go directly to the emergency department.`,
     );
   }
   return lines.join("\n");
@@ -66,7 +67,7 @@ function buildEmergencyReply(hospital) {
 /** User message suggests they need care / where to go — show booking CTA + optional buttons */
 function userSeemsToNeedCareGuidance(text) {
   return /\b(feel|feeling|unwell|sick|ill|poorly|pain|hurts?|hurt|ache|symptom|where\s+(do\s+i\s+)?(go|should)|not\s+feeling|need\s+(a\s+)?doctor|see\s+(a\s+)?doctor|fever|nausea|vomit|dizzy|weak|cough|cold|flu|worse|uncomfortable|something\s+wrong|health\s+problem)\b/i.test(
-    String(text || "")
+    String(text || ""),
   );
 }
 
@@ -150,7 +151,7 @@ async function loadOutboundFromMongo(phoneNumberId) {
   const needMetaToken = !isWhatsApiConfigured();
   if (needMetaToken && !outbound.accessToken) {
     console.warn(
-      "[whatsapp-chat-agent] WhatsApp Mongo row has no access_token; set token or configure WhatsAPI (WHATSAPI_*)."
+      "[whatsapp-chat-agent] WhatsApp Mongo row has no access_token; set token or configure WhatsAPI (WHATSAPI_*).",
     );
     return null;
   }
@@ -173,12 +174,14 @@ async function loadOutboundFromEnvMeta(phoneNumberId) {
   if (isWhatsApiConfigured()) return null;
   if (envPid && String(envPid) !== webhookPid) {
     console.warn(
-      "[whatsapp-chat-agent] Webhook phone_number_id does not match WHATSAPP_CLOUD_PHONE_NUMBER_ID"
+      "[whatsapp-chat-agent] Webhook phone_number_id does not match WHATSAPP_CLOUD_PHONE_NUMBER_ID",
     );
     return null;
   }
 
-  const hospital = await Hospital.findById(hid).select("phoneCountryCode").lean();
+  const hospital = await Hospital.findById(hid)
+    .select("phoneCountryCode")
+    .lean();
   return {
     phoneNumberId: webhookPid,
     accessToken: token,
@@ -190,10 +193,16 @@ async function loadOutboundFromEnvMeta(phoneNumberId) {
 
 async function loadOutboundFromWhatsApiDefaultHospital() {
   const hid = env.WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID;
-  if (!isWhatsApiConfigured() || !hid || !mongoose.Types.ObjectId.isValid(hid)) {
+  if (
+    !isWhatsApiConfigured() ||
+    !hid ||
+    !mongoose.Types.ObjectId.isValid(hid)
+  ) {
     return null;
   }
-  const hospital = await Hospital.findById(hid).select("phoneCountryCode").lean();
+  const hospital = await Hospital.findById(hid)
+    .select("phoneCountryCode")
+    .lean();
   return {
     phoneNumberId: "",
     accessToken: "",
@@ -229,7 +238,9 @@ async function sendReply(outbound, to, text, options = {}) {
     !isWhatsApiConfigured();
 
   if (canUseInteractive) {
-    const body = String(interactiveBody || text || "").trim().slice(0, 1024);
+    const body = String(interactiveBody || text || "")
+      .trim()
+      .slice(0, 1024);
     if (body) {
       try {
         await sendWhatsAppInteractiveButtons({
@@ -246,7 +257,7 @@ async function sendReply(outbound, to, text, options = {}) {
         console.error(
           "[whatsapp-chat-agent] interactive send failed, falling back to text:",
           err.message,
-          err.details || err.status || ""
+          err.details || err.status || "",
         );
       }
     }
@@ -267,7 +278,7 @@ async function sendReply(outbound, to, text, options = {}) {
       console.error(
         "[whatsapp-chat-agent] WhatsAPI send failed:",
         err.message,
-        err.details || err.status || ""
+        err.details || err.status || "",
       );
       if (outbound.accessToken && outbound.phoneNumberId) {
         console.warn("[whatsapp-chat-agent] Retrying send via Meta Cloud API");
@@ -297,7 +308,9 @@ async function sendReply(outbound, to, text, options = {}) {
 
 async function routeOneMessage({ from, body, phoneNumberId }) {
   if (mongoose.connection.readyState !== 1) {
-    console.warn("[whatsapp-chat-agent] MongoDB not connected; skip inbound message");
+    console.warn(
+      "[whatsapp-chat-agent] MongoDB not connected; skip inbound message",
+    );
     return;
   }
 
@@ -307,14 +320,16 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
   }
 
   if (!phoneNumberId && !isWhatsApiConfigured()) {
-    console.warn("[whatsapp-chat-agent] Missing phone_number_id (and WhatsAPI not configured)");
+    console.warn(
+      "[whatsapp-chat-agent] Missing phone_number_id (and WhatsAPI not configured)",
+    );
     return;
   }
 
   const outbound = await resolveOutboundForChat(phoneNumberId);
   if (!outbound) {
     console.warn(
-      "[whatsapp-chat-agent] No outbound context: link Meta WhatsApp creds to this phone_number_id or set WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID with WhatsAPI"
+      "[whatsapp-chat-agent] No outbound context: link Meta WhatsApp creds to this phone_number_id or set WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID with WhatsAPI",
     );
     return;
   }
@@ -335,7 +350,7 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
     await sendReply(
       outbound,
       from,
-      "Your current request has been cancelled.\n\nHow may we assist you today?"
+      "Your current request has been cancelled.\n\nHow may we assist you today?",
     );
     return;
   }
@@ -359,38 +374,39 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
         ctx,
         userText,
         from,
-        outbound.hospitalId
+        outbound.hospitalId,
       );
     } else if (ctx.activeFlow === "prescription") {
       result = await handlePrescriptionMessage(
         ctx,
         userText,
         from,
-        outbound.hospitalId
+        outbound.hospitalId,
       );
     } else {
       const intent = detectIntent(userText);
-      const recentTranscript = [...(ctx.messages || []).slice(-8).map((m) => m.text), userText].join(
-        " "
-      );
+      const recentTranscript = [
+        ...(ctx.messages || []).slice(-8).map((m) => m.text),
+        userText,
+      ].join(" ");
       if (
         wantsFullDetailsOrLinks(userText) &&
         /\bprescription|prescriptions|medicine|medications|rx\b|P-\d{4}-\d+/i.test(
-          recentTranscript
+          recentTranscript,
         )
       ) {
         result = await startPrescriptionFlow(ctx, from, outbound.hospitalId);
       } else if (intent === INTENTS.BOOK_APPOINTMENT) {
-        const start = startAppointmentFlow(ctx);
-        if (!userText.match(/new|existing/i)) {
-          result = start;
-        } else {
+        const intro = startAppointmentFlow(ctx);
+        if (isDirectPatientTypeAnswer(userText)) {
           result = await handleAppointmentMessage(
             ctx,
             userText,
             from,
-            outbound.hospitalId
+            outbound.hospitalId,
           );
+        } else {
+          result = intro;
         }
       } else if (intent === INTENTS.GET_PRESCRIPTION) {
         result = await startPrescriptionFlow(ctx, from, outbound.hospitalId);
@@ -420,23 +436,26 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
 
         result = {
           reply: fullReply,
-          interactive:
-            useInteractive
-              ? {
-                  body:
-                    aiReply +
-                    `\n\n*Appointment*\nWould you like to book a visit at *${hospitalName}*? Tap *Book appointment* below, or reply *appointment*.`,
-                  buttons: [
-                    { id: "book_appt", title: "Book appointment" },
-                    { id: "get_rx", title: "Prescriptions" },
-                  ],
-                }
-              : undefined,
+          interactive: useInteractive
+            ? {
+                body:
+                  aiReply +
+                  `\n\n*Appointment*\nWould you like to book a visit at *${hospitalName}*? Tap *Book appointment* below, or reply *appointment*.`,
+                buttons: [
+                  { id: "book_appt", title: "Book appointment" },
+                  { id: "get_rx", title: "Prescriptions" },
+                ],
+              }
+            : undefined,
         };
       }
     }
   } catch (err) {
-    console.error("[whatsapp-chat-agent] handler error:", err.message, err.stack || "");
+    console.error(
+      "[whatsapp-chat-agent] handler error:",
+      err.message,
+      err.stack || "",
+    );
     result = {
       reply:
         "We're sorry — we couldn't process your message just now.\n\nPlease try again in a few moments. If your need is urgent, please call the hospital directly.",
@@ -454,7 +473,7 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
       console.error(
         "[whatsapp-chat-agent] sendReply failed (no user delivery):",
         sendErr.message,
-        sendErr.details || sendErr.status || ""
+        sendErr.details || sendErr.status || "",
       );
     }
   }
@@ -484,7 +503,7 @@ function processWhatsAppWebhookBody(body) {
   if (!payloads.length) {
     if (webhookHasInboundMessages(body)) {
       console.warn(
-        "[whatsapp-chat-agent] Received message(s) but no usable text (types other than text/button/interactive are ignored)."
+        "[whatsapp-chat-agent] Received message(s) but no usable text (types other than text/button/interactive are ignored).",
       );
     }
     return;

@@ -3,14 +3,31 @@
  * set TZ or REMINDER_TIMEZONE at process level for production if needed).
  */
 
+const env = require('../config/env');
+
 const SLOTS = ['breakfast', 'lunch', 'dinner'];
 
-/** Local wall-clock times for each slot. */
+/** Local wall-clock times for each slot (production). */
 const SLOT_HOURS = {
   breakfast: { hour: 9, minute: 0, second: 0, ms: 0 },
   lunch: { hour: 14, minute: 0, second: 0, ms: 0 },
   dinner: { hour: 23, minute: 40, second: 0, ms: 0 },
 };
+
+/**
+ * Test mode: each logical "day" lasts TEST_DAY_SPACING_MS; slots fall in the first ~50 minutes of that window.
+ */
+const TEST_DAY_SPACING_MS = 60 * 60 * 1000;
+const TEST_SLOT_MINUTES_FROM_DAY_START = {
+  breakfast: 2,
+  lunch: 25,
+  dinner: 48,
+};
+
+function isReminderTestMode() {
+  const v = String(env.REMINDER_TEST_MODE || '').toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
 
 /**
  * Start of calendar day in local time for the given instant.
@@ -38,13 +55,29 @@ function getReminderAnchorDate(prescription) {
 }
 
 /**
- * Scheduled local datetime for a given anchor day offset and meal slot.
- * @param {Date} anchorDate - any instant on the first calendar day of the regimen
- * @param {number} dayOffset - 0-based index within follow-up window
+ * Scheduled datetime for a meal slot.
+ *
+ * **Production:** calendar day from `anchorDate` + wall-clock slot time.
+ *
+ * **Test mode (`REMINDER_TEST_MODE`):** `scheduleReferenceTime` (usually “now” when the prescription
+ * was saved) + `dayOffset` × 1h + slot offset (2 / 25 / 48 min) — all three meals within ~one hour per day.
+ *
+ * @param {Date} anchorDate
+ * @param {number} dayOffset
  * @param {'breakfast'|'lunch'|'dinner'} slot
+ * @param {Date} [scheduleReferenceTime] - required for test mode (pass same `now` as scheduling)
  * @returns {Date}
  */
-function getScheduledDateTimeForSlot(anchorDate, dayOffset, slot) {
+function getScheduledDateTimeForSlot(anchorDate, dayOffset, slot, scheduleReferenceTime) {
+  if (isReminderTestMode() && scheduleReferenceTime instanceof Date && !Number.isNaN(scheduleReferenceTime.getTime())) {
+    const mins = TEST_SLOT_MINUTES_FROM_DAY_START[slot];
+    if (mins === undefined) {
+      throw new Error(`Invalid slot: ${slot}`);
+    }
+    const dayStartMs = scheduleReferenceTime.getTime() + dayOffset * TEST_DAY_SPACING_MS;
+    return new Date(dayStartMs + mins * 60 * 1000);
+  }
+
   const start = getStartOfLocalDay(anchorDate);
   const t = new Date(start.getTime());
   t.setDate(t.getDate() + dayOffset);
@@ -68,13 +101,30 @@ function computeDelayMs(scheduledAt, now = new Date()) {
 }
 
 /**
- * Absolute time for feedback job: morning after (followUpDays + 1) calendar days from anchor.
+ * Absolute time for feedback job.
+ * **Production:** day after follow-up window, 10:00 local.
+ * **Test mode:** shortly after the last dinner of the last scheduled day.
+ *
  * @param {Date} anchorDate
  * @param {number} followUpDays - `followUp.value`
  * @param {{ hour?: number, minute?: number }} [opts]
+ * @param {Date} [scheduleReferenceTime]
  * @returns {Date}
  */
-function getFeedbackScheduledAt(anchorDate, followUpDays, opts = {}) {
+function getFeedbackScheduledAt(anchorDate, followUpDays, opts = {}, scheduleReferenceTime = null) {
+  if (
+    isReminderTestMode() &&
+    scheduleReferenceTime instanceof Date &&
+    !Number.isNaN(scheduleReferenceTime.getTime())
+  ) {
+    const lastDay = Math.max(0, followUpDays - 1);
+    const lastDinnerMs =
+      scheduleReferenceTime.getTime() +
+      lastDay * TEST_DAY_SPACING_MS +
+      TEST_SLOT_MINUTES_FROM_DAY_START.dinner * 60 * 1000;
+    return new Date(lastDinnerMs + 12 * 60 * 1000);
+  }
+
   const hour = opts.hour ?? 10;
   const minute = opts.minute ?? 0;
   const start = getStartOfLocalDay(anchorDate);
@@ -87,6 +137,9 @@ function getFeedbackScheduledAt(anchorDate, followUpDays, opts = {}) {
 module.exports = {
   SLOTS,
   SLOT_HOURS,
+  TEST_DAY_SPACING_MS,
+  TEST_SLOT_MINUTES_FROM_DAY_START,
+  isReminderTestMode,
   getStartOfLocalDay,
   getReminderAnchorDate,
   getScheduledDateTimeForSlot,

@@ -10,13 +10,36 @@ const {
   combineToAppointmentDate,
 } = require("../utils/appointmentDateTime");
 
+/** Digits only, for comparing phones across formats */
+function phoneDigitsOnly(s) {
+  return String(s || "").replace(/\D/g, "");
+}
+
+/** Last 10 digits — typical Indian mobile national number */
+function phoneLast10(s) {
+  const d = phoneDigitsOnly(s);
+  return d.length >= 10 ? d.slice(-10) : d;
+}
+
+/**
+ * Exact-string variants stored in DB + flexible query uses last-10 + regex (see getPatientsByPhone).
+ */
 function phoneSearchVariants(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
+  const trimmed = String(raw || "").trim();
+  const digits = phoneDigitsOnly(raw);
   const out = new Set();
-  if (raw) out.add(String(raw).trim());
+  if (trimmed) out.add(trimmed);
   if (digits) {
     out.add(digits);
-    if (digits.length >= 10) out.add(digits.slice(-10));
+    if (digits.length >= 10) {
+      const last10 = digits.slice(-10);
+      out.add(last10);
+      out.add(`91${last10}`);
+      out.add(`+91${last10}`);
+      out.add(`+91${last10.slice(0, 5)}${last10.slice(5)}`);
+      out.add(`+91 ${last10.slice(0, 5)} ${last10.slice(5)}`);
+      out.add(`91-${last10.slice(0, 5)}-${last10.slice(5)}`);
+    }
     if (digits.length === 11 && digits.startsWith("0")) {
       out.add(digits.slice(1));
     }
@@ -28,6 +51,24 @@ function phoneSearchVariants(raw) {
     }
   }
   return [...out];
+}
+
+function buildPatientPhoneOrConditions(variants, inboundPhone) {
+  const conditions = [{ phoneNumber: { $in: variants } }];
+  const digits = phoneDigitsOnly(inboundPhone);
+  if (digits.length >= 10) {
+    const last10 = digits.slice(-10);
+    const e = escapeRegex(last10);
+    conditions.push({ phoneNumber: new RegExp(`${e}\\s*$`) });
+    conditions.push({
+      phoneNumber: new RegExp(`^\\s*\\+?91[-\\s.]*${e}\\s*$`, "i"),
+    });
+    conditions.push({
+      phoneNumber: new RegExp(`^\\s*0[-\\s.]*${e}\\s*$`, "i"),
+    });
+    conditions.push({ phoneNumber: new RegExp(`^\\s*${e}\\s*$`) });
+  }
+  return conditions;
 }
 
 function escapeRegex(s) {
@@ -49,14 +90,8 @@ function toObjectId(id) {
  * @param {string} hospitalId
  */
 async function getUserByPhone(phone, hospitalId) {
-  const hid = toObjectId(hospitalId);
-  const variants = phoneSearchVariants(phone);
-  if (!variants.length || !hid) return null;
-
-  return Patient.findOne({
-    hospital: hid,
-    phoneNumber: { $in: variants },
-  }).lean();
+  const list = await getPatientsByPhone(phone, hospitalId);
+  return list[0] || null;
 }
 
 const MAX_APPOINTMENT_DOCTOR_SUGGESTIONS = 10;
@@ -312,14 +347,25 @@ function parseAppointmentDateTime(dateInput, timeInput, now = new Date()) {
 async function getPatientsByPhone(phone, hospitalId) {
   const hid = toObjectId(hospitalId);
   const variants = phoneSearchVariants(phone);
-  if (!variants.length || !hid) return [];
+  if (!hid) return [];
+  if (!variants.length && phoneDigitsOnly(phone).length < 10) return [];
 
-  const patients = await Patient.find({
+  const orConditions =
+    variants.length > 0
+      ? buildPatientPhoneOrConditions(variants, phone)
+      : buildPatientPhoneOrConditions([phoneDigitsOnly(phone)], phone);
+
+  let patients = await Patient.find({
     hospital: hid,
-    phoneNumber: { $in: variants },
+    $or: orConditions,
   })
     .sort({ fullName: 1, createdAt: -1 })
     .lean();
+
+  const want10 = phoneLast10(phone);
+  if (want10.length === 10) {
+    patients = patients.filter((p) => phoneLast10(p.phoneNumber) === want10);
+  }
 
   if (!patients.length) return [];
 
@@ -553,4 +599,5 @@ module.exports = {
   getLastPrescriptionsByPatientId,
   createAppointment,
   phoneSearchVariants,
+  phoneLast10,
 };

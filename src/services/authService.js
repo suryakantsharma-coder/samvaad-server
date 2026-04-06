@@ -155,10 +155,80 @@ const logoutAll = async (userId) => {
   await RefreshToken.deleteMany({ user: userId });
 };
 
+/**
+ * Update own profile: name, email, phoneNumber, password only.
+ * @param {string} userId
+ * @param {{ name?: string, email?: string, phoneNumber?: string, password?: string, currentPassword?: string }} fields
+ */
+const updateMyProfile = async (userId, fields) => {
+  const user = await User.findById(userId);
+  if (!user) {
+    const err = new Error("User not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const { name, email, phoneNumber, password, currentPassword } = fields;
+
+  const hasPatch =
+    name !== undefined ||
+    email !== undefined ||
+    phoneNumber !== undefined ||
+    password !== undefined;
+
+  if (!hasPatch) {
+    const err = new Error("Provide at least one of: name, email, phoneNumber, password");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (password !== undefined) {
+    if (!currentPassword) {
+      const err = new Error("currentPassword is required when changing password");
+      err.statusCode = 400;
+      throw err;
+    }
+    const withSecret = await User.findById(userId).select("+password");
+    const ok = await withSecret.comparePassword(currentPassword);
+    if (!ok) {
+      const err = new Error("Current password is incorrect");
+      err.statusCode = 400;
+      throw err;
+    }
+    user.password = password;
+  }
+
+  if (name !== undefined) {
+    user.name = name;
+  }
+  if (email !== undefined) {
+    const lower = String(email).toLowerCase().trim();
+    const taken = await User.findOne({
+      email: lower,
+      _id: { $ne: userId },
+    })
+      .select("_id")
+      .lean();
+    if (taken) {
+      const err = new Error("Email is already in use");
+      err.statusCode = 409;
+      throw err;
+    }
+    user.email = lower;
+  }
+  if (phoneNumber !== undefined) {
+    user.phoneNumber = String(phoneNumber).trim();
+  }
+
+  await user.save();
+  return User.findById(userId).select("-password").lean();
+};
+
 module.exports = {
   register,
   login,
   refreshTokens,
   logout,
   logoutAll,
+  updateMyProfile,
 };

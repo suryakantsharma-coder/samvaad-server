@@ -1,3 +1,4 @@
+const { UnrecoverableError } = require("bullmq");
 const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
 const env = require("../config/env");
@@ -21,9 +22,12 @@ const {
  */
 async function notifyMedicineReminder(prescription, slot, medicines) {
   const patient = prescription.patient;
+  const rxId = String(prescription._id || "");
+
   if (!patient?.phoneNumber) {
-    console.warn("[WhatsApp] Medicine reminder: no patient phone", String(prescription._id));
-    return { sent: false, reason: "no_phone" };
+    const msg = `[WhatsApp] Medicine reminder: no patient phone (prescription ${rxId})`;
+    console.warn(msg);
+    throw new UnrecoverableError(msg);
   }
 
   const hospitalId =
@@ -33,8 +37,9 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
     null;
 
   if (!hospitalId) {
-    console.warn("[WhatsApp] Medicine reminder: no hospital on prescription", String(prescription._id));
-    return { sent: false, reason: "no_hospital" };
+    const msg = `[WhatsApp] Medicine reminder: no hospital on prescription or patient (${rxId})`;
+    console.warn(msg);
+    throw new UnrecoverableError(msg);
   }
 
   const [creds, hospital] = await Promise.all([
@@ -45,15 +50,17 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
   ]);
 
   if (!creds?.phone_number_id || !creds?.access_token) {
-    console.warn("[WhatsApp] Medicine reminder: WhatsApp not configured for hospital", String(hospitalId));
-    return { sent: false, reason: "no_whatsapp_creds" };
+    const msg = `[WhatsApp] Medicine reminder: no WhatsApp Cloud row for hospital ${hospitalId} (phone_number_id + access_token). Prescription ${rxId}`;
+    console.warn(msg);
+    throw new UnrecoverableError(msg);
   }
 
   const ccDigits = (hospital?.phoneCountryCode || "+91").replace(/\D/g, "") || "91";
   const to = normalizeWhatsAppTo(patient.phoneNumber, ccDigits);
   if (!to) {
-    console.warn("[WhatsApp] Medicine reminder: invalid patient phone", String(prescription._id));
-    return { sent: false, reason: "invalid_phone" };
+    const msg = `[WhatsApp] Medicine reminder: invalid patient phone (${rxId})`;
+    console.warn(msg);
+    throw new UnrecoverableError(msg);
   }
 
   const patientName =
@@ -91,10 +98,11 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
   }
 
   console.log("[WhatsApp] Medicine reminder sent", {
-    prescriptionId: String(prescription._id),
+    prescriptionId: rxId,
     slot,
     meds: (medicines || []).length,
     template: Boolean(templateName),
+    templateName: templateName || null,
   });
 
   return { sent: true };

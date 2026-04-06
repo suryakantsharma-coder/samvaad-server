@@ -271,26 +271,44 @@ function formatDisplayDate(y, m0, d) {
   return `${d} ${MONTH_SHORT[m0]} ${y}`;
 }
 
+const INVISIBLE_TIME = /[\u200B-\u200D\uFEFF\u2060]/g;
+
+/**
+ * Normalize user time text. Must not turn "p.m." into "p:m:" (that breaks parsing).
+ * @param {string} raw
+ */
+function normalizeTimeInput(raw) {
+  let s = String(raw || "").normalize("NFC").trim();
+  if (!s) return "";
+  s = s.replace(INVISIBLE_TIME, "");
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.toLowerCase();
+  s = s.replace(/\ba\s*\.\s*m\s*\.\s*/gi, "am ");
+  s = s.replace(/\bp\s*\.\s*m\s*\.\s*/gi, "pm ");
+  s = s.replace(/\bnoon\b/g, "12:00 pm");
+  s = s.replace(/\bmidnight\b/g, "12:00 am");
+  s = s.replace(/(\d{1,2})\s*\.\s*(\d{1,2})(?=\s|$|[ap])/g, "$1:$2");
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
+
 /**
  * @param {string} raw
  * @param {Date} [_now] reserved for future "today at" hints
  * @returns {{ h: number, min: number, display: string } | null}
  */
 function parseFlexibleTime(raw, _now = new Date()) {
-  const s = String(raw || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\./g, ":")
-    .replace(/\s+/g, " ");
+  const s = normalizeTimeInput(raw);
   if (!s) return null;
 
-  // HH:MM or H:MM with optional am/pm
-  let m = s.match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/);
+  let m = s.match(
+    /^(\d{1,2})\s*:\s*(\d{1,2})\s*(am|pm)?$/,
+  );
   if (m) {
     let h = parseInt(m[1], 10);
     const min = parseInt(m[2], 10);
     const ap = m[3];
-    if (min > 59) return null;
+    if (min > 59 || h > 23) return null;
     if (ap) {
       if (h < 1 || h > 12) return null;
       if (ap === "pm" && h < 12) h += 12;
@@ -302,7 +320,6 @@ function parseFlexibleTime(raw, _now = new Date()) {
     return { h, min, display: formatDisplayTime(h, min) };
   }
 
-  // H am/pm  e.g. 2 pm
   m = s.match(/^(\d{1,2})\s*(am|pm)$/);
   if (m) {
     let h = parseInt(m[1], 10);
@@ -312,7 +329,6 @@ function parseFlexibleTime(raw, _now = new Date()) {
     return { h, min: 0, display: formatDisplayTime(h, 0) };
   }
 
-  // 24h HHMM e.g. 1430, 930
   m = s.match(/^(\d{3,4})$/);
   if (m) {
     const digits = m[1];
@@ -329,15 +345,18 @@ function parseFlexibleTime(raw, _now = new Date()) {
     return { h, min, display: formatDisplayTime(h, min) };
   }
 
-  // HH MM with am/pm e.g. 10 30 am
-  m = s.match(/^(\d{1,2})\s+(\d{2})\s*(am|pm)$/);
+  m = s.match(/^(\d{1,2})\s+(\d{1,2})\s*(am|pm)$/);
   if (m) {
     let h = parseInt(m[1], 10);
     const min = parseInt(m[2], 10);
     if (min > 59) return null;
-    if (m[3] === "pm" && h < 12) h += 12;
-    if (m[3] === "am" && h === 12) h = 0;
-    if (h > 23) return null;
+    if (m[3] === "pm") {
+      if (h < 1 || h > 12) return null;
+      if (h < 12) h += 12;
+    } else {
+      if (h < 1 || h > 12) return null;
+      if (h === 12) h = 0;
+    }
     return { h, min, display: formatDisplayTime(h, min) };
   }
 

@@ -1,3 +1,4 @@
+const Doctor = require("../../src/models/doctor.model");
 const {
   getPatientsByPhone,
   getDoctorsByDisease,
@@ -10,6 +11,10 @@ const {
   toYyyyMmDd,
   to24hClock,
 } = require("../utils/appointmentDateTime");
+const {
+  parseDoctorAvailabilityWindow,
+  isTimeWithinDoctorAvailability,
+} = require("../utils/doctorAvailability");
 
 const STEPS = {
   ASK_PATIENT_TYPE: "ASK_PATIENT_TYPE",
@@ -30,16 +35,16 @@ function ensureState(ctx) {
 
 function preferredDatePrompt() {
   const y = new Date().getFullYear();
-  return `*Preferred date*\n\nYou can reply in any of these ways:\n• *Day only* — e.g. *15* (we use the current month and *${y}*; if that day has already passed this month, we move to the next month)\n• *Day + month name* — e.g. *5 April*, *April 5*, *20 Dec*\n• *Numeric date* — e.g. *15/04/${y}* or *${y}-04-15*\n\nIf you do not mention a year, we assume *${y}*.`;
+  return `*Step 4 — Date*\n\nWhich day do you want? Example: *5 April* (year defaults to *${y}* if you skip it).`;
 }
 
 function dateParseErrorReply() {
   const y = new Date().getFullYear();
-  return `We could not read that date.\n\nTry one of these:\n• *25* (day only)\n• *10 May* or *May 10*\n• *${y}-05-10* or *10/05/${y}*\n\nYear defaults to *${y}* when omitted.`;
+  return `We could not read that date. Example: *10 May* or *${y}-05-10*.`;
 }
 
 function timeParseErrorReply() {
-  return `We could not read that time.\n\nExamples that work:\n• *10:30 AM* or *2:45 pm*\n• *14:30* (24-hour)\n• *930* or *1430* (hours and minutes, no colon)`;
+  return `We could not read that time. Example: *10:30 AM*.`;
 }
 
 function mapDoctorsForChoice(doctors) {
@@ -65,9 +70,7 @@ function parsePatientPickIndex(text, count) {
 function formatExistingPatientLine(p, indexNum) {
   const name = p.fullName?.trim() || "Patient";
   const pid = p.patientId || "—";
-  const age = p.age != null ? p.age : "—";
-  const gender = p.gender || "—";
-  return `${indexNum}. *${name}* — Age ${age}, ${gender} — Patient ID ${pid}`;
+  return `${indexNum}) *${name}* (${pid})`;
 }
 
 function parseDoctorChoice(text, choices) {
@@ -83,7 +86,7 @@ function parseDoctorChoice(text, choices) {
     return choices[num - 1];
   }
   const byName = choices.find(
-    (c) => c.label.toLowerCase().includes(t.toLowerCase()) && t.length >= 3
+    (c) => c.label.toLowerCase().includes(t.toLowerCase()) && t.length >= 3,
   );
   return byName || null;
 }
@@ -93,13 +96,13 @@ async function doctorsReply(st, doctors) {
   st.step = STEPS.SHOW_DOCTORS;
   const n = doctors.length;
   const lines = doctors.map(
-    (d, i) => `${i + 1}. *${d.fullName}* — ${d.designation}`
+    (d, i) => `${i + 1}. *${d.fullName}* — ${d.designation}`,
   );
   const lastLetter = String.fromCharCode(64 + n);
   return {
-    reply: `*Suggested doctors*\n\nBased on the reason you gave, here are suitable options — including *relevant specialists* and *general physicians* where helpful:\n\n${lines.join(
-      "\n"
-    )}\n\nPlease reply with a *number* (1–${n})${n <= 26 ? ` or a *letter* (A–${lastLetter})` : ""} to confirm your choice.`,
+    reply: `*Step 3 — Choose a doctor*\n\nBased on your reason, here are suitable options:\n\n${lines.join(
+      "\n",
+    )}\n\nReply with a *number* (1–${n})${n <= 26 ? ` or a *letter* (A–${lastLetter})` : ""}.`,
   };
 }
 
@@ -119,18 +122,7 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
       st.patientType = "new";
       st.step = STEPS.COLLECT_NEW_DETAILS;
       return {
-        reply: `Thank you. To register a *new patient*, please send the following in a single message:
-
-• *Full name*
-• *Age*
-• *Gender*
-• *Reason for visit* (symptoms or concern)
-
-*Example:*
-Name: John Doe
-Age: 30
-Gender: Male
-Problem: Fever and headache`,
+        reply: `*Step 2 — New patient details*\n\nReply in *one message* with your full name, age, gender, and reason for visit.\n\nExample: *Name: John Doe, Age: 30, Gender: Male, Problem: Fever*`,
       };
     }
 
@@ -150,27 +142,29 @@ Problem: Fever and headache`,
         st.step = STEPS.ASK_EXISTING_REASON;
         const disp = only.fullName?.trim() || "Patient";
         return {
-          reply: `We found your profile for *${disp}*.\n\nIn one short message, please describe your *reason for this visit* or your main *symptoms*.`,
+          reply: `*Step 2 — Reason for visit*\n\nWe found your profile for *${disp}*.\n\nIn one short message, describe why you are coming in (symptoms or concern). Example: *Follow-up for diabetes*`,
         };
       }
       st.existingPatients = patients;
       st.step = STEPS.PICK_EXISTING_PATIENT;
-      const labels = patients.map((p, i) => formatExistingPatientLine(p, i + 1));
+      const labels = patients.map((p, i) =>
+        formatExistingPatientLine(p, i + 1),
+      );
       const n = patients.length;
       const letterHint =
         n <= 26
           ? `Reply with a *number* (1–${n}) or a *letter* (A–${String.fromCharCode(64 + n)}).`
           : `Reply with a *number* from *1* to *${n}*.`;
       return {
-        reply: `*Existing patients on this number*\n\nMore than one profile uses this WhatsApp number. Who is this appointment for?\n\n${labels.join(
-          "\n",
+        reply: `*Step 2 — Who is the visit for?*\n\nMore than one profile uses this number. Choose one:\n\n${labels.join(
+          "\n\n",
         )}\n\n${letterHint}`,
       };
     }
 
     return {
       reply:
-        "*Appointment booking*\n\nIs this visit for a *new patient* or an *existing patient* who is already registered with us?\n\nPlease reply *new* or *existing*.",
+        "*Appointment booking — Step 1*\n\nIs this for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.",
     };
   }
 
@@ -199,7 +193,7 @@ Problem: Fever and headache`,
     st.step = STEPS.ASK_EXISTING_REASON;
     const disp = chosen.fullName?.trim() || "Patient";
     return {
-      reply: `Thank you, *${disp}*.\n\nIn one short message, please describe your *reason for this visit* or your main *symptoms*.`,
+      reply: `*Step 2 — Reason for visit*\n\nThank you, *${disp}*.\n\nIn one short message, describe why you are coming in. Example: *Chest pain*`,
     };
   }
 
@@ -208,7 +202,7 @@ Problem: Fever and headache`,
     if (!details || !details.name || !details.age) {
       return {
         reply:
-          "We could not read all the required details. Please send them again using this format:\n\nName: …\nAge: …\nGender: …\nProblem: …",
+          "We could not read those details. Please send one message again. Example: *Name: John Doe, Age: 30, Gender: Male, Problem: Fever*",
       };
     }
     st.name = details.name;
@@ -248,6 +242,10 @@ Problem: Fever and headache`,
       };
     }
     st.selectedDoctorId = choice.id;
+    const doc = await Doctor.findById(choice.id).select("availability").lean();
+    const win = parseDoctorAvailabilityWindow(doc?.availability);
+    st.doctorAvailabilityLabel = win.label;
+    st.doctorAvailabilityRanges = win.ranges;
     st.step = STEPS.ASK_DATE;
     return { reply: preferredDatePrompt() };
   }
@@ -261,8 +259,9 @@ Problem: Fever and headache`,
     st.dateYmd = toYyyyMmDd(parsedDate.y, parsedDate.m0, parsedDate.d);
     st.dateLabel = parsedDate.display;
     st.step = STEPS.ASK_TIME;
+    const hoursLabel = st.doctorAvailabilityLabel || "9 AM - 5 PM";
     return {
-      reply: `*Date saved:* ${parsedDate.display}\n\n*Preferred time*\n\nReply with a time, for example *10:30 AM*, *2 pm*, *14:30*, or *915* for 9:15 AM.`,
+      reply: `*Step 5 — Time*\n\n*Date:* ${parsedDate.display}\n\nThis doctor is normally available during:\n${hoursLabel}\n\nPick a time in one of those windows. Example: *1:00 PM*.`,
     };
   }
 
@@ -271,6 +270,19 @@ Problem: Fever and headache`,
     const parsedTime = parseFlexibleTime(t, now);
     if (!parsedTime) {
       return { reply: timeParseErrorReply() };
+    }
+    const spec = {
+      ranges:
+        st.doctorAvailabilityRanges ||
+        parseDoctorAvailabilityWindow(st.doctorAvailabilityLabel).ranges,
+    };
+    if (!isTimeWithinDoctorAvailability(parsedTime.h, parsedTime.min, spec)) {
+      const hoursLabel =
+        st.doctorAvailabilityLabel ||
+        "9 AM - 5 PM";
+      return {
+        reply: `*Doctor not available*\n\nThat time is outside this doctor’s usual hours:\n${hoursLabel}\n\nPlease send a time within those hours. Example: *10:30 AM*.`,
+      };
     }
     st.time24 = to24hClock(parsedTime.h, parsedTime.min);
     st.timeLabel = parsedTime.display;
@@ -304,8 +316,32 @@ Problem: Fever and headache`,
 
   return {
     reply:
-      "*Appointment booking*\n\nIs this for a *new* or *existing* patient?\n\nPlease reply *new* or *existing*.",
+      "*Appointment booking — Step 1*\n\nIs this for a *new* or *existing* patient?\n\nReply *new* or *existing*.",
   };
+}
+
+/**
+ * Only clear “yes I’m new/existing” replies — not long messages that also mention booking.
+ * Used so the first booking message always shows Step 1.
+ */
+function isDirectPatientTypeAnswer(text) {
+  const compact = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (!compact || compact.length > 42) return false;
+  if (
+    compact === "n" ||
+    compact === "e" ||
+    compact === "new" ||
+    compact === "existing"
+  ) {
+    return true;
+  }
+  if (compact === "new patient" || compact === "existing patient") {
+    return true;
+  }
+  return false;
 }
 
 function startAppointmentFlow(ctx) {
@@ -313,11 +349,12 @@ function startAppointmentFlow(ctx) {
   ctx.appointment = { step: STEPS.ASK_PATIENT_TYPE };
   return {
     reply:
-      "*Appointment booking*\n\nIs this visit for a *new patient* or an *existing patient* who is already registered?\n\nPlease reply *new* or *existing*.",
+      "*Appointment booking — Step 1*\n\nWe’ll go *step by step*.\n\nIs this visit for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.",
   };
 }
 
 module.exports = {
   handleAppointmentMessage,
   startAppointmentFlow,
+  isDirectPatientTypeAnswer,
 };

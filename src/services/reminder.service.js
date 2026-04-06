@@ -5,6 +5,7 @@ const {
   getScheduledDateTimeForSlot,
   computeDelayMs,
   getFeedbackScheduledAt,
+  isReminderTestMode,
 } = require('../utils/time.util');
 
 const JOB_SEND_REMINDER = 'send-reminder';
@@ -101,6 +102,12 @@ async function schedulePrescriptionReminders(prescription) {
   const now = new Date();
   let reminderJobs = 0;
 
+  if (isReminderTestMode()) {
+    console.warn(
+      '[Reminder] REMINDER_TEST_MODE is on — slots at ~2/25/48 min per hour block; not for production.',
+    );
+  }
+
   for (let dayOffset = 0; dayOffset < followUpVal; dayOffset += 1) {
     for (const slot of SLOTS) {
       const activeMeds = medicines.filter(
@@ -108,7 +115,7 @@ async function schedulePrescriptionReminders(prescription) {
       );
       if (activeMeds.length === 0) continue;
 
-      const scheduledAt = getScheduledDateTimeForSlot(anchor, dayOffset, slot);
+      const scheduledAt = getScheduledDateTimeForSlot(anchor, dayOffset, slot, now);
       const delay = computeDelayMs(scheduledAt, now);
 
       await queue.add(
@@ -127,7 +134,7 @@ async function schedulePrescriptionReminders(prescription) {
     }
   }
 
-  const feedbackAt = getFeedbackScheduledAt(anchor, followUpVal);
+  const feedbackAt = getFeedbackScheduledAt(anchor, followUpVal, {}, now);
   const feedbackDelay = computeDelayMs(feedbackAt, now);
 
   await queue.add(

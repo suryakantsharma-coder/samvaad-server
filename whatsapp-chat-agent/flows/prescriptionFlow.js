@@ -11,6 +11,8 @@ const STEPS = {
   PICK_PATIENT: "PICK_PATIENT",
 };
 
+const SEP = "─────────────────";
+
 /** User asks for links again (outside completed flow, messageProcessor may restart flow) */
 function wantsFullDetailsOrLinks(text) {
   return /\b(full\s*details?|all\s*(the\s*)?(prescription|rx)s?|give\s+me\s+(the\s*)?(full\s*)?details?|official\s*(website|site|link|portal)|view\s+(online|on\s*(the\s*)?(website|site))|show\s+(me\s*)?all|every(thing)?|all\s+links?|prescription\s*links?)\b/i.test(
@@ -18,16 +20,11 @@ function wantsFullDetailsOrLinks(text) {
   );
 }
 
+/** One profile line: number, name, ID in brackets only */
 function formatPatientLine(p, indexLabel) {
   const name = p.fullName?.trim() || "Patient";
   const pid = p.patientId || "—";
-  const age = p.age != null ? p.age : "—";
-  const gender = p.gender || "—";
-  const rx =
-    typeof p.rxCount === "number"
-      ? ` | ${p.rxCount} prescription(s) on file`
-      : "";
-  return `${indexLabel}. *${name}* — Age ${age}, ${gender} — Patient ID ${pid}${rx}`;
+  return `${indexLabel}) *${name}* (${pid})`;
 }
 
 /**
@@ -37,27 +34,66 @@ function buildPrescriptionLinksReply(patientName, patientCode, rxList) {
   const name = patientName?.trim() || "patient";
   const code = patientCode || "";
 
-  const urls = rxList.map((rx) => prescriptionViewUrl(rx._id)).filter(Boolean);
+  const urls = rxList
+    .map((rx) => {
+      const prescriptionObjectId = rx?._id != null ? String(rx._id) : "";
+      return prescriptionObjectId ? prescriptionViewUrl(prescriptionObjectId) : null;
+    })
+    .filter(Boolean);
 
   if (!hasPrescriptionPortalLink() || !urls.length) {
     const hint =
-      "Secure prescription links are not available in this chat at the moment. Please contact *reception* or your care team for a copy of your records.";
-    return {
-      reply:
-        code.length > 0
-          ? `*Prescriptions*\n\nWe have prescription record(s) on file for *${name}* (Patient ID: ${code}), but online viewing links are not enabled yet.\n\n${hint}`
-          : `*Prescriptions*\n\nWe have prescription record(s) on file for *${name}*, but online viewing links are not enabled yet.\n\n${hint}`,
-      endFlow: true,
-    };
+      "Secure prescription links are not available in this chat at the moment.\n\nPlease contact *reception* or your care team for a copy of your records.";
+    const who =
+      code.length > 0 ? `*${name}* (${code})` : `*${name}*`;
+    const body = [
+      "*Prescriptions*",
+      "",
+      "*Status:* Links not enabled",
+      "",
+      "*Patient*",
+      who,
+      "",
+      SEP,
+      "",
+      hint,
+    ].join("\n");
+    return { reply: body, endFlow: true };
   }
 
-  const header =
-    code.length > 0
-      ? `*Prescriptions*\n\nPatient: *${name}*\nPatient ID: ${code}\n\nShowing your *${urls.length} most recent* prescription link(s) (newest first). Tap to open in the browser.`
-      : `*Prescriptions*\n\nPatient: *${name}*\n\nShowing your *${urls.length} most recent* prescription link(s) (newest first). Tap to open in the browser.`;
+  const who =
+    code.length > 0 ? `*${name}* (${code})` : `*${name}*`;
 
-  const lines = [header, "", ...urls.map((u, i) => `${i + 1}. ${u}`)];
-  return { reply: lines.join("\n"), endFlow: true };
+  const linkBlocks = rxList.map((rx, i) => {
+    const prescriptionObjectId = rx?._id != null ? String(rx._id) : "";
+    const u = prescriptionObjectId ? prescriptionViewUrl(prescriptionObjectId) : null;
+    if (!u) return null;
+    return `*Prescription ${i + 1} of ${rxList.length}*\n${u}`;
+  }).filter(Boolean);
+
+  const body = [
+    "*Prescriptions*",
+    "",
+    "*Patient*",
+    who,
+    "",
+    `*Your prescription links*`,
+    `_Newest first · ${urls.length} shown_`,
+    "",
+    SEP,
+    "",
+    linkBlocks.join("\n\n"),
+    "",
+    SEP,
+    "",
+    "_Tap a link to open in your browser._",
+    "",
+    code.length > 0
+      ? `_Each link uses that prescription’s database ID in the URL (the long id at the end — not your patient ID ${code})._`
+      : `_Each link uses that prescription’s database ID in the URL, not a patient ID code._`,
+  ].join("\n");
+
+  return { reply: body, endFlow: true };
 }
 
 function parseLetterOrNumber(text, count) {
@@ -77,8 +113,19 @@ async function startPrescriptionFlow(ctx, phone, hospitalId) {
   const patients = await getPatientsByPhone(phone, hospitalId);
   if (!patients.length) {
     return {
-      reply:
-        "*Prescriptions*\n\nNo patient profile is linked to this WhatsApp number at our hospital.\n\nPlease contact *reception* to register, or reply *appointment* to book a visit.",
+      reply: [
+        "*Prescriptions*",
+        "",
+        "*No profile found*",
+        "",
+        "This WhatsApp number is not linked to a patient record at our hospital.",
+        "",
+        SEP,
+        "",
+        "Please contact *reception* to register.",
+        "",
+        "_Or reply *appointment* to book a visit._",
+      ].join("\n"),
       endFlow: true,
     };
   }
@@ -89,20 +136,30 @@ async function startPrescriptionFlow(ctx, phone, hospitalId) {
     patients,
   };
 
-  const labels = patients.map((p, i) =>
-    formatPatientLine(p, i + 1),
-  );
+  const labels = patients.map((p, i) => formatPatientLine(p, i + 1));
   const letters = patients.map((_, i) => String.fromCharCode(65 + i));
   const n = patients.length;
   const letterHint =
     n <= 26
-      ? `Reply with a *number* (1–${n}) or a *letter* (${letters[0]}–${letters[n - 1]}) for the correct record.`
-      : `Reply with a *number* from *1* to *${n}* for the correct record. (Letters A–Z match only the first 26 rows.)`;
-  return {
-    reply: `*Prescriptions*\n\nWe found *${n}* patient record(s) linked to this number. Please select *your* record:\n\n${labels.join(
-      "\n",
-    )}\n\n${letterHint}`,
-  };
+      ? `_Reply with a number (1–${n}) or a letter (${letters[0]}–${letters[n - 1]})._`
+      : `_Reply with a number from 1 to ${n}._`;
+
+  const body = [
+    "*Prescriptions*",
+    "",
+    "*Choose your profile*",
+    "",
+    `We found *${n}* record(s) on this number.`,
+    "",
+    SEP,
+    "",
+    ...labels.flatMap((line) => [line, ""]),
+    SEP,
+    "",
+    letterHint,
+  ].join("\n");
+
+  return { reply: body };
 }
 
 async function handlePrescriptionMessage(ctx, text, phone, hospitalId) {
@@ -117,9 +174,7 @@ async function handlePrescriptionMessage(ctx, text, phone, hospitalId) {
       const len = st.patients.length;
       const hint =
         len <= 26
-          ? `Please reply with a *number* (1–${len}) or a *letter* (A–${String.fromCharCode(
-              64 + len,
-            )}).`
+          ? `Please reply with a *number* (1–${len}) or a *letter* (A–${String.fromCharCode(64 + len)}).`
           : `Please reply with a *number* from *1* to *${len}*.`;
       return { reply: hint };
     }
@@ -134,9 +189,27 @@ async function handlePrescriptionMessage(ctx, text, phone, hospitalId) {
       hospitalId,
       4,
     );
+
+    const who =
+      selectedPatientCode.length > 0
+        ? `*${selectedPatientName}* (${selectedPatientCode})`
+        : `*${selectedPatientName}*`;
+
     if (!rxList.length) {
       return {
-        reply: `*Prescriptions*\n\nWe have no prescription records on file for *${selectedPatientName}* (Patient ID: ${selectedPatientCode || patientId}).\n\nIf this seems incorrect, please contact *reception*.`,
+        reply: [
+          "*Prescriptions*",
+          "",
+          "*No records*",
+          "",
+          who,
+          "",
+          SEP,
+          "",
+          "We have no prescription records on file for this profile.",
+          "",
+          "_If this seems wrong, please contact *reception*._",
+        ].join("\n"),
         endFlow: true,
       };
     }

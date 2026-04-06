@@ -55,6 +55,12 @@ async function answerGeneralQuestion(userText, opts = {}) {
       (hospitalPhone ? ` (${hospitalPhone})` : "") +
       " and offer to help book an appointment in this chat (they can type *appointment*).",
     "When the topic is health or symptoms, briefly include: I am not a medical professional; please see a qualified clinician for personal medical advice.",
+    "Facilities & operations (parking availability, rooms/wards, Wi‑Fi, visitor policy, canteen, directions inside the campus, lifts, waiting areas, timings for non-clinical services): you do not have live or building-specific data. Never invent details. Say that *" +
+      hospitalName +
+      "* can confirm — ask them to call *reception*" +
+      (hospitalPhone ? ` on ${hospitalPhone}` : "") +
+      " for structural, facilities, or policy questions.",
+    "If they mix an appointment mention with a facilities question, answer the facilities part with the rule above; you may briefly note they can reply *appointment* to start online booking if they still need a new visit.",
     portalLine,
   ].join(" ");
 
@@ -66,7 +72,7 @@ async function answerGeneralQuestion(userText, opts = {}) {
   const res = await api.chat.completions.create({
     model: process.env.WHATSAPP_CHAT_OPENAI_MODEL || "gpt-4o-mini",
     temperature: 0.3,
-    max_tokens: 200,
+    max_tokens: 240,
     messages: [
       { role: "system", content: system + ctx },
       { role: "user", content: String(userText || "").trim() },
@@ -83,6 +89,10 @@ async function answerGeneralQuestion(userText, opts = {}) {
 const PATIENT_DETAIL_RE =
   /Name:\s*(.+)[\r\n]+Age:\s*(\d+)[\r\n]+Gender:\s*([\s\S]+?)[\r\n]+(?:Problem|Reason|Disease):\s*([\s\S]+)/i;
 
+/** One-line: Name: X, Age: 30, Gender: Male, Problem: Y */
+const PATIENT_DETAIL_INLINE_RE =
+  /Name:\s*([^,]+?)\s*,\s*Age:\s*(\d+)\s*,\s*Gender:\s*([^,]+?)\s*,\s*(?:Problem|Reason|Disease):\s*(.+)/i;
+
 /**
  * Extract new-patient block from a free-form message (regex first; optional AI fill-in).
  */
@@ -90,7 +100,8 @@ async function extractNewPatientDetails(text) {
   const raw = String(text || "").trim();
   if (!raw) return null;
 
-  const m = raw.match(PATIENT_DETAIL_RE);
+  let m = raw.match(PATIENT_DETAIL_INLINE_RE);
+  if (!m) m = raw.match(PATIENT_DETAIL_RE);
   if (m) {
     return {
       name: m[1].trim(),

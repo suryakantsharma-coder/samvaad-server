@@ -78,6 +78,11 @@ const env = {
   /** Set to "1" to run API without embedding the reminder worker (use `npm run reminder-worker`). */
   REMINDER_WORKER_DISABLED: process.env.REMINDER_WORKER_DISABLED || "",
   /**
+   * When "1" or "true": breakfast/lunch/dinner fire at ~2 / 25 / 48 min after each compact "day",
+   * and each follow-up day is 1 hour apart (good for local testing). Leave unset in production.
+   */
+  REMINDER_TEST_MODE: process.env.REMINDER_TEST_MODE || "",
+  /**
    * WhatsAPI (self-hosted) outbound — when all three are set, the chat agent sends replies via WhatsAPI
    * instead of Meta Cloud Graph. @see https://whatsapi-docs.vercel.app/docs/sending-messages
    */
