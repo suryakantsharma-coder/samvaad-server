@@ -592,12 +592,172 @@ async function createAppointment(params) {
   return populated;
 }
 
+/**
+ * @param {Date} d
+ * @returns {boolean}
+ */
+function isValidDate(d) {
+  return d instanceof Date && !Number.isNaN(d.getTime());
+}
+
+/**
+ * Fetch upcoming appointments for a patient and split by >24h / <=24h from now.
+ * @param {string} patientMongoId
+ * @param {string} hospitalId
+ * @param {Date} [now]
+ */
+async function getRescheduleOptionsByPatientId(
+  patientMongoId,
+  hospitalId,
+  now = new Date(),
+) {
+  const hid = toObjectId(hospitalId);
+  const pid = toObjectId(patientMongoId);
+  if (!hid || !pid) {
+    return { eligible: [], within24h: [] };
+  }
+
+  const patient = await Patient.findOne({ _id: pid, hospital: hid }).lean();
+  if (!patient) {
+    return { eligible: [], within24h: [] };
+  }
+
+  const rows = await Appointment.find({
+    hospital: hid,
+    patient: pid,
+    appointmentDateTime: { $gt: now },
+  })
+    .populate("doctor", "fullName doctorId designation")
+    .sort({ appointmentDateTime: 1, createdAt: -1 })
+    .lean();
+
+  const upcoming = rows.filter((a) => {
+    const status = String(a?.status || "").toLowerCase();
+    return status === "upcoming" && status !== "completed";
+  });
+
+  const cutoff = now.getTime() + 24 * 60 * 60 * 1000;
+  const eligible = [];
+  const within24h = [];
+  for (const appt of upcoming) {
+    const at = new Date(appt.appointmentDateTime);
+    if (!isValidDate(at)) continue;
+    if (at.getTime() > cutoff) eligible.push(appt);
+    else within24h.push(appt);
+  }
+
+  return { eligible, within24h };
+}
+
+/**
+ * Update appointment date/time for rescheduling.
+ * @param {object} params
+ * @param {string} params.appointmentId
+ * @param {string} params.patientId
+ * @param {string} params.hospitalId
+ * @param {Date} params.newDateTime
+ */
+async function rescheduleAppointment(params) {
+  const {
+    appointmentId,
+    patientId,
+    hospitalId,
+    newDateTime,
+  } = params || {};
+
+  const hid = toObjectId(hospitalId);
+  const pid = toObjectId(patientId);
+  const aid = toObjectId(appointmentId);
+  if (!hid || !pid || !aid || !isValidDate(newDateTime)) {
+    throw new Error("Invalid reschedule request");
+  }
+  if (newDateTime.getTime() <= Date.now()) {
+    throw new Error("Please choose a future date and time");
+  }
+
+  const current = await Appointment.findOne({
+    _id: aid,
+    hospital: hid,
+    patient: pid,
+  }).lean();
+  if (!current) {
+    throw new Error("Appointment not found");
+  }
+
+  const status = String(current.status || "").toLowerCase();
+  if (status !== "upcoming" || status === "completed") {
+    throw new Error("Only upcoming appointments can be rescheduled");
+  }
+
+  const conflict = await Appointment.findOne({
+    _id: { $ne: aid },
+    hospital: hid,
+    doctor: current.doctor,
+    appointmentDateTime: newDateTime,
+    status: "Upcoming",
+  })
+    .select("_id")
+    .lean();
+  if (conflict) {
+    throw new Error("Selected slot is not available. Please choose another time");
+  }
+
+  const updated = await Appointment.findOneAndUpdate(
+    { _id: aid, hospital: hid, patient: pid },
+    { $set: { appointmentDateTime: newDateTime } },
+    { new: true, runValidators: true },
+  )
+    .populate("doctor", "fullName doctorId designation")
+    .populate("patient", "fullName patientId phoneNumber age gender")
+    .lean();
+
+  if (!updated) {
+    throw new Error("Could not reschedule appointment");
+  }
+
+  return updated;
+}
+
+/**
+ * Fetch all upcoming appointments for patient profiles linked to this phone.
+ * @param {string} phone
+ * @param {string} hospitalId
+ * @param {Date} [now]
+ */
+async function getUpcomingAppointmentsByPhone(
+  phone,
+  hospitalId,
+  now = new Date(),
+) {
+  const hid = toObjectId(hospitalId);
+  if (!hid) return [];
+
+  const patients = await getPatientsByPhone(phone, hospitalId);
+  if (!patients.length) return [];
+
+  const patientIds = patients.map((p) => p._id);
+  const rows = await Appointment.find({
+    hospital: hid,
+    patient: { $in: patientIds },
+    appointmentDateTime: { $gte: now },
+  })
+    .populate("doctor", "fullName doctorId designation")
+    .populate("patient", "fullName patientId")
+    .sort({ appointmentDateTime: 1, createdAt: -1 })
+    .lean();
+
+  return rows.filter((a) => String(a?.status || "").toLowerCase() === "upcoming");
+}
+
 module.exports = {
   getUserByPhone,
   getPatientsByPhone,
   getDoctorsByDisease,
   getLastPrescriptionsByPatientId,
   createAppointment,
+  getRescheduleOptionsByPatientId,
+  rescheduleAppointment,
+  getUpcomingAppointmentsByPhone,
   phoneSearchVariants,
   phoneLast10,
 };

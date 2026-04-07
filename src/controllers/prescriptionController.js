@@ -5,6 +5,10 @@ const mongoose = require('mongoose');
 const { mergeHospitalFilter, getLinkedHospitalForResponse, getHospitalFilter } = require('../utils/hospitalScope');
 const { notifyPrescriptionCreated } = require('../services/prescriptionWhatsAppNotify');
 const { schedulePrescriptionReminders } = require('../services/reminder.service');
+const {
+  applyPrescriptionPopulate,
+  enrichMedicinesWithDoctorHospital,
+} = require('../utils/prescriptionPopulate');
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -62,16 +66,16 @@ const getAll = async (req, res, next) => {
     if (req.query.status) filter.status = req.query.status;
     mergeHospitalFilter(req, filter);
 
-    const [prescriptions, total] = await Promise.all([
-      Prescription.find(filter)
-        .populate('patient', 'fullName patientId phoneNumber')
-        .populate('appointment', 'appointmentId reason appointmentDateTime')
+    const [listRows, total] = await Promise.all([
+      applyPrescriptionPopulate(Prescription.find(filter))
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Prescription.countDocuments(filter),
     ]);
+
+    const prescriptions = listRows.map((p) => enrichMedicinesWithDoctorHospital(p));
 
     res.json({
       success: true,
@@ -115,16 +119,16 @@ const search = async (req, res, next) => {
       ];
     }
 
-    const [prescriptions, total] = await Promise.all([
-      Prescription.find(filter)
-        .populate('patient', 'fullName patientId phoneNumber')
-        .populate('appointment', 'appointmentId reason appointmentDateTime')
+    const [searchRows, total] = await Promise.all([
+      applyPrescriptionPopulate(Prescription.find(filter))
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Prescription.countDocuments(filter),
     ]);
+
+    const prescriptions = searchRows.map((p) => enrichMedicinesWithDoctorHospital(p));
 
     res.json({
       success: true,
@@ -152,14 +156,16 @@ const getById = async (req, res, next) => {
     const query = { _id: req.params.id };
     mergeHospitalFilter(req, query);
 
-    const prescription = await Prescription.findOne(query)
-      .populate('patient', 'fullName patientId phoneNumber age gender')
-      .populate('appointment', 'appointmentId reason appointmentDateTime status')
-      .lean();
+    const raw = await applyPrescriptionPopulate(
+      Prescription.findOne(query),
+      'fullName patientId phoneNumber age gender'
+    ).lean();
 
-    if (!prescription) {
+    if (!raw) {
       return res.status(404).json({ success: false, message: 'Prescription not found' });
     }
+
+    const prescription = enrichMedicinesWithDoctorHospital(raw);
 
     res.json({ success: true, ...getLinkedHospitalForResponse(req), data: { prescription } });
   } catch (err) {
@@ -235,15 +241,8 @@ const create = async (req, res, next) => {
       console.error('[Reminder] schedulePrescriptionReminders:', err.message),
     );
 
-    const populated = await Prescription.findById(prescription._id)
-      .populate('patient', 'fullName patientId phoneNumber')
-      .populate({
-        path: 'appointment',
-        select: 'appointmentId reason appointmentDateTime',
-        populate: { path: 'doctor', select: 'fullName doctorId' },
-      })
-      .populate('hospital', 'name phoneCountryCode')
-      .lean();
+    const populatedRaw = await applyPrescriptionPopulate(Prescription.findById(prescription._id)).lean();
+    const populated = enrichMedicinesWithDoctorHospital(populatedRaw);
 
     res.status(201).json({ success: true, data: { prescription: populated } });
 
@@ -283,18 +282,15 @@ const update = async (req, res, next) => {
     const filter = { _id: req.params.id };
     mergeHospitalFilter(req, filter);
 
-    const prescription = await Prescription.findOneAndUpdate(
-      filter,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    )
-      .populate('patient', 'fullName patientId phoneNumber')
-      .populate('appointment', 'appointmentId reason appointmentDateTime')
-      .lean();
+    const updatedRaw = await applyPrescriptionPopulate(
+      Prescription.findOneAndUpdate(filter, { $set: updateData }, { new: true, runValidators: true })
+    ).lean();
 
-    if (!prescription) {
+    if (!updatedRaw) {
       return res.status(404).json({ success: false, message: 'Prescription not found' });
     }
+
+    const prescription = enrichMedicinesWithDoctorHospital(updatedRaw);
 
     res.json({ success: true, data: { prescription } });
   } catch (err) {

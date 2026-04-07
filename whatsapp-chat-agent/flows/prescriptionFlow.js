@@ -6,6 +6,7 @@ const {
   prescriptionViewUrl,
   hasPrescriptionPortalLink,
 } = require("../utils/prescriptionPortalUrl");
+const { FLOW_EXIT_HINT } = require("../utils/flowHints");
 
 const STEPS = {
   PICK_PATIENT: "PICK_PATIENT",
@@ -146,6 +147,8 @@ async function startPrescriptionFlow(ctx, phone, hospitalId) {
 
   const body = [
     "*Prescriptions*",
+    "",
+    FLOW_EXIT_HINT,
     "",
     "*Choose your profile*",
     "",

@@ -15,6 +15,7 @@ const {
   parseDoctorAvailabilityWindow,
   isTimeWithinDoctorAvailability,
 } = require("../utils/doctorAvailability");
+const { FLOW_EXIT_HINT } = require("../utils/flowHints");
 
 const STEPS = {
   ASK_PATIENT_TYPE: "ASK_PATIENT_TYPE",
@@ -164,7 +165,7 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
 
     return {
       reply:
-        "*Appointment booking — Step 1*\n\nIs this for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.",
+        `*Appointment booking — Step 1*\n\n${FLOW_EXIT_HINT}\n\nIs this for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.`,
     };
   }
 
@@ -174,7 +175,7 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
       st.step = STEPS.ASK_PATIENT_TYPE;
       return {
         reply:
-          "*Appointment booking*\n\nIs this visit for a *new patient* or an *existing patient*?\n\nPlease reply *new* or *existing*.",
+          `*Appointment booking*\n\n${FLOW_EXIT_HINT}\n\nIs this visit for a *new patient* or an *existing patient*?\n\nPlease reply *new* or *existing*.`,
       };
     }
     const idx = parsePatientPickIndex(t, patients.length);
@@ -316,7 +317,7 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
 
   return {
     reply:
-      "*Appointment booking — Step 1*\n\nIs this for a *new* or *existing* patient?\n\nReply *new* or *existing*.",
+      `*Appointment booking — Step 1*\n\n${FLOW_EXIT_HINT}\n\nIs this for a *new* or *existing* patient?\n\nReply *new* or *existing*.`,
   };
 }
 
@@ -349,7 +350,7 @@ function startAppointmentFlow(ctx) {
   ctx.appointment = { step: STEPS.ASK_PATIENT_TYPE };
   return {
     reply:
-      "*Appointment booking — Step 1*\n\nWe’ll go *step by step*.\n\nIs this visit for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.",
+      `*Appointment booking — Step 1*\n\n${FLOW_EXIT_HINT}\n\nWe’ll go *step by step*.\n\nIs this visit for a *new patient* or an *existing patient* who is already registered?\n\nReply *new* or *existing*.`,
   };
 }
 

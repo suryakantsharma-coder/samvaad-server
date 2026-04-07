@@ -2,6 +2,10 @@ const { getReminderQueue } = require('../queues/reminder.queue');
 const { schedulePrescriptionRemindersById } = require('../services/reminder.service');
 const Prescription = require('../models/prescription.model');
 const { mergeHospitalFilter } = require('../utils/hospitalScope');
+const {
+  applyPrescriptionPopulate,
+  enrichMedicinesWithDoctorHospital,
+} = require('../utils/prescriptionPopulate');
 
 /**
  * Unauthenticated read-by-id for patient-facing links (no hospital scope).
@@ -11,15 +15,16 @@ const { mergeHospitalFilter } = require('../utils/hospitalScope');
  */
 const getPublicPrescriptionById = async (req, res, next) => {
   try {
-    const prescription = await Prescription.findById(req.params.id)
-      .populate('patient', 'fullName patientId age gender')
-      .populate('appointment', 'appointmentId reason appointmentDateTime status')
-      .populate('hospital', 'name phoneCountryCode')
-      .lean();
+    const raw = await applyPrescriptionPopulate(
+      Prescription.findById(req.params.id),
+      'fullName patientId age gender'
+    ).lean();
 
-    if (!prescription) {
+    if (!raw) {
       return res.status(404).json({ success: false, message: 'Prescription not found' });
     }
+
+    const prescription = enrichMedicinesWithDoctorHospital(raw);
 
     res.json({ success: true, data: { prescription } });
   } catch (err) {

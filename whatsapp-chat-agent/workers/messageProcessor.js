@@ -29,6 +29,13 @@ const {
   handlePrescriptionMessage,
   wantsFullDetailsOrLinks,
 } = require("../flows/prescriptionFlow");
+const {
+  startRescheduleFlow,
+  handleRescheduleMessage,
+} = require("../flows/rescheduleFlow");
+const {
+  startUpcomingAppointmentsFlow,
+} = require("../flows/upcomingAppointmentsFlow");
 
 const NON_ENGLISH_REPLY =
   "Thank you for your message. To serve you accurately, please continue in *English*.";
@@ -71,7 +78,8 @@ function userSeemsToNeedCareGuidance(text) {
   );
 }
 
-const CANCEL_RE = /^\s*(cancel|stop|exit|reset)\s*$/i;
+const CANCEL_RE =
+  /^\s*(cancel|stop|exit|reset)(\s+(flow|appointment|booking|reschedule|prescription))?\s*$/i;
 
 function extractUserTextFromMessage(msg) {
   if (!msg || typeof msg !== "object") return null;
@@ -376,6 +384,13 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
         from,
         outbound.hospitalId,
       );
+    } else if (ctx.activeFlow === "reschedule") {
+      result = await handleRescheduleMessage(
+        ctx,
+        userText,
+        from,
+        outbound.hospitalId,
+      );
     } else if (ctx.activeFlow === "prescription") {
       result = await handlePrescriptionMessage(
         ctx,
@@ -408,6 +423,10 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
         } else {
           result = intro;
         }
+      } else if (intent === INTENTS.RESCHEDULE_APPOINTMENT) {
+        result = await startRescheduleFlow(ctx, from, outbound.hospitalId);
+      } else if (intent === INTENTS.SHOW_APPOINTMENTS) {
+        result = await startUpcomingAppointmentsFlow(ctx, from, outbound.hospitalId);
       } else if (intent === INTENTS.GET_PRESCRIPTION) {
         result = await startPrescriptionFlow(ctx, from, outbound.hospitalId);
       } else {
