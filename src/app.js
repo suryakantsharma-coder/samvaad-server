@@ -4,6 +4,10 @@ const cookieParser = require("cookie-parser");
 const rateLimit = require("express-rate-limit");
 const routes = require("./routes");
 const cors = require("cors");
+const {
+  generateGoogleAuthUrl,
+  exchangeCodeAndStoreTokens,
+} = require("./services/googleMeet.service");
 const app = express();
 
 // Serve uploaded files (e.g. hospital logos)
@@ -50,8 +54,10 @@ const apiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Meta WhatsApp webhooks can burst; do not throttle subscription verification or event delivery.
-  skip: (req) => req.originalUrl.includes("/whatsapp/webhook"),
+  // Meta WhatsApp / Razorpay webhooks can burst; do not throttle verification or event delivery.
+  skip: (req) =>
+    req.originalUrl.includes("/whatsapp/webhook") ||
+    req.originalUrl.includes("/api/razorpay/webhook"),
 });
 
 // WhatsApp webhook: larger body limit + raw buffer for X-Hub-Signature-256 (must run before global json).
@@ -69,6 +75,21 @@ app.use("/api/whatsapp/webhook", (req, res, next) => {
   next();
 });
 
+// Razorpay webhook: raw body buffer for X-Razorpay-Signature verification (must run before global json).
+const razorpayWebhookJson = express.json({
+  limit: "512kb",
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+});
+
+app.use("/api/razorpay/webhook", (req, res, next) => {
+  if (req.method === "POST") {
+    return razorpayWebhookJson(req, res, next);
+  }
+  next();
+});
+
 // Root /whatsapp/webhook (Meta callback without /api) — larger JSON body before global 10kb limit
 const rootWhatsappWebhookJson = express.json({ limit: "512kb" });
 app.use("/whatsapp/webhook", (req, res, next) => {
@@ -81,9 +102,34 @@ app.use("/whatsapp/webhook", (req, res, next) => {
 const whatsappRootWebhook = require("./routes/whatsappRootWebhook");
 app.use(whatsappRootWebhook);
 
+app.get("/auth/google", (req, res) => {
+  const state = req.query.state ? String(req.query.state) : undefined;
+  const url = generateGoogleAuthUrl(state);
+  res.redirect(url);
+});
+
+app.get("/auth/google/callback", async (req, res, next) => {
+  try {
+    const code = req.query.code ? String(req.query.code) : "";
+    if (!code) {
+      return res.status(400).send("Missing authorization code");
+    }
+
+    const tokens = await exchangeCodeAndStoreTokens(code);
+    return res.status(200).send(
+      `Google connected successfully. Token expiry: ${tokens.expiry_date || "unknown"}`
+    );
+  } catch (err) {
+    return next(err);
+  }
+});
+
 const json10kb = express.json({ limit: "10kb" });
 app.use((req, res, next) => {
   if (req.method === "POST" && req.path === "/api/whatsapp/webhook") {
+    return next();
+  }
+  if (req.method === "POST" && req.path === "/api/razorpay/webhook") {
     return next();
   }
   if (req.method === "POST" && req.path === "/whatsapp/webhook") {

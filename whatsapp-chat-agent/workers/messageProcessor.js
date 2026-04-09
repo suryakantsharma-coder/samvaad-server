@@ -30,6 +30,10 @@ const {
   wantsFullDetailsOrLinks,
 } = require("../flows/prescriptionFlow");
 const {
+  startFollowUpFlow,
+  handleFollowUpMessage,
+} = require("../flows/followUpFlow");
+const {
   startRescheduleFlow,
   handleRescheduleMessage,
 } = require("../flows/rescheduleFlow");
@@ -80,6 +84,8 @@ function userSeemsToNeedCareGuidance(text) {
 
 const CANCEL_RE =
   /^\s*(cancel|stop|exit|reset)(\s+(flow|appointment|booking|reschedule|prescription))?\s*$/i;
+const FOLLOW_UP_TRIGGER_RE =
+  /\b(follow[-\s]?up|feedback|tele[-\s]?caller|give\s+review|how\s+are\s+you\s+feeling|medicine\s+course)\b/i;
 
 function extractUserTextFromMessage(msg) {
   if (!msg || typeof msg !== "object") return null;
@@ -384,6 +390,13 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
         from,
         outbound.hospitalId,
       );
+    } else if (ctx.activeFlow === "followup") {
+      result = await handleFollowUpMessage(
+        ctx,
+        userText,
+        from,
+        outbound.hospitalId,
+      );
     } else if (ctx.activeFlow === "reschedule") {
       result = await handleRescheduleMessage(
         ctx,
@@ -399,6 +412,9 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
         outbound.hospitalId,
       );
     } else {
+      if (FOLLOW_UP_TRIGGER_RE.test(userText)) {
+        result = await startFollowUpFlow(ctx, from, outbound.hospitalId);
+      } else {
       const intent = detectIntent(userText);
       const recentTranscript = [
         ...(ctx.messages || []).slice(-8).map((m) => m.text),
@@ -467,6 +483,7 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
               }
             : undefined,
         };
+      }
       }
     }
   } catch (err) {

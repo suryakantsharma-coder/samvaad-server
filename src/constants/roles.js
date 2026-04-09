@@ -1,6 +1,7 @@
 const ROLES = Object.freeze({
   USER: 'user',
   DOCTOR: 'doctor',
+  TELE_CALLER: 'tele_caller',
   MODERATOR: 'moderator',
   HOSPITAL_ADMIN: 'hospital_admin',
   ADMIN: 'admin',
@@ -8,11 +9,12 @@ const ROLES = Object.freeze({
 });
 
 /** Roles that are linked to a single hospital at sign-up and must only see that hospital's data. */
-const HOSPITAL_ROLES = Object.freeze([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN]);
+const HOSPITAL_ROLES = Object.freeze([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN, ROLES.TELE_CALLER]);
 
 const ROLE_HIERARCHY = [
   ROLES.USER,
   ROLES.DOCTOR,
+  ROLES.TELE_CALLER,
   ROLES.MODERATOR,
   ROLES.HOSPITAL_ADMIN,
   ROLES.ADMIN,

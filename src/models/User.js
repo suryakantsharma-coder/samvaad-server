@@ -62,9 +62,9 @@ userSchema.index({ role: 1 });
 
 userSchema.pre('save', async function (next) {
   if (this.isModified('role') || this.isModified('hospital')) {
-    if ([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN].includes(this.role)) {
+    if ([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN, ROLES.TELE_CALLER].includes(this.role)) {
       if (!this.hospital) {
-        return next(new Error('Hospital is required for doctor and hospital_admin roles'));
+        return next(new Error('Hospital is required for doctor, hospital_admin, and tele_caller roles'));
       }
     }
     if ([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.MODERATOR].includes(this.role)) {

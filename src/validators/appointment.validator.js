@@ -23,19 +23,29 @@ const createAppointment = [
     .isIn([
       "hospital",
       "zoom",
+      "call",
+      "video_call",
       "visit",
       "online",
       "checkup",
       "consultation",
       "emergency",
+      "tele-caller",
     ])
-    .withMessage("type must be Hospital or Zoom")
+    .withMessage("type must be a valid appointment type")
     .escape(),
   body("appointmentDateTime")
     .notEmpty()
     .withMessage("appointmentDateTime is required")
     .isISO8601()
     .withMessage("appointmentDateTime must be a valid ISO 8601 date"),
+  body("videoUrl")
+    .optional({ values: "falsy" })
+    .trim()
+    .isLength({ max: 2048 })
+    .withMessage("videoUrl must be at most 2048 characters")
+    .isURL({ require_protocol: true })
+    .withMessage("videoUrl must be a valid URL (e.g. Google Meet link)"),
 ];
 
 const updateAppointment = [
@@ -61,21 +71,31 @@ const updateAppointment = [
     .isIn([
       "hospital",
       "zoom",
+      "call",
+      "video_call",
       "visit",
       "online",
       "checkup",
       "consultation",
       "emergency",
+      "tele-caller",
     ])
-    .withMessage("type must be Hospital or Zoom")
+    .withMessage("type must be a valid appointment type")
     .escape(),
   body("appointmentDateTime")
     .optional()
     .isISO8601()
     .withMessage("appointmentDateTime must be a valid ISO 8601 date"),
+  body("videoUrl")
+    .optional({ values: "falsy" })
+    .trim()
+    .isLength({ max: 2048 })
+    .withMessage("videoUrl must be at most 2048 characters")
+    .isURL({ require_protocol: true })
+    .withMessage("videoUrl must be a valid URL (e.g. Google Meet link)"),
 ];
 
-/** GET /api/appointments list: filter (all|today|tomorrow), fromDate, toDate (ISO date YYYY-MM-DD), plus pagination */
+/** GET /api/appointments list: filter (all|today|tomorrow), fromDate, toDate (ISO date YYYY-MM-DD), type, sortOrder (asc|desc), plus pagination */
 const appointmentListQuery = [
   ...paginationQuery,
   query("filter")
@@ -103,6 +123,29 @@ const appointmentListQuery = [
     .trim()
     .isIn(["Today", "Upcoming", "Completed", "Cancelled"])
     .withMessage("status must be one of: Today, Upcoming, Completed, Cancelled")
+    .escape(),
+  query("type")
+    .optional()
+    .trim()
+    .isIn([
+      "hospital",
+      "zoom",
+      "call",
+      "video_call",
+      "visit",
+      "online",
+      "checkup",
+      "consultation",
+      "emergency",
+      "tele-caller",
+    ])
+    .withMessage("type must be a valid appointment type")
+    .escape(),
+  query("sortOrder")
+    .optional()
+    .trim()
+    .isIn(["asc", "desc"])
+    .withMessage("sortOrder must be asc (oldest appointment first) or desc (newest by date first)")
     .escape(),
 ];
 

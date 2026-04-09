@@ -35,6 +35,17 @@ process.once('SIGTERM', () => {
 const start = async () => {
   await connectDB();
 
+  const ks = env.RAZORPAY_KEY_SECRET && String(env.RAZORPAY_KEY_SECRET).trim();
+  const ws = env.RAZORPAY_WEBHOOK_SECRET && String(env.RAZORPAY_WEBHOOK_SECRET).trim();
+  if (ks && ws && ks === ws) {
+    console.warn(
+      '[Samvaad] RAZORPAY_WEBHOOK_SECRET equals RAZORPAY_KEY_SECRET. Webhook HMAC uses a different secret from Dashboard → Account & Settings → Webhooks → your endpoint.'
+    );
+  }
+  if (!ws && env.RAZORPAY_KEY_ID) {
+    console.warn('[Samvaad] RAZORPAY_WEBHOOK_SECRET is empty — webhook signature verification will fail until you set it.');
+  }
+
   const server = app.listen(env.PORT, async () => {
     console.log(`[Samvaad] Server running on port ${env.PORT} (${env.NODE_ENV})`);
     startLiveKitWorker();

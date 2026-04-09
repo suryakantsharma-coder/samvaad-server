@@ -34,7 +34,7 @@ const register = async ({ email, password, name, role = ROLES.USER, hospitalId }
 
   let hospital = null;
 
-  if ([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN].includes(normalizedRole)) {
+  if ([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN, ROLES.TELE_CALLER].includes(normalizedRole)) {
     if (!hospitalId) {
       const err = new Error('hospitalId is required for this role');
       err.statusCode = 400;

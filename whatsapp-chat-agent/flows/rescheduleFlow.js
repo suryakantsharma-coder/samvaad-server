@@ -11,6 +11,7 @@ const {
   combineToAppointmentDate,
 } = require("../utils/appointmentDateTime");
 const { FLOW_EXIT_HINT } = require("../utils/flowHints");
+const Hospital = require("../../src/models/hospital.model");
 
 const STEPS = {
   PICK_PATIENT: "PICK_PATIENT",
@@ -57,6 +58,26 @@ function formatDateTimeIST(d) {
 function formatAppointmentLine(a, i) {
   const when = formatDateTimeIST(a.appointmentDateTime);
   return `${i}) *${when}*`;
+}
+
+function formatHospitalPhone(hospital) {
+  const cc = String(hospital?.phoneCountryCode || "").trim();
+  const num = String(hospital?.phoneNumber || "").trim();
+  if (cc && num) return `${cc} ${num}`.replace(/\s+/g, " ").trim();
+  if (num) return num;
+  return "";
+}
+
+async function buildSameDayRescheduleReply(hospitalId) {
+  const hospital = await Hospital.findById(hospitalId)
+    .select("name phoneCountryCode phoneNumber")
+    .lean();
+  const hospitalName = hospital?.name?.trim() || "the hospital";
+  const phone = formatHospitalPhone(hospital);
+  if (phone) {
+    return `Same-day rescheduling is not available through chat. Please contact *${hospitalName}* at *${phone}* for assistance. Thank you.`;
+  }
+  return `Same-day rescheduling is not available through chat. Please contact *${hospitalName}* reception for assistance. Thank you.`;
 }
 
 async function startRescheduleFlow(ctx, phone, hospitalId) {
@@ -143,11 +164,22 @@ async function handleRescheduleMessage(ctx, text, phone, hospitalId) {
   }
 
   if (st.step === STEPS.ASK_NEW_DATE) {
-    const parsedDate = parseFlexibleDate(text, new Date());
+    const now = new Date();
+    const parsedDate = parseFlexibleDate(text, now);
     if (!parsedDate) {
       return {
         reply:
           "We could not read that date. Please send a valid date, e.g. *10 May*.",
+      };
+    }
+    const isToday =
+      parsedDate.y === now.getFullYear() &&
+      parsedDate.m0 === now.getMonth() &&
+      parsedDate.d === now.getDate();
+    if (isToday) {
+      return {
+        reply:
+          `${await buildSameDayRescheduleReply(hospitalId)}\n\nPlease provide a different future date to continue.`,
       };
     }
     st.newDateYmd = toYyyyMmDd(parsedDate.y, parsedDate.m0, parsedDate.d);

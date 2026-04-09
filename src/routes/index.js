@@ -8,6 +8,8 @@ const appointmentRoutes = require('./appointmentRoutes');
 const prescriptionRoutes = require('./prescriptionRoutes');
 const livekitRoutes = require('./livekitRoutes');
 const whatsappRoutes = require('./whatsappRoutes');
+const teleCallerRoutes = require('./teleCallerRoutes');
+const razorpayRoutes = require('../razorpay/razorpayRoutes');
 const publicRoutes = require('./publicRoutes');
 
 const router = express.Router();
@@ -22,6 +24,8 @@ router.use('/appointments', appointmentRoutes);
 router.use('/prescriptions', prescriptionRoutes);
 router.use('/livekit', livekitRoutes);
 router.use('/whatsapp', whatsappRoutes);
+router.use('/tele-caller', teleCallerRoutes);
+router.use('/razorpay', razorpayRoutes);
 
 router.get('/health', (req, res) => {
   res.json({ success: true, app: 'samvaad', timestamp: new Date().toISOString() });

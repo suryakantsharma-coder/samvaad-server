@@ -96,6 +96,23 @@ const env = {
    * use this Mongo hospital id for patient/doctor/prescription context.
    */
   WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID: (process.env.WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID || "").trim(),
+  /** Follow-up chat: base URL for tele-caller (Mongo patient ObjectId is appended as last path segment). */
+  TELECALLER_BOOKING_LINK: (process.env.TELECALLER_BOOKING_LINK || "").trim(),
+  /** Razorpay: REST API (orders, payments) and client-side payment signature verification. */
+  RAZORPAY_KEY_ID: (process.env.RAZORPAY_KEY_ID || "").trim(),
+  RAZORPAY_KEY_SECRET: (process.env.RAZORPAY_KEY_SECRET || "").trim(),
+  /** Dashboard → Account & Settings → Webhooks — secret for `POST /api/razorpay/webhook` (HMAC of raw body). */
+  RAZORPAY_WEBHOOK_SECRET: (process.env.RAZORPAY_WEBHOOK_SECRET || "").trim(),
+  /** Set to 1 or true to log each webhook POST before signature check (bytes + has signature header). */
+  RAZORPAY_WEBHOOK_DEBUG: (process.env.RAZORPAY_WEBHOOK_DEBUG || "").trim(),
+  /** Set to 0 to disable verbose webhook console logging. Default (unset) = verbose on (except NODE_ENV=test). */
+  RAZORPAY_WEBHOOK_VERBOSE: (process.env.RAZORPAY_WEBHOOK_VERBOSE || "").trim(),
+  /** Calendar used to create Meet events (`primary` or shared calendar id / email). */
+  GOOGLE_CALENDAR_ID: (process.env.GOOGLE_CALENDAR_ID || "primary").trim(),
+  /** OAuth 2.0 credentials for Google Calendar API. */
+  GOOGLE_CLIENT_ID: (process.env.GOOGLE_CLIENT_ID || "").trim(),
+  GOOGLE_CLIENT_SECRET: (process.env.GOOGLE_CLIENT_SECRET || "").trim(),
+  GOOGLE_REDIRECT_URI: (process.env.GOOGLE_REDIRECT_URI || "").trim(),
 };
 
 module.exports = env;

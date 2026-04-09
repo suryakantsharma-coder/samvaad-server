@@ -48,11 +48,13 @@ const appointmentSchema = new mongoose.Schema(
         "hospital",
         "zoom",
         "call",
+        "video_call",
         "visit",
         "online",
         "checkup",
         "consultation",
         "emergency",
+        "tele-caller",
       ],
       default: "hospital",
     },
@@ -60,6 +62,30 @@ const appointmentSchema = new mongoose.Schema(
     appointmentDateTime: {
       type: Date,
       required: true,
+    },
+
+    /** Video consult link (e.g. Google Meet). */
+    videoUrl: {
+      type: String,
+      trim: true,
+      maxlength: 2048,
+    },
+
+    /** Set when booked from Razorpay flow; avoids duplicate appointments on webhook retry. */
+    razorpayPaymentId: {
+      type: String,
+      trim: true,
+      sparse: true,
+      unique: true,
+      index: true,
+    },
+
+    /** PaymentHistory row created on webhook (tele-caller / paid video flow). */
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PaymentHistory",
+      required: false,
+      index: true,
     },
   },
   { timestamps: true },

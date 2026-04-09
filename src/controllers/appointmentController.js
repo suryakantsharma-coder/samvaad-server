@@ -3,6 +3,7 @@ const Doctor = require('../models/doctor.model');
 const Patient = require('../models/patient.model');
 const mongoose = require('mongoose');
 const { mergeHospitalFilter, getLinkedHospitalForResponse, getHospitalFilter } = require('../utils/hospitalScope');
+const { generateAppointmentId } = require('../utils/appointmentId');
 const { notifyAppointmentBooked } = require('../services/appointmentWhatsAppNotify');
 
 const DEFAULT_PAGE = 1;
@@ -41,7 +42,8 @@ function tomorrowFilter() {
 
 /**
  * @route GET /api/appointments
- * Query: filter=all|today|tomorrow, fromDate (YYYY-MM-DD), toDate (YYYY-MM-DD), doctorId, patientId, status, page, limit.
+ * Query: filter=all|today|tomorrow, fromDate (YYYY-MM-DD), toDate (YYYY-MM-DD), doctorId, patientId, status, type,
+ * sortOrder=asc|desc (appointmentDateTime; default asc), page, limit.
  * Response includes counts: { all, today, tomorrow }.
  */
 const getAll = async (req, res, next) => {
@@ -62,6 +64,9 @@ const getAll = async (req, res, next) => {
     }
     if (req.query.status) {
       baseFilter.status = req.query.status;
+    }
+    if (req.query.type) {
+      baseFilter.type = req.query.type.trim();
     }
     mergeHospitalFilter(req, baseFilter);
 
@@ -93,11 +98,17 @@ const getAll = async (req, res, next) => {
       }
     }
 
+    const sortOrder =
+      req.query.sortOrder && String(req.query.sortOrder).toLowerCase() === 'desc'
+        ? 'desc'
+        : 'asc';
+    const dateSortDir = sortOrder === 'desc' ? -1 : 1;
+
     const [appointments, total] = await Promise.all([
       Appointment.find(listFilter)
         .populate('doctor', 'fullName doctorId designation')
         .populate('patient', 'fullName patientId phoneNumber age gender')
-        .sort({ appointmentDateTime: 1, createdAt: -1 })
+        .sort({ appointmentDateTime: dateSortDir, createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
@@ -123,6 +134,7 @@ const getAll = async (req, res, next) => {
           limit,
           total,
           totalPages: Math.ceil(total / limit),
+          sortOrder,
         },
       },
     });
@@ -206,6 +218,7 @@ const getById = async (req, res, next) => {
     const appointment = await Appointment.findOne(query)
       .populate('doctor', 'fullName doctorId designation email phoneNumber')
       .populate('patient', 'fullName patientId phoneNumber age gender')
+      .populate('paymentId', 'payment_id order_id amount status paymentDate createdAt hospital patient doctor')
       .lean();
 
     if (!appointment) {
@@ -216,23 +229,6 @@ const getById = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-};
-
-/**
- * Generate unique appointmentId in format A-YYYY-000001 (e.g. A-2025-000001).
- */
-const generateAppointmentId = async () => {
-  const year = new Date().getFullYear();
-  const prefix = `A-${year}-`;
-  const last = await Appointment.findOne({ appointmentId: new RegExp(`^${prefix}`) })
-    .sort({ appointmentId: -1 })
-    .select('appointmentId')
-    .lean();
-  const nextNum = last
-    ? parseInt(last.appointmentId.slice(prefix.length), 10) + 1
-    : 1;
-  const suffix = String(nextNum).padStart(6, '0');
-  return `${prefix}${suffix}`;
 };
 
 /**
@@ -285,6 +281,7 @@ const create = async (req, res, next) => {
     const body = { ...req.body };
     delete body.appointmentId; // Always server-generated
     delete body.hospital; // Always derived from doctor/patient/user context
+    delete body.paymentId; // Set only from Razorpay webhook / server flows
 
     const appointmentId = await generateAppointmentId();
     const appointment = await Appointment.create({ ...body, appointmentId, hospital: hospitalId });
@@ -312,6 +309,7 @@ const update = async (req, res, next) => {
     const updateData = { ...req.body };
     delete updateData.appointmentId; // Immutable; backend-generated
     delete updateData.hospital; // Immutable; derived from doctor/patient
+    delete updateData.paymentId; // Immutable; set only from payment webhook flow
 
     if (updateData.doctor) {
       const doctorExists = await Doctor.findById(updateData.doctor).lean();

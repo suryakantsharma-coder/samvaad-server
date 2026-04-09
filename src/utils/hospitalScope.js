@@ -3,9 +3,9 @@ const { isHospitalRole } = require('../constants/roles');
 
 /**
  * Centralized hospital scoping for RBAC.
- * hospital_admin and doctor can only see data for their linked hospital; admin sees all.
+ * doctor, hospital_admin, and tele_caller can only see data for their linked hospital; platform admins see all.
  *
- * - If user is doctor or hospital_admin and req.user.hospital is set and valid:
+ * - If user is doctor, hospital_admin, or tele_caller and req.user.hospital is set and valid:
  *   returns { hospital: ObjectId } (scope to that hospital only). Uses ObjectId for reliable DB match.
  * - Otherwise (admin or no valid hospital): returns {} (no scope; admin sees all).
  *

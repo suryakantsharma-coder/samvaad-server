@@ -89,6 +89,38 @@ function buildAppointmentConfirmationText(appointment, hospitalName) {
   ].join("\n");
 }
 
+/** Razorpay tele-caller flow: paid video booking with Meet link in body (plain text; includes link). */
+function buildTeleCallerAppointmentBookedText(appointment, hospitalName) {
+  const patientName = appointment.patient?.fullName?.trim() || "Valued patient";
+  const doctorDisplay = formatDoctorDisplayName(appointment.doctor?.fullName);
+  const ref = appointment.appointmentId || "—";
+  const when = formatAppointmentDateTime(appointment.appointmentDateTime);
+  const facility = hospitalName?.trim() || "our facility";
+  const link = appointment.videoUrl?.trim();
+
+  const lines = [
+    `Dear ${patientName},`,
+    "",
+    `Your *tele-caller* appointment has been booked with *${facility}*.`,
+    "",
+    "*Appointment details*",
+    `• Patient: ${patientName}`,
+    `• Doctor: ${doctorDisplay}`,
+    `• Date & time: ${when}`,
+    `• Reference no.: ${ref}`,
+  ];
+  if (link) {
+    lines.push(`• Meeting link: ${link}`);
+  }
+  lines.push(
+    "",
+    "Please use the meeting link at the scheduled time if provided. To reschedule or cancel, contact the hospital.",
+    "",
+    `— ${facility}`,
+  );
+  return lines.join("\n");
+}
+
 /**
  * After an appointment is created: if the hospital has WhatsApp Cloud creds, notify the patient.
  * Uses NAMED template `APPOINTMENT_TEMPLATE_NAME` when set; otherwise plain text.
@@ -129,6 +161,19 @@ async function notifyAppointmentBooked(appointment) {
   const dt = appointment.appointmentDateTime;
 
   const templateName = env.APPOINTMENT_TEMPLATE_NAME;
+
+  if (appointment.type === "tele-caller") {
+    const textBody = buildTeleCallerAppointmentBookedText(appointment, hospitalName);
+    await sendWhatsAppText({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: appointment.patient.phoneNumber,
+      textBody,
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+    return;
+  }
 
   if (templateName) {
     await sendWhatsAppTemplate({
@@ -173,6 +218,7 @@ async function notifyAppointmentBookedById(appointmentId) {
     .populate("doctor", "fullName doctorId designation")
     .populate("patient", "fullName patientId phoneNumber age gender")
     .populate("hospital", "name phoneCountryCode")
+    .populate("paymentId", "payment_id order_id amount status paymentDate createdAt")
     .lean();
 
   if (!populated) {
