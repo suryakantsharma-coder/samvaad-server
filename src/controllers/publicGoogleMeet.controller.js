@@ -6,8 +6,9 @@ const { createMeetLink } = require("../services/googleMeet.service");
  */
 const createMeet = async (req, res, next) => {
   try {
-    const { email, startTime, endTime, summary, description } = req.body;
+    const { hospitalId, email, startTime, endTime, summary, description } = req.body;
     const meetLink = await createMeetLink({
+      hospitalId,
       email,
       startTime,
       endTime,

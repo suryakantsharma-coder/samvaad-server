@@ -1,6 +1,12 @@
 const { body } = require("express-validator");
 
 const createMeetLinkBody = [
+  body("hospitalId")
+    .trim()
+    .notEmpty()
+    .withMessage("hospitalId is required")
+    .isMongoId()
+    .withMessage("hospitalId must be a valid MongoDB id"),
   body("email")
     .trim()
     .notEmpty()

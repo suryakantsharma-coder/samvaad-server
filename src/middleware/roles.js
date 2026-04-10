@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { ROLES, hasRoleOrAbove, isHospitalRole } = require('../constants/roles');
 
 /**
@@ -130,6 +131,39 @@ const requireHospitalLink = (req, res, next) => {
 };
 
 /**
+ * Per-hospital Google Calendar OAuth: platform admins any hospital; hospital-linked roles only their hospital.
+ */
+const requireGoogleCalendarHospitalAccess = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: 'Authentication required' });
+  }
+  const hospitalId = req.params.hospitalId;
+  if (!hospitalId || !mongoose.isValidObjectId(String(hospitalId))) {
+    return res.status(400).json({ success: false, message: 'Invalid hospitalId' });
+  }
+  const role = req.user.role;
+  if (role === ROLES.ADMIN || role === ROLES.SUPER_ADMIN) {
+    return next();
+  }
+  if (isHospitalRole(role)) {
+    if (!req.user.hospital) {
+      return res.status(403).json({
+        success: false,
+        message: 'You must be linked to a hospital to access this resource.',
+      });
+    }
+    if (String(req.user.hospital) !== String(hospitalId)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only manage Google Calendar for your linked hospital.',
+      });
+    }
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+};
+
+/**
  * Only the listed roles match (no hierarchy inheritance). Use when doctor/user must not gain access.
  */
 const requireExactRoles = (...allowedRoles) => {
@@ -156,5 +190,6 @@ module.exports = {
   requireStaff,
   requireModerator,
   requireHospitalLink,
+  requireGoogleCalendarHospitalAccess,
   ROLES,
 };

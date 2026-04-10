@@ -113,6 +113,12 @@ const env = {
   GOOGLE_CLIENT_ID: (process.env.GOOGLE_CLIENT_ID || "").trim(),
   GOOGLE_CLIENT_SECRET: (process.env.GOOGLE_CLIENT_SECRET || "").trim(),
   GOOGLE_REDIRECT_URI: (process.env.GOOGLE_REDIRECT_URI || "").trim(),
+  /** HMAC secret for OAuth `state` (hospital binding). Falls back to JWT_ACCESS_SECRET if unset. */
+  GOOGLE_OAUTH_STATE_SECRET: (process.env.GOOGLE_OAUTH_STATE_SECRET || "").trim(),
+  /** After Google consent, browser redirect: e.g. https://dashboard.example.com/settings/integrations */
+  FRONTEND_GOOGLE_OAUTH_RETURN_URL: (process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || "")
+    .trim()
+    .replace(/\/$/, ""),
 };
 
 module.exports = env;

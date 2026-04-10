@@ -303,6 +303,7 @@ async function createVideoCallAppointmentAfterPayment(body) {
   const doctorName = doctorExists.fullName || "Doctor";
   const patientName = patientExists.fullName || "Patient";
   const resolvedVideoUrl = await createMeetLink({
+    hospitalId,
     attendeeEmails: [patientAttendeeEmail, doctorAttendeeEmail],
     startTime: dt.toISOString(),
     endTime: endDateTime.toISOString(),

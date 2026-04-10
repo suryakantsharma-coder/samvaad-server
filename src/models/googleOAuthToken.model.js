@@ -1,13 +1,20 @@
 const mongoose = require("mongoose");
 
+const GOOGLE_PROVIDER = "google_calendar";
+
 const googleOAuthTokenSchema = new mongoose.Schema(
   {
+    hospital: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Hospital",
+      required: true,
+      index: true,
+    },
     provider: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
-      default: "google_calendar",
+      default: GOOGLE_PROVIDER,
     },
     accessToken: {
       type: String,
@@ -36,7 +43,10 @@ const googleOAuthTokenSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
+googleOAuthTokenSchema.index({ hospital: 1, provider: 1 }, { unique: true });
+
 module.exports = mongoose.model("GoogleOAuthToken", googleOAuthTokenSchema);
+module.exports.GOOGLE_PROVIDER = GOOGLE_PROVIDER;
