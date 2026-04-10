@@ -66,5 +66,6 @@ const paymentHistorySchema = new mongoose.Schema(
 );
 
 paymentHistorySchema.index({ createdAt: -1 });
+paymentHistorySchema.index({ hospital: 1, createdAt: -1 });
 
 module.exports = mongoose.model("PaymentHistory", paymentHistorySchema);
