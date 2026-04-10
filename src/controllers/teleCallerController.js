@@ -29,7 +29,7 @@ const getPatientWithHospital = async (req, res, next) => {
 
     const lastAppointment = await Appointment.findOne({ patient: patient._id })
       .sort({ appointmentDateTime: -1, createdAt: -1 })
-      .populate('doctor', 'fullName doctorId designation')
+      .populate('doctor', 'fullName doctorId designation email')
       .lean();
 
     res.json({
