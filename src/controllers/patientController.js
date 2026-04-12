@@ -1,40 +1,27 @@
+const mongoose = require("mongoose");
 const Patient = require("../models/patient.model");
 const Appointment = require("../models/appointment.model");
 const Prescription = require("../models/prescription.model");
 const { mergeHospitalFilter, getLinkedHospitalForResponse } = require("../utils/hospitalScope");
+const {
+  getDateRangeFromQuery,
+  parseCalendarDayStartUtc,
+  parseCalendarDayEndUtc,
+  istTodayRange,
+  istTomorrowRange,
+} = require("../utils/queryDateRange");
 
 const DEFAULT_PAGE = 1;
 const APPOINTMENT_POPULATE = { path: 'doctor', select: 'fullName doctorId designation' };
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
-function startOfDayUTC(d) {
-  const date = new Date(d);
-  date.setUTCHours(0, 0, 0, 0);
-  return date;
-}
-
-function endOfDayUTC(d) {
-  const date = new Date(d);
-  date.setUTCHours(23, 59, 59, 999);
-  return date;
-}
-
-function todayFilter() {
-  return { $gte: startOfDayUTC(new Date()), $lte: endOfDayUTC(new Date()) };
-}
-
-function tomorrowFilter() {
-  const t = new Date();
-  t.setUTCDate(t.getUTCDate() + 1);
-  return { $gte: startOfDayUTC(t), $lte: endOfDayUTC(t) };
-}
-
 /**
  * @route GET /api/patients
- * Query: filter=all|today|tomorrow, fromDate (YYYY-MM-DD), toDate (YYYY-MM-DD), page, limit.
- * today/tomorrow = patients who have an appointment on that day. fromDate-toDate = patients with appointment in range.
- * Response includes counts: { all, today, tomorrow }.
+ * Query: filter=all|today|tomorrow; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day);
+ * optional doctorId; page, limit. If any date range param is set, the **list** uses patients with an appointment
+ * in that window (overrides filter=today|tomorrow for listing). doctorId scopes appointments and counts.
+ * Response counts.today / counts.tomorrow stay calendar chips; counts.inRange when a range is applied.
  */
 const getAll = async (req, res, next) => {
   try {
@@ -45,39 +32,81 @@ const getAll = async (req, res, next) => {
     );
     const skip = (page - 1) * limit;
     const filterChoice = (req.query.filter || 'all').toLowerCase();
-    const fromDate = req.query.fromDate ? req.query.fromDate.trim() : null;
-    const toDate = req.query.toDate ? req.query.toDate.trim() : null;
+
+    const { fromDate, toDate, hasDateRange: rangeParamsPresent } = getDateRangeFromQuery(req.query);
+
+    const doctorIdRaw = req.query.doctorId ? String(req.query.doctorId).trim() : '';
+    const doctorId =
+      doctorIdRaw && mongoose.isValidObjectId(doctorIdRaw)
+        ? new mongoose.Types.ObjectId(doctorIdRaw)
+        : null;
 
     const baseFilter = {};
     mergeHospitalFilter(req, baseFilter);
 
     const appointmentBaseFilter = {};
     mergeHospitalFilter(req, appointmentBaseFilter);
+    if (doctorId) {
+      appointmentBaseFilter.doctor = doctorId;
+    }
 
-    const appointmentFilterToday = { ...appointmentBaseFilter, appointmentDateTime: todayFilter() };
-    const appointmentFilterTomorrow = { ...appointmentBaseFilter, appointmentDateTime: tomorrowFilter() };
+    const appointmentFilterToday = { ...appointmentBaseFilter, appointmentDateTime: istTodayRange() };
+    const appointmentFilterTomorrow = { ...appointmentBaseFilter, appointmentDateTime: istTomorrowRange() };
 
-    const [countAll, totalAppointments, patientIdsToday, patientIdsTomorrow] = await Promise.all([
-      Patient.countDocuments(baseFilter),
-      Appointment.countDocuments(appointmentBaseFilter),
+    let rangeFilterForList = null;
+    let patientIdsInRange = null;
+    if (rangeParamsPresent) {
+      rangeFilterForList = { ...appointmentBaseFilter, appointmentDateTime: {} };
+      if (fromDate) {
+        const g = parseCalendarDayStartUtc(fromDate);
+        if (g) rangeFilterForList.appointmentDateTime.$gte = g;
+      }
+      if (toDate) {
+        const lte = parseCalendarDayEndUtc(toDate);
+        if (lte) rangeFilterForList.appointmentDateTime.$lte = lte;
+      }
+      if (
+        rangeFilterForList.appointmentDateTime.$gte != null ||
+        rangeFilterForList.appointmentDateTime.$lte != null
+      ) {
+        patientIdsInRange = await Appointment.find(rangeFilterForList).distinct('patient');
+      } else {
+        rangeFilterForList = null;
+      }
+    }
+
+    const dateRangeActive = Array.isArray(patientIdsInRange);
+
+    const appointmentCountFilter = dateRangeActive ? rangeFilterForList : appointmentBaseFilter;
+
+    const [totalAppointments, patientIdsToday, patientIdsTomorrow] = await Promise.all([
+      Appointment.countDocuments(appointmentCountFilter),
       Appointment.find(appointmentFilterToday).distinct('patient'),
       Appointment.find(appointmentFilterTomorrow).distinct('patient'),
     ]);
+
+    let countAll;
+    if (dateRangeActive) {
+      countAll = patientIdsInRange.length;
+    } else if (doctorId) {
+      countAll = (await Appointment.distinct('patient', appointmentBaseFilter)).length;
+    } else {
+      countAll = await Patient.countDocuments(baseFilter);
+    }
 
     const countToday = patientIdsToday.length;
     const countTomorrow = patientIdsTomorrow.length;
 
     const listFilter = { ...baseFilter };
-    if (filterChoice === 'today') {
+    if (dateRangeActive) {
+      listFilter._id = { $in: patientIdsInRange };
+    } else if (filterChoice === 'today') {
       listFilter._id = { $in: patientIdsToday };
     } else if (filterChoice === 'tomorrow') {
       listFilter._id = { $in: patientIdsTomorrow };
-    } else if (fromDate || toDate) {
-      const rangeFilter = { ...appointmentBaseFilter, appointmentDateTime: {} };
-      if (fromDate) rangeFilter.appointmentDateTime.$gte = startOfDayUTC(fromDate);
-      if (toDate) rangeFilter.appointmentDateTime.$lte = endOfDayUTC(toDate);
-      const patientIdsInRange = await Appointment.find(rangeFilter).distinct('patient');
-      listFilter._id = { $in: patientIdsInRange };
+    } else if (doctorId && filterChoice === 'all') {
+      const patientIdsForDoctor = await Appointment.find(appointmentBaseFilter).distinct('patient');
+      listFilter._id = { $in: patientIdsForDoctor };
     }
 
     const [patients, total] = await Promise.all([
@@ -88,6 +117,20 @@ const getAll = async (req, res, next) => {
     const patientIds = patients.map((p) => p._id);
     const appointmentFilter = patientIds.length ? { patient: { $in: patientIds } } : {};
     mergeHospitalFilter(req, appointmentFilter);
+    if (doctorId) {
+      appointmentFilter.doctor = doctorId;
+    }
+    if (dateRangeActive) {
+      appointmentFilter.appointmentDateTime = {};
+      if (fromDate) {
+        const g = parseCalendarDayStartUtc(fromDate);
+        if (g) appointmentFilter.appointmentDateTime.$gte = g;
+      }
+      if (toDate) {
+        const lte = parseCalendarDayEndUtc(toDate);
+        if (lte) appointmentFilter.appointmentDateTime.$lte = lte;
+      }
+    }
     const appointments = patientIds.length
       ? await Appointment.find(appointmentFilter)
           .populate(APPOINTMENT_POPULATE)
@@ -107,6 +150,15 @@ const getAll = async (req, res, next) => {
       appointments: appointmentsByPatient[String(p._id)] || [],
     }));
 
+    const counts = {
+      all: countAll,
+      today: countToday,
+      tomorrow: countTomorrow,
+    };
+    if (dateRangeActive) {
+      counts.inRange = patientIdsInRange.length;
+    }
+
     res.json({
       success: true,
       ...getLinkedHospitalForResponse(req),
@@ -115,11 +167,15 @@ const getAll = async (req, res, next) => {
           totalPatients: countAll,
           totalAppointments,
         },
-        counts: {
-          all: countAll,
-          today: countToday,
-          tomorrow: countTomorrow,
-        },
+        counts,
+        ...(dateRangeActive
+          ? {
+              dateRange: {
+                fromDate: fromDate || null,
+                toDate: toDate || null,
+              },
+            }
+          : {}),
         patients: patientsWithAppointments,
         pagination: {
           page,

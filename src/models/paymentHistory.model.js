@@ -24,11 +24,11 @@ const paymentHistorySchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
-    /** captured | failed — aligned with payment.captured / payment.failed webhooks */
+    /** captured | failed | pending — pending from payment.authorized (awaiting capture / failure) */
     status: {
       type: String,
       required: true,
-      enum: ["captured", "failed"],
+      enum: ["captured", "failed", "pending"],
     },
     /** Razorpay payment entity created_at (UTC). */
     createdAt: {

@@ -7,7 +7,7 @@ const {
   createPrescription,
   updatePrescription,
   prescriptionListQuery,
-  searchQueryParam,
+  prescriptionSearchQuery,
 } = require('../validators/prescription.validator');
 const prescriptionController = require('../controllers/prescriptionController');
 const prescriptionDotController = require('../controllers/prescription.controller');
@@ -19,7 +19,7 @@ router.use(requireHospitalLink);
 
 // List (with filters), search, get by id, update
 router.get('/', requireStaff, prescriptionListQuery, validate, prescriptionController.getAll);
-router.get('/search', requireStaff, searchQueryParam, validate, prescriptionController.search);
+router.get('/search', requireStaff, prescriptionSearchQuery, validate, prescriptionController.search);
 router.get(
   '/reminders/dashboard',
   requireStaff,

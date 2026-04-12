@@ -6,9 +6,18 @@ require("dotenv").config({
   path: path.resolve(__dirname, "..", "..", ".env"),
 });
 
+/**
+ * Filesystem directory for public `/uploads/...` (logos, etc.). Uses repo `uploads/` by default
+ * so paths do not depend on `process.cwd()`. Set `UPLOADS_ROOT` for Docker volumes.
+ */
+const UPLOADS_ROOT = process.env.UPLOADS_ROOT
+  ? path.resolve(process.env.UPLOADS_ROOT)
+  : path.resolve(__dirname, "..", "..", "uploads");
+
 const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: parseInt(process.env.PORT, 10) || 3000,
+  UPLOADS_ROOT,
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_ACCESS_SECRET:
     process.env.JWT_ACCESS_SECRET ||

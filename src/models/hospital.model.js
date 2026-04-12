@@ -64,16 +64,53 @@ const hospitalSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /** Main emergency / casualty contact (digits or E.164-style string). */
+    emergencyNumber: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    /** Front desk / reception. */
+    receptionistNumber: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    /** WhatsApp business / hospital line (digits or international format). */
+    whatsappNumber: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    /** At least one public review link (Google, Practo, etc.). */
+    reviewUrls: {
+      type: [String],
+      required: true,
+      validate: {
+        validator(v) {
+          return (
+            Array.isArray(v) &&
+            v.length > 0 &&
+            v.every((u) => typeof u === "string" && u.trim().length > 0)
+          );
+        },
+        message: "reviewUrls must be a non-empty array of non-empty strings",
+      },
+    },
+
     logoUrl: {
       type: String,
       default: "",
       trim: true,
     },
 
-    googleReviewUrl: {
-      type: String,
-      default: "",
-      trim: true,
+    /** Platform-wide: inactive hospitals can be hidden from listings (super_admin can filter GET list/search). */
+    isActive: {
+      type: Boolean,
+      default: true,
     },
   },
   {

@@ -1,5 +1,5 @@
 const HOSPITAL_POPULATE_FIELDS =
-  'name phoneCountryCode phoneNumber email contactPerson registrationNumber address city pincode logoUrl';
+  'name phoneCountryCode phoneNumber email contactPerson registrationNumber address city pincode url logoUrl emergencyNumber receptionistNumber whatsappNumber reviewUrls';
 const DOCTOR_POPULATE_FIELDS = 'fullName doctorId designation email phoneNumber availability';
 
 /**

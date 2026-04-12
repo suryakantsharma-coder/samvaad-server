@@ -1,10 +1,60 @@
 const Doctor = require('../models/doctor.model');
 const mongoose = require('mongoose');
-const { mergeHospitalFilter, getLinkedHospitalForResponse } = require('../utils/hospitalScope');
+const {
+  mergeHospitalFilter,
+  getLinkedHospitalForResponse,
+  getHospitalFilter,
+} = require('../utils/hospitalScope');
+const { sanitizeAvailabilityForDisplay } = require('../utils/doctorAvailabilityText');
+const { ROLES } = require('../constants/roles');
+
+/** Normalize availability for JSON (undo validator .escape() / double-encoded entities). */
+function withNormalizedAvailability(doc) {
+  if (!doc || typeof doc.availability !== 'string') return doc;
+  const normalized = sanitizeAvailabilityForDisplay(doc.availability);
+  return { ...doc, availability: normalized || doc.availability };
+}
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+/**
+ * @route GET /api/doctors/names
+ * One endpoint for JWT staff: `doctor` → doctors in linked hospital only; `hospital_admin` / `admin` / `super_admin` → same hospital or all (optional ?hospitalId= for platform admin). No pagination.
+ */
+const listDoctorNames = async (req, res, next) => {
+  try {
+    const filter = {};
+    const role = req.user.role;
+
+    if (role === ROLES.DOCTOR) {
+      mergeHospitalFilter(req, filter);
+    } else {
+      const scope = getHospitalFilter(req);
+      if (scope.hospital) {
+        filter.hospital = scope.hospital;
+      } else if (req.query.hospitalId && mongoose.isValidObjectId(req.query.hospitalId)) {
+        filter.hospital = req.query.hospitalId;
+      }
+    }
+
+    const doctors = await Doctor.find(filter)
+      .select('fullName')
+      .sort({ fullName: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: {
+        doctors: doctors.map((d) => ({ _id: d._id, fullName: d.fullName })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
 
 /**
  * @route GET /api/doctors
@@ -27,7 +77,10 @@ const getAll = async (req, res, next) => {
       success: true,
       ...getLinkedHospitalForResponse(req),
       data: {
-        doctors,
+        overall: {
+          totalDoctors: total,
+        },
+        doctors: doctors.map(withNormalizedAvailability),
         pagination: {
           page,
           limit,
@@ -76,7 +129,7 @@ const searchByName = async (req, res, next) => {
       success: true,
       ...getLinkedHospitalForResponse(req),
       data: {
-        doctors,
+        doctors: doctors.map(withNormalizedAvailability),
         pagination: {
           page,
           limit,
@@ -101,7 +154,11 @@ const getById = async (req, res, next) => {
     if (!doctor) {
       return res.status(404).json({ success: false, message: 'Doctor not found' });
     }
-    res.json({ success: true, ...getLinkedHospitalForResponse(req), data: { doctor } });
+    res.json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: { doctor: withNormalizedAvailability(doctor) },
+    });
   } catch (err) {
     next(err);
   }
@@ -136,9 +193,17 @@ const create = async (req, res, next) => {
     const body = { ...req.body };
     delete body.hospital; // Never allow from request; always use req.user.hospital
 
+    if (body.availability != null && typeof body.availability === 'string') {
+      const n = sanitizeAvailabilityForDisplay(body.availability);
+      body.availability = n || body.availability;
+    }
+
     const doctorId = await generateDoctorId();
     const doctor = await Doctor.create({ ...body, doctorId, hospital: hospitalId });
-    res.status(201).json({ success: true, data: { doctor: doctor.toObject() } });
+    res.status(201).json({
+      success: true,
+      data: { doctor: withNormalizedAvailability(doctor.toObject()) },
+    });
   } catch (err) {
     if (err.code === 11000) {
       return res.status(409).json({
@@ -158,6 +223,11 @@ const update = async (req, res, next) => {
     const body = { ...req.body };
     delete body.hospital;
 
+    if (body.availability != null && typeof body.availability === 'string') {
+      const n = sanitizeAvailabilityForDisplay(body.availability);
+      body.availability = n || body.availability;
+    }
+
     const filter = { _id: req.params.id };
     mergeHospitalFilter(req, filter);
 
@@ -171,7 +241,7 @@ const update = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Doctor not found' });
     }
 
-    res.json({ success: true, data: { doctor } });
+    res.json({ success: true, data: { doctor: withNormalizedAvailability(doctor) } });
   } catch (err) {
     if (err.code === 11000) {
       return res.status(409).json({
@@ -201,6 +271,7 @@ const remove = async (req, res, next) => {
 };
 
 module.exports = {
+  listDoctorNames,
   getAll,
   searchByName,
   getById,

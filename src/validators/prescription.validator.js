@@ -82,7 +82,71 @@ const updatePrescription = [
     .escape(),
 ];
 
-/** GET /api/prescriptions list: page, limit, status */
+/** Shared: IST calendar-day range + dateBy (omit → appointment; created = record createdAt). */
+const prescriptionDateRangeQuery = [
+  query('dateBy')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isIn(['created', 'appointment'])
+    .withMessage('dateBy must be created or appointment')
+    .escape(),
+  query('date_by')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isIn(['created', 'appointment'])
+    .withMessage('date_by must be created or appointment')
+    .escape(),
+  query('fromDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('fromDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('toDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('toDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('startDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('startDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('endDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('endDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('from_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('from_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('to_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('to_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('start_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('start_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('end_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('end_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+];
+
+/** GET /api/prescriptions list: page, limit, status; optional date range (IST day); dateBy omitted = appointment (visit date); dateBy=created = createdAt. */
 const prescriptionListQuery = [
   ...paginationQuery,
   query('status')
@@ -91,11 +155,31 @@ const prescriptionListQuery = [
     .isIn(['Draft', 'Completed', 'Cancelled'])
     .withMessage('status must be one of: Draft, Completed, Cancelled')
     .escape(),
+  ...prescriptionDateRangeQuery,
+];
+
+/** GET /api/prescriptions/search — q matches notes, patientName, medicines, or linked patient fullName/patientId; optional status + date range like list. */
+const prescriptionSearchQuery = [
+  query('q')
+    .optional()
+    .trim()
+    .isLength({ max: 200 })
+    .withMessage('q must be at most 200 characters')
+    .escape(),
+  ...paginationQuery,
+  query('status')
+    .optional()
+    .trim()
+    .isIn(['Draft', 'Completed', 'Cancelled'])
+    .withMessage('status must be one of: Draft, Completed, Cancelled')
+    .escape(),
+  ...prescriptionDateRangeQuery,
 ];
 
 module.exports = {
   createPrescription,
   updatePrescription,
   prescriptionListQuery,
+  prescriptionSearchQuery,
   searchQueryParam,
 };

@@ -2,6 +2,7 @@ const express = require('express');
 const authController = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { validate } = require('../middleware/validate');
+const { requireUserProfilePic } = require('../middleware/upload');
 const { allowOnlyProfileFields, updateMeProfile } = require('../validators/auth.validator');
 
 const router = express.Router();
@@ -20,6 +21,7 @@ router.patch(
   validate,
   authController.updateMe
 );
+router.post('/me/profile-picture', requireUserProfilePic, authController.uploadProfilePicture);
 router.post('/logout-all', authController.logoutAll);
 
 module.exports = router;

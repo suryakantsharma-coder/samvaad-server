@@ -61,9 +61,14 @@ const updatePatient = [
     .escape(),
 ];
 
-/** GET /api/patients list: filter (all|today|tomorrow), fromDate, toDate (ISO YYYY-MM-DD), plus pagination. today/tomorrow = patients with an appointment on that day. */
+/** GET /api/patients list: filter (all|today|tomorrow, IST calendar day), date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST day), optional doctorId, pagination. Date range overrides filter for the patient list; embedded appointments match the range when set. */
 const patientListQuery = [
   ...paginationQuery,
+  query('doctorId')
+    .optional()
+    .trim()
+    .isMongoId()
+    .withMessage('doctorId must be a valid MongoDB id'),
   query('filter')
     .optional()
     .trim()
@@ -71,16 +76,52 @@ const patientListQuery = [
     .withMessage('filter must be one of: all, today, tomorrow')
     .escape(),
   query('fromDate')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
     .isISO8601()
     .withMessage('fromDate must be a valid ISO date (e.g. YYYY-MM-DD)')
     .escape(),
   query('toDate')
-    .optional()
+    .optional({ values: 'falsy' })
     .trim()
     .isISO8601()
     .withMessage('toDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('startDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('startDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('endDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('endDate must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('from_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('from_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('to_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('to_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('start_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('start_date must be a valid ISO date (e.g. YYYY-MM-DD)')
+    .escape(),
+  query('end_date')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601()
+    .withMessage('end_date must be a valid ISO date (e.g. YYYY-MM-DD)')
     .escape(),
 ];
 

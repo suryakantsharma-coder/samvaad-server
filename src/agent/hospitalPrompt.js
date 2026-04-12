@@ -87,6 +87,9 @@ Hospital Details:
 ${hospital.name}
 ${hospital.address}, ${hospital.city} - ${hospital.pincode}
 Phone: ${hospital.phoneCountryCode || "+91"} ${hospital.phoneNumber}
+Emergency: ${hospital.emergencyNumber || "N/A"}
+Reception: ${hospital.receptionistNumber || "N/A"}
+WhatsApp: ${hospital.whatsappNumber || "N/A"}
 
 Available Doctors:
 ${doctorListText || "No doctors currently available."}

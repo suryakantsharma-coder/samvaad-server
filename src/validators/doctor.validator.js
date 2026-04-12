@@ -32,9 +32,8 @@ const createDoctor = [
   body('availability')
     .optional()
     .trim()
-    .isLength({ max: 100 })
-    .withMessage('availability must be at most 100 characters')
-    .escape(),
+    .isLength({ max: 500 })
+    .withMessage('availability must be at most 500 characters'),
   body('status')
     .optional()
     .trim()
@@ -97,9 +96,8 @@ const updateDoctor = [
   body('availability')
     .optional()
     .trim()
-    .isLength({ max: 100 })
-    .withMessage('availability must be at most 100 characters')
-    .escape(),
+    .isLength({ max: 500 })
+    .withMessage('availability must be at most 500 characters'),
   body('status')
     .optional()
     .trim()

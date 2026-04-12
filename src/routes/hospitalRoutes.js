@@ -7,9 +7,9 @@ const {
   requireGoogleCalendarHospitalAccess,
 } = require('../middleware/roles');
 const { validate } = require('../middleware/validate');
-const { validObjectId, paginationQuery, searchQueryParam } = require('../validators/common');
+const { validObjectId } = require('../validators/common');
 const { optionalHospitalLogo } = require('../middleware/upload');
-const { updateHospital } = require('../validators/hospital.validator');
+const { hospitalListQuery, hospitalSearchQuery, createHospital, updateHospital } = require('../validators/hospital.validator');
 const hospitalController = require('../controllers/hospitalController');
 const hospitalGoogleCalendarController = require('../controllers/hospitalGoogleCalendarController');
 
@@ -34,10 +34,10 @@ router.get(
 );
 
 // GET: admin (all) or hospital_admin (own only). POST/DELETE: admin only.
-router.get('/', requireAdmin, paginationQuery, validate, hospitalController.getAll);
-router.get('/search', requireAdmin, searchQueryParam, validate, hospitalController.search);
+router.get('/', requireAdmin, hospitalListQuery, validate, hospitalController.getAll);
+router.get('/search', requireAdmin, hospitalSearchQuery, validate, hospitalController.search);
 router.get('/:id', requireAdmin, validObjectId('id'), validate, hospitalController.getById);
-router.post('/', requireAdminOnly, optionalHospitalLogo, validate, hospitalController.create);
+router.post('/', requireAdminOnly, optionalHospitalLogo, createHospital, validate, hospitalController.create);
 router.patch('/:id', requireAdmin, validObjectId('id'), optionalHospitalLogo, updateHospital, validate, hospitalController.update);
 router.delete('/:id', requireAdminOnly, validObjectId('id'), validate, hospitalController.remove);
 

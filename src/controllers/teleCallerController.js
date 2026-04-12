@@ -149,6 +149,7 @@ const createPaymentTransaction = async (req, res, next) => {
       patient: new mongoose.Types.ObjectId(patientId),
       hospital: new mongoose.Types.ObjectId(hospitalId),
       appointment: new mongoose.Types.ObjectId(appointmentId),
+      recordedVia: 'tele_caller_api',
       razorpayPaymentId: razorpay_payment_id,
       razorpayOrderId: razorpay_order_id,
       razorpaySignature: razorpay_signature,

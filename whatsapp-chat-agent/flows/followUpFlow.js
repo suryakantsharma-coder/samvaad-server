@@ -95,12 +95,13 @@ async function handleTelecallerSelection(ctx, phone, hospitalId) {
 
 async function handleGiveReview(hospitalId) {
   const hospital = await Hospital.findById(hospitalId)
-    .select("name googleReviewUrl url")
+    .select("name reviewUrls url")
     .lean();
-  const reviewUrl =
-    String(hospital?.googleReviewUrl || "").trim() ||
-    String(hospital?.url || "").trim();
-  if (!reviewUrl) {
+  const urls = Array.isArray(hospital?.reviewUrls)
+    ? hospital.reviewUrls.map((u) => String(u || "").trim()).filter(Boolean)
+    : [];
+  const fallback = String(hospital?.url || "").trim();
+  if (urls.length === 0 && !fallback) {
     const hospitalName = hospital?.name?.trim() || "the hospital";
     return {
       reply:
@@ -108,9 +109,15 @@ async function handleGiveReview(hospitalId) {
       endFlow: true,
     };
   }
+  const lines =
+    urls.length > 0
+      ? urls.map((u, i) => `${i + 1}. ${u}`).join("\n")
+      : fallback;
   return {
     reply:
-      `We’d love your feedback! Please share your experience here:\n${reviewUrl}`,
+      urls.length > 1
+        ? `We’d love your feedback! Please share your experience:\n${lines}`
+        : `We’d love your feedback! Please share your experience here:\n${urls[0] || fallback}`,
     endFlow: true,
   };
 }

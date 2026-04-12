@@ -38,6 +38,12 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    /** Public URL path for profile picture, e.g. /uploads/users/filename.jpg (served as static file). */
+    profilePicUrl: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     isActive: {
       type: Boolean,
       default: true,

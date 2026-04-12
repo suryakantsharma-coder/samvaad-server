@@ -95,7 +95,7 @@ const updateAppointment = [
     .withMessage("videoUrl must be a valid URL (e.g. Google Meet link)"),
 ];
 
-/** GET /api/appointments list: filter (all|today|tomorrow), fromDate, toDate (ISO date YYYY-MM-DD), type, sortOrder (asc|desc), plus pagination */
+/** GET /api/appointments list: filter (all|today|tomorrow); date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST calendar day); doctorId, patientId, status, type, sortOrder, pagination. Date range overrides filter for the listed rows. */
 const appointmentListQuery = [
   ...paginationQuery,
   query("filter")
@@ -105,16 +105,52 @@ const appointmentListQuery = [
     .withMessage("filter must be one of: all, today, tomorrow")
     .escape(),
   query("fromDate")
-    .optional()
+    .optional({ values: "falsy" })
     .trim()
     .isISO8601()
     .withMessage("fromDate must be a valid ISO date (e.g. YYYY-MM-DD)")
     .escape(),
   query("toDate")
-    .optional()
+    .optional({ values: "falsy" })
     .trim()
     .isISO8601()
     .withMessage("toDate must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("startDate")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("startDate must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("endDate")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("endDate must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("from_date")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("from_date must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("to_date")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("to_date must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("start_date")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("start_date must be a valid ISO date (e.g. YYYY-MM-DD)")
+    .escape(),
+  query("end_date")
+    .optional({ values: "falsy" })
+    .trim()
+    .isISO8601()
+    .withMessage("end_date must be a valid ISO date (e.g. YYYY-MM-DD)")
     .escape(),
   query("doctorId").optional().trim().isMongoId().withMessage("Invalid doctorId"),
   query("patientId").optional().trim().isMongoId().withMessage("Invalid patientId"),

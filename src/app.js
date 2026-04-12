@@ -8,8 +8,8 @@ const { exchangeCodeAndStoreTokensForHospital } = require("./services/googleMeet
 const env = require("./config/env");
 const app = express();
 
-// Serve uploaded files (e.g. hospital logos)
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+// Serve uploaded files (e.g. hospital logos) — same root as multer (see env.UPLOADS_ROOT)
+app.use("/uploads", express.static(env.UPLOADS_ROOT));
 
 // allowed origins
 const allowedOrigins = [
@@ -135,6 +135,11 @@ app.use((req, res, next) => {
     return next();
   }
   if (req.method === "POST" && req.path === "/whatsapp/webhook") {
+    return next();
+  }
+  // Do not run express.json on multipart — it can interfere with multer reading the stream.
+  const ct = req.headers["content-type"] || "";
+  if (ct.toLowerCase().includes("multipart/form-data")) {
     return next();
   }
   json10kb(req, res, next);

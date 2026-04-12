@@ -12,6 +12,9 @@ const router = express.Router();
 router.use(protect);
 router.use(requireHospitalLink); // Hospital roles (doctor, hospital_admin) must have linked hospital; only see that hospital's data
 
+/** GET /api/doctors/names — staff JWT: doctor vs admin scoping inside handler (no pagination). */
+router.get('/names', requireStaff, doctorController.listDoctorNames);
+
 // Doctor, hospital_admin, admin: read-only (hospital-scoped for doctor/hospital_admin)
 router.get('/', requireStaff, paginationQuery, validate, doctorController.getAll);
 router.get('/search', requireStaff, searchDoctorsQuery, validate, doctorController.searchByName);

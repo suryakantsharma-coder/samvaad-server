@@ -12,10 +12,12 @@ const teleCallerRoutes = require('./teleCallerRoutes');
 const paymentRoutes = require('./paymentRoutes');
 const razorpayRoutes = require('../razorpay/razorpayRoutes');
 const publicRoutes = require('./publicRoutes');
+const medicineRoutes = require('./medicineRoutes');
 
 const router = express.Router();
 
 router.use('/public', publicRoutes);
+router.use('/medicines', medicineRoutes);
 router.use('/auth', authRoutes);
 router.use('/admin', adminRoutes);
 router.use('/hospitals', hospitalRoutes);

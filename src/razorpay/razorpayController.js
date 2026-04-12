@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const env = require("../config/env");
 const { upsertFromRazorpayWebhook } = require("../services/paymentHistory.service");
+const { upsertPaymentTransactionFromWebhook } = require("../services/paymentTransactionWebhook.service");
 const { tryBookVideoCallOnPaymentCaptured } = require("../services/razorpayAppointmentBooking.service");
 const { notifyAppointmentBooked } = require("../services/appointmentWhatsAppNotify");
 const { getRazorpayInstance } = require("./client");
@@ -240,7 +241,7 @@ const webhookInfo = (req, res) => {
       checklist: [
         "Frontend / Checkout must use Key ID starting with rzp_test_. Live keys never trigger Test webhooks.",
         "In Razorpay Dashboard, switch to Test mode, then Account & Settings → Webhooks → add your URL. If asked for OTP in test mode, use 754081 (Razorpay default per docs).",
-        "Subscribe to payment.captured and payment.failed (required for PaymentHistory). Optionally payment.authorized.",
+        "Subscribe to payment.captured, payment.failed, and payment.authorized (pending in PaymentHistory).",
         "Put the Test webhook secret into RAZORPAY_WEBHOOK_SECRET (different from Live).",
         "Domains like ngrok.io and webhook.site are blacklisted; trycloudflare.com is not in Razorpay’s published blocklist.",
         "If your endpoint returns non-2xx, Razorpay may stop retrying or disable the webhook — check Webhook logs in the Dashboard.",
@@ -255,7 +256,7 @@ const webhookInfo = (req, res) => {
 /**
  * POST /api/razorpay/webhook
  * Requires `req.rawBody` (Buffer) from express.json verify hook + X-Razorpay-Signature header.
- * Persists `payment.captured` and `payment.failed` to PaymentHistory.
+ * Persists `payment.captured`, `payment.failed`, and `payment.authorized` (pending) to PaymentHistory and PaymentTransaction.
  */
 const webhook = async (req, res) => {
   const verbose = shouldLogRazorpayWebhookVerbose();
@@ -340,9 +341,14 @@ const webhook = async (req, res) => {
   }
 
   let storedPaymentHistory = null;
-  if (event === "payment.captured" || event === "payment.failed") {
+  if (
+    event === "payment.captured" ||
+    event === "payment.failed" ||
+    event === "payment.authorized"
+  ) {
     try {
       storedPaymentHistory = await upsertFromRazorpayWebhook(event, payload);
+      const storedTx = await upsertPaymentTransactionFromWebhook(event, payload);
       if (verbose && storedPaymentHistory) {
         console.log(
           "[Razorpay webhook] PaymentHistory stored:",
@@ -350,11 +356,18 @@ const webhook = async (req, res) => {
           storedPaymentHistory.status
         );
       }
+      if (verbose && storedTx) {
+        console.log(
+          "[Razorpay webhook] PaymentTransaction stored:",
+          storedTx.razorpayPaymentId,
+          storedTx.razorpayStatus
+        );
+      }
     } catch (err) {
-      console.error("[Razorpay webhook] PaymentHistory save failed:", err.message);
+      console.error("[Razorpay webhook] Payment persist failed:", err.message);
       return res.status(500).json({
         success: false,
-        message: "Failed to save payment history",
+        message: "Failed to save payment records",
       });
     }
   }

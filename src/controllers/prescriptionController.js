@@ -9,6 +9,12 @@ const {
   applyPrescriptionPopulate,
   enrichMedicinesWithDoctorHospital,
 } = require('../utils/prescriptionPopulate');
+const {
+  getDateRangeFromQuery,
+  parseCalendarDayStartUtc,
+  parseCalendarDayEndUtc,
+  firstTrimmedQueryValue,
+} = require('../utils/queryDateRange');
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -53,8 +59,78 @@ function normalizeFollowUp(followUp) {
 }
 
 /**
+ * Apply IST calendar-day range to a prescription query filter (same semantics as payments).
+ * When `dateBy=appointment`, combines with an existing text-search `$or` via `$and` so both match.
+ *
+ * If `dateBy` is omitted, defaults to **appointment** — only `prescription.appointmentDate`
+ * (IST calendar-day bounds). Pass `dateBy=created` for `createdAt`.
+ *
+ * @returns {Promise<{ dateRangeApplied: boolean, fromDate: string|null, toDate: string|null, filterByAppointmentDate: boolean }>}
+ */
+async function mergePrescriptionDateRange(req, filter, query) {
+  const { fromDate, toDate, hasDateRange: hasRangeParams } = getDateRangeFromQuery(query);
+  const dateByParam = firstTrimmedQueryValue(query, ['dateBy', 'date_by']);
+  const dateBy = dateByParam ? String(dateByParam).toLowerCase() : 'appointment';
+  const filterByAppointmentDate = dateBy === 'appointment';
+
+  if (!hasRangeParams) {
+    return {
+      dateRangeApplied: false,
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+      filterByAppointmentDate,
+    };
+  }
+
+  const rangeClause = {};
+  if (fromDate) {
+    const g = parseCalendarDayStartUtc(fromDate);
+    if (g) rangeClause.$gte = g;
+  }
+  if (toDate) {
+    const lte = parseCalendarDayEndUtc(toDate);
+    if (lte) rangeClause.$lte = lte;
+  }
+  if (!(rangeClause.$gte || rangeClause.$lte)) {
+    return {
+      dateRangeApplied: false,
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+      filterByAppointmentDate,
+    };
+  }
+
+  if (filterByAppointmentDate) {
+    const appointmentDateClause = { appointmentDate: rangeClause };
+    if (filter.$or && Array.isArray(filter.$or)) {
+      const searchOr = filter.$or;
+      delete filter.$or;
+      filter.$and = [{ $or: searchOr }, appointmentDateClause];
+    } else {
+      Object.assign(filter, appointmentDateClause);
+    }
+    return {
+      dateRangeApplied: true,
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+      filterByAppointmentDate: true,
+    };
+  }
+
+  filter.createdAt = rangeClause;
+  return {
+    dateRangeApplied: true,
+    fromDate: fromDate || null,
+    toDate: toDate || null,
+    filterByAppointmentDate: false,
+  };
+}
+
+/**
  * @route GET /api/prescriptions
- * Query: page, limit, status (Draft|Completed|Cancelled).
+ * Query: page, limit, status; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day).
+ * `dateBy` (or `date_by`): omitted → **appointment** (`prescription.appointmentDate` only, IST days);
+ * `created` → createdAt.
  */
 const getAll = async (req, res, next) => {
   try {
@@ -65,22 +141,50 @@ const getAll = async (req, res, next) => {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     mergeHospitalFilter(req, filter);
+    const baseFilter = { ...filter };
 
-    const [listRows, total] = await Promise.all([
+    const { dateRangeApplied, fromDate, toDate, filterByAppointmentDate } = await mergePrescriptionDateRange(
+      req,
+      filter,
+      req.query,
+    );
+
+    const [listRows, total, countAllUnscoped] = await Promise.all([
       applyPrescriptionPopulate(Prescription.find(filter))
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Prescription.countDocuments(filter),
+      Prescription.countDocuments(baseFilter),
     ]);
+
+    const countAll = dateRangeApplied ? total : countAllUnscoped;
+    const counts = {
+      all: countAll,
+      ...(dateRangeApplied ? { inRange: total } : {}),
+    };
 
     const prescriptions = listRows.map((p) => enrichMedicinesWithDoctorHospital(p));
 
+    res.set('Cache-Control', 'no-store');
     res.json({
       success: true,
       ...getLinkedHospitalForResponse(req),
       data: {
+        overall: {
+          totalPrescriptions: countAll,
+        },
+        counts,
+        ...(dateRangeApplied
+          ? {
+              dateRange: {
+                fromDate: fromDate || null,
+                toDate: toDate || null,
+                dateBy: filterByAppointmentDate ? 'appointment' : 'created',
+              },
+            }
+          : {}),
         prescriptions,
         pagination: {
           page,
@@ -97,7 +201,8 @@ const getAll = async (req, res, next) => {
 
 /**
  * @route GET /api/prescriptions/search?q=...
- * Search in notes and medicine names.
+ * Search notes, snapshot patientName, medicine fields, and patients (fullName / patientId) hospital-scoped.
+ * Optional status, fromDate/toDate (IST), dateBy (omit → appointment on prescription.appointmentDate).
  */
 const search = async (req, res, next) => {
   try {
@@ -107,33 +212,72 @@ const search = async (req, res, next) => {
     const skip = (page - 1) * limit;
 
     const filter = {};
+    if (req.query.status) filter.status = req.query.status;
     mergeHospitalFilter(req, filter);
 
     if (q) {
       const regex = { $regex: q, $options: 'i' };
-      filter.$or = [
+      const orClause = [
         { notes: regex },
+        { patientName: regex },
         { 'medicines.name': regex },
         { 'medicines.dosage': regex },
         { 'medicines.frequency': regex },
       ];
+      const patientFilter = {};
+      mergeHospitalFilter(req, patientFilter);
+      const patientIds = await Patient.find({
+        ...patientFilter,
+        $or: [{ fullName: regex }, { patientId: regex }],
+      }).distinct('_id');
+      if (patientIds.length) orClause.push({ patient: { $in: patientIds } });
+      filter.$or = orClause;
     }
 
-    const [searchRows, total] = await Promise.all([
+    const baseFilter = { ...filter };
+
+    const { dateRangeApplied, fromDate, toDate, filterByAppointmentDate } = await mergePrescriptionDateRange(
+      req,
+      filter,
+      req.query,
+    );
+
+    const [searchRows, total, countAllUnscoped] = await Promise.all([
       applyPrescriptionPopulate(Prescription.find(filter))
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
       Prescription.countDocuments(filter),
+      Prescription.countDocuments(baseFilter),
     ]);
+
+    const countAll = dateRangeApplied ? total : countAllUnscoped;
+    const counts = {
+      all: countAll,
+      ...(dateRangeApplied ? { inRange: total } : {}),
+    };
 
     const prescriptions = searchRows.map((p) => enrichMedicinesWithDoctorHospital(p));
 
+    res.set('Cache-Control', 'no-store');
     res.json({
       success: true,
       ...getLinkedHospitalForResponse(req),
       data: {
+        overall: {
+          totalPrescriptions: countAll,
+        },
+        counts,
+        ...(dateRangeApplied
+          ? {
+              dateRange: {
+                fromDate: fromDate || null,
+                toDate: toDate || null,
+                dateBy: filterByAppointmentDate ? 'appointment' : 'created',
+              },
+            }
+          : {}),
         prescriptions,
         pagination: {
           page,
@@ -191,11 +335,12 @@ const create = async (req, res, next) => {
     }
 
     let hospitalId = patient.hospital || null;
+    let linkedAppointment = null;
     if (appointmentId && mongoose.isValidObjectId(appointmentId)) {
-      const appointment = await Appointment.findById(appointmentId).lean();
-      if (appointment) {
-        hospitalId = appointment.hospital || hospitalId;
-        if (patient.hospital && appointment.hospital && !patient.hospital.equals(appointment.hospital)) {
+      linkedAppointment = await Appointment.findById(appointmentId).lean();
+      if (linkedAppointment) {
+        hospitalId = linkedAppointment.hospital || hospitalId;
+        if (patient.hospital && linkedAppointment.hospital && !patient.hospital.equals(linkedAppointment.hospital)) {
           return res.status(400).json({
             success: false,
             message: 'Appointment and patient must belong to the same hospital',
@@ -216,9 +361,16 @@ const create = async (req, res, next) => {
       }
     }
 
-    const appointmentDate = req.body.appointmentDate
+    let appointmentDate = req.body.appointmentDate
       ? new Date(req.body.appointmentDate)
       : undefined;
+    if (
+      (!appointmentDate || isNaN(appointmentDate.getTime())) &&
+      linkedAppointment &&
+      linkedAppointment.appointmentDateTime
+    ) {
+      appointmentDate = new Date(linkedAppointment.appointmentDateTime);
+    }
     const followUp = normalizeFollowUp(req.body.followUp);
     const patientName = typeof req.body.patientName === 'string' ? req.body.patientName.trim() : '';
 

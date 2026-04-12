@@ -23,13 +23,27 @@ function optionalObjectIdFromNotes(notes, key) {
   return new mongoose.Types.ObjectId(s);
 }
 
+/** Resolve appointment ref from Razorpay note keys (camelCase / snake_case). */
+function optionalAppointmentIdFromNotes(notes) {
+  if (!notes || typeof notes !== "object") return undefined;
+  for (const key of ["appointment", "appointmentId", "appointment_id"]) {
+    const id = optionalObjectIdFromNotes(notes, key);
+    if (id) return id;
+  }
+  return undefined;
+}
+
 /**
- * Persist payment row from verified Razorpay webhook (payment.captured | payment.failed).
+ * Persist payment row from verified Razorpay webhook (payment.captured | payment.failed | payment.authorized).
  * Idempotent on payment_id (upsert). Enriches from payment/order notes when present.
  * @returns {Promise<object|null>} saved lean doc, or null if event not handled / no entity
  */
 async function upsertFromRazorpayWebhook(webhookEvent, payload) {
-  if (webhookEvent !== "payment.captured" && webhookEvent !== "payment.failed") {
+  if (
+    webhookEvent !== "payment.captured" &&
+    webhookEvent !== "payment.failed" &&
+    webhookEvent !== "payment.authorized"
+  ) {
     return null;
   }
 
@@ -38,7 +52,11 @@ async function upsertFromRazorpayWebhook(webhookEvent, payload) {
     return null;
   }
 
-  const status = webhookEvent === "payment.captured" ? "captured" : "failed";
+  let status;
+  if (webhookEvent === "payment.captured") status = "captured";
+  else if (webhookEvent === "payment.failed") status = "failed";
+  else status = "pending";
+
   const createdAt = entity.created_at
     ? new Date(entity.created_at * 1000)
     : new Date();
@@ -110,4 +128,6 @@ module.exports = {
   upsertFromRazorpayWebhook,
   enrichPaymentHistoryBookingContext,
   mergeNotesFromPaymentPayload,
+  optionalObjectIdFromNotes,
+  optionalAppointmentIdFromNotes,
 };

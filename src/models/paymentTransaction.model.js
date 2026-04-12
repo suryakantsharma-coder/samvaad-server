@@ -9,19 +9,19 @@ const paymentTransactionSchema = new mongoose.Schema(
     patient: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Patient',
-      required: true,
+      required: false,
       index: true,
     },
     hospital: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Hospital',
-      required: true,
+      required: false,
       index: true,
     },
     appointment: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Appointment',
-      required: true,
+      required: false,
       index: true,
     },
 
@@ -39,8 +39,16 @@ const paymentTransactionSchema = new mongoose.Schema(
     },
     razorpaySignature: {
       type: String,
-      required: true,
+      default: '',
       trim: true,
+    },
+
+    /** `tele_caller_api` = POST /tele-caller/transactions; `razorpay_webhook` = server webhook upsert */
+    recordedVia: {
+      type: String,
+      enum: ['tele_caller_api', 'razorpay_webhook'],
+      default: 'tele_caller_api',
+      index: true,
     },
 
     signatureVerified: {

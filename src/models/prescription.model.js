@@ -90,5 +90,6 @@ const prescriptionSchema = new mongoose.Schema(
 
 prescriptionSchema.index({ status: 1 });
 prescriptionSchema.index({ patient: 1, createdAt: -1 });
+prescriptionSchema.index({ hospital: 1, appointmentDate: -1 });
 
 module.exports = mongoose.model('Prescription', prescriptionSchema);

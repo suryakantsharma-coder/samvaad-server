@@ -113,6 +113,14 @@ const requireDoctor = requireRoles(ROLES.DOCTOR);
 /** Shorthand: doctor, hospital admin, or admin */
 const requireStaff = requireRoles(ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN, ROLES.ADMIN);
 
+/** Patient list / reads: includes tele_caller (hospital-scoped like doctor). */
+const requireStaffOrTeleCaller = requireRoles(
+  ROLES.DOCTOR,
+  ROLES.TELE_CALLER,
+  ROLES.HOSPITAL_ADMIN,
+  ROLES.ADMIN,
+);
+
 /** Shorthand: moderator or admin. Not used by any route currently; reserved for future moderator-only routes. */
 const requireModerator = requireRoles(ROLES.MODERATOR, ROLES.ADMIN);
 
@@ -188,6 +196,7 @@ module.exports = {
   requireWhatsAppOnboardingWriteAccess,
   requireDoctor,
   requireStaff,
+  requireStaffOrTeleCaller,
   requireModerator,
   requireHospitalLink,
   requireGoogleCalendarHospitalAccess,

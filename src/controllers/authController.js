@@ -165,6 +165,53 @@ const updateMe = async (req, res, next) => {
   }
 };
 
+/**
+ * POST /api/auth/me/profile-picture — multipart image (field: logo | file | image). Replaces previous local file.
+ */
+const uploadProfilePicture = async (req, res, next) => {
+  const User = require('../models/User');
+  const { getLinkedHospitalForResponse } = require('../utils/hospitalScope');
+  const {
+    unlinkUserProfilePicIfStored,
+    unlinkMulterTempFile,
+  } = require('../utils/userProfilePicFile');
+
+  try {
+    const newUrl = `/uploads/users/${req.file.filename}`;
+    const userBefore = await User.findById(req.user._id).select('profilePicUrl').lean();
+    if (!userBefore) {
+      await unlinkMulterTempFile(req.file);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { profilePicUrl: newUrl } },
+      { new: true, runValidators: true }
+    )
+      .select('-password')
+      .lean();
+
+    if (!user) {
+      await unlinkMulterTempFile(req.file);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (userBefore.profilePicUrl && userBefore.profilePicUrl !== newUrl) {
+      await unlinkUserProfilePicIfStored(userBefore.profilePicUrl);
+    }
+
+    res.status(200).json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: { user },
+    });
+  } catch (err) {
+    await unlinkMulterTempFile(req.file);
+    next(err);
+  }
+};
+
 module.exports = {
   register,
   login,
@@ -173,4 +220,5 @@ module.exports = {
   logoutAll,
   me,
   updateMe,
+  uploadProfilePicture,
 };
