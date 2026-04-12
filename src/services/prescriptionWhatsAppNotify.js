@@ -1,6 +1,10 @@
 const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
 const env = require("../config/env");
+const {
+  getResolvedHospitalMessagingSettings,
+  logMessagingPermissionDenied,
+} = require("../utils/hospitalMessagingSettings");
 const { buildPrescriptionPublicLink } = require("../utils/prescriptionPublicLink");
 const {
   sendWhatsAppText,
@@ -142,12 +146,22 @@ async function notifyPrescriptionCreated(prescription) {
     return;
   }
 
-  const [creds, hospital] = await Promise.all([
+  const [creds, hospital, perm] = await Promise.all([
     WhatsApp.findOne({ hospitalId }).sort({ updatedAt: -1 }).lean(),
     prescription.hospital && typeof prescription.hospital === "object" && prescription.hospital.name
       ? Promise.resolve(prescription.hospital)
       : Hospital.findById(hospitalId).select("name phoneCountryCode").lean(),
+    getResolvedHospitalMessagingSettings(hospitalId),
   ]);
+
+  if (!perm.whatsapp.isEnabled) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_disabled", { flow: "prescription_confirmation" });
+    return;
+  }
+  if (!perm.whatsapp.prescription) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_prescription", { flow: "prescription_confirmation" });
+    return;
+  }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
     return;

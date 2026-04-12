@@ -5,6 +5,7 @@ const {
   unlinkHospitalLogoIfStored,
   unlinkMulterTempFile,
 } = require("../utils/hospitalLogoFile");
+const { createDefaultHospitalSettingsForNewHospital } = require("../utils/hospitalMessagingSettings");
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -210,6 +211,17 @@ const create = async (req, res, next) => {
       delete payload.isActive;
     }
     const hospital = await Hospital.create(payload);
+    try {
+      await createDefaultHospitalSettingsForNewHospital(hospital._id);
+    } catch (settingsErr) {
+      console.error("[Hospital] Default HospitalSettings creation failed:", settingsErr.message);
+      await Hospital.findByIdAndDelete(hospital._id);
+      await unlinkMulterTempFile(req.file);
+      return res.status(500).json({
+        success: false,
+        message: "Hospital was not saved because default settings could not be created",
+      });
+    }
     res
       .status(201)
       .json({ success: true, data: { hospital: hospital.toObject() } });

@@ -3,6 +3,10 @@ const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
 const env = require("../config/env");
 const {
+  getResolvedHospitalMessagingSettings,
+  logMessagingPermissionDenied,
+} = require("../utils/hospitalMessagingSettings");
+const {
   sendWhatsAppText,
   sendWhatsAppTemplate,
   templateBodyNamedParameters,
@@ -136,12 +140,29 @@ async function notifyAppointmentBooked(appointment) {
     return;
   }
 
-  const [creds, hospital] = await Promise.all([
+  const [creds, hospital, perm] = await Promise.all([
     WhatsApp.findOne({ hospitalId }).sort({ updatedAt: -1 }).lean(),
     appointment.hospital && typeof appointment.hospital === "object" && appointment.hospital.name
       ? Promise.resolve(appointment.hospital)
       : Hospital.findById(hospitalId).select("name phoneCountryCode").lean(),
+    getResolvedHospitalMessagingSettings(hospitalId),
   ]);
+
+  if (!perm.whatsapp.isEnabled) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_disabled", { flow: "appointment_confirmation" });
+    return;
+  }
+  if (!perm.whatsapp.appointment) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_appointment", { flow: "appointment_confirmation" });
+    return;
+  }
+  if (appointment.type === "tele-caller" && !perm.teleCaller.isEnabled) {
+    logMessagingPermissionDenied(hospitalId, "telecaller_disabled", {
+      flow: "appointment_confirmation",
+      appointmentType: "tele-caller",
+    });
+    return;
+  }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
     return;

@@ -13,6 +13,10 @@ const {
   buildMedicineReminderTemplateMedicinesParam,
   buildFeedbackMessage,
 } = require("./reminder.service");
+const {
+  getResolvedHospitalMessagingSettings,
+  logMessagingPermissionDenied,
+} = require("../utils/hospitalMessagingSettings");
 
 /**
  * @param {import('mongoose').Document|object} prescription
@@ -42,12 +46,30 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
     throw new UnrecoverableError(msg);
   }
 
-  const [creds, hospital] = await Promise.all([
+  const [creds, hospital, perm] = await Promise.all([
     WhatsApp.findOne({ hospitalId }).sort({ updatedAt: -1 }).lean(),
     prescription.hospital && typeof prescription.hospital === "object" && prescription.hospital.name
       ? Promise.resolve(prescription.hospital)
       : Hospital.findById(hospitalId).select("name phoneCountryCode").lean(),
+    getResolvedHospitalMessagingSettings(hospitalId),
   ]);
+
+  if (!perm.whatsapp.isEnabled) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_disabled", {
+      flow: "medicine_reminder",
+      prescriptionId: rxId,
+    });
+    const msg = `[Hospital settings] Medicine reminder denied: WhatsApp disabled (prescription ${rxId})`;
+    throw new UnrecoverableError(msg);
+  }
+  if (!perm.whatsapp.medicinesReminder) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_medicines_reminder", {
+      flow: "medicine_reminder",
+      prescriptionId: rxId,
+    });
+    const msg = `[Hospital settings] Medicine reminder denied: medicinesReminder off (prescription ${rxId})`;
+    throw new UnrecoverableError(msg);
+  }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
     const msg = `[WhatsApp] Medicine reminder: no WhatsApp Cloud row for hospital ${hospitalId} (phone_number_id + access_token). Prescription ${rxId}`;
@@ -131,12 +153,32 @@ async function notifyPrescriptionReminderFeedback(prescription) {
     return { sent: false, reason: "no_hospital" };
   }
 
-  const [creds, hospital] = await Promise.all([
+  const [creds, hospital, perm] = await Promise.all([
     WhatsApp.findOne({ hospitalId }).sort({ updatedAt: -1 }).lean(),
     prescription.hospital && typeof prescription.hospital === "object" && prescription.hospital.name
       ? Promise.resolve(prescription.hospital)
       : Hospital.findById(hospitalId).select("name phoneCountryCode").lean(),
+    getResolvedHospitalMessagingSettings(hospitalId),
   ]);
+
+  if (!perm.whatsapp.isEnabled) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_disabled", {
+      flow: "prescription_reminder_feedback",
+      prescriptionId: String(prescription._id),
+    });
+    throw new UnrecoverableError(
+      `[Hospital settings] Reminder feedback denied: WhatsApp disabled (prescription ${String(prescription._id)})`
+    );
+  }
+  if (!perm.whatsapp.medicinesReminder) {
+    logMessagingPermissionDenied(hospitalId, "whatsapp_medicines_reminder", {
+      flow: "prescription_reminder_feedback",
+      prescriptionId: String(prescription._id),
+    });
+    throw new UnrecoverableError(
+      `[Hospital settings] Reminder feedback denied: medicinesReminder off (prescription ${String(prescription._id)})`
+    );
+  }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
     console.warn("[WhatsApp] Reminder feedback: WhatsApp not configured", String(hospitalId));
