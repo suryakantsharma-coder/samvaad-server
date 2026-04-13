@@ -95,6 +95,7 @@ const createHospital = [
     .escape(),
   body("address").trim().notEmpty().withMessage("address is required").isLength({ max: 500 }).escape(),
   body("city").trim().notEmpty().withMessage("city is required").isLength({ max: 100 }).escape(),
+  body("state").trim().notEmpty().withMessage("state is required").isLength({ max: 100 }).escape(),
   body("pincode").trim().notEmpty().withMessage("pincode is required").isLength({ max: 20 }).escape(),
   body("url")
     .trim()
@@ -122,6 +123,11 @@ const createHospital = [
     .escape(),
   reviewUrlsBody("reviewUrls", { required: true }),
   body("logoUrl").optional().trim().isLength({ max: 500 }),
+  body("teleCallerPrice")
+    .optional({ values: "null" })
+    .isFloat({ min: 0 })
+    .withMessage("teleCallerPrice must be a non-negative number")
+    .toFloat(),
   optionalBooleanBody("isActive"),
 ];
 
@@ -135,6 +141,7 @@ const updateHospital = [
   body("registrationNumber").optional().trim().isLength({ max: 100 }).escape(),
   body("address").optional().trim().isLength({ max: 500 }).escape(),
   body("city").optional().trim().isLength({ max: 100 }).escape(),
+  body("state").optional().trim().notEmpty().withMessage("state cannot be empty").isLength({ max: 100 }).escape(),
   body("pincode").optional().trim().isLength({ max: 20 }).escape(),
   body("url").optional().trim().isURL({ require_protocol: true }).isLength({ max: 500 }),
   body("emergencyNumber").optional().trim().notEmpty().isLength({ max: 40 }).escape(),
@@ -142,6 +149,11 @@ const updateHospital = [
   body("whatsappNumber").optional().trim().notEmpty().isLength({ max: 40 }).escape(),
   reviewUrlsBody("reviewUrls", { required: false }),
   body("logoUrl").optional().trim().isLength({ max: 500 }).escape(),
+  body("teleCallerPrice")
+    .optional({ values: "null" })
+    .isFloat({ min: 0 })
+    .withMessage("teleCallerPrice must be a non-negative number")
+    .toFloat(),
   optionalBooleanBody("isActive"),
 ];
 

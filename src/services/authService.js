@@ -6,6 +6,18 @@ const { ROLES } = require('../constants/roles');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const env = require('../config/env');
 
+const DOCTOR_PROFILE_POPULATE = {
+  path: 'doctorProfile',
+  select: 'fullName doctorId designation email phoneNumber hospital',
+};
+
+/**
+ * @param {string} userId
+ * @returns {Promise<object|null>}
+ */
+const getUserForAuthResponse = (userId) =>
+  User.findById(userId).select('-password').populate(DOCTOR_PROFILE_POPULATE).lean();
+
 const getRefreshTokenExpiry = () => {
   const match = env.JWT_REFRESH_EXPIRY.match(/^(\d+)([dhm])$/);
   if (!match) return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -97,7 +109,7 @@ const login = async (email, password, userAgent = '') => {
   await User.updateOne({ _id: user._id }, { lastLoginAt: new Date() });
 
   return {
-    user: await User.findById(user._id).select('-password'),
+    user: await getUserForAuthResponse(user._id),
     accessToken,
     refreshToken,
     expiresAt,
@@ -116,7 +128,7 @@ const refreshTokens = async (refreshTokenValue, userAgent = '') => {
     throw err;
   }
 
-  const user = await User.findById(decoded.sub).select('-password');
+  const user = await getUserForAuthResponse(decoded.sub);
   if (!user || !user.isActive) {
     await RefreshToken.deleteOne({ token: refreshTokenValue });
     const err = new Error('User not found or disabled');
@@ -221,7 +233,7 @@ const updateMyProfile = async (userId, fields) => {
   }
 
   await user.save();
-  return User.findById(userId).select("-password").lean();
+  return getUserForAuthResponse(userId);
 };
 
 module.exports = {
@@ -231,4 +243,5 @@ module.exports = {
   logout,
   logoutAll,
   updateMyProfile,
+  getUserForAuthResponse,
 };

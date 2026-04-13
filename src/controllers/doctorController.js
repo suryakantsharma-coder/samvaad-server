@@ -7,6 +7,10 @@ const {
 } = require('../utils/hospitalScope');
 const { sanitizeAvailabilityForDisplay } = require('../utils/doctorAvailabilityText');
 const { ROLES } = require('../constants/roles');
+const {
+  scheduleDoctorHolidayJobsFromDoc,
+  syncDoctorHolidayJobs,
+} = require('../services/doctorHolidayJobs.service');
 
 /** Normalize availability for JSON (undo validator .escape() / double-encoded entities). */
 function withNormalizedAvailability(doc) {
@@ -200,6 +204,7 @@ const create = async (req, res, next) => {
 
     const doctorId = await generateDoctorId();
     const doctor = await Doctor.create({ ...body, doctorId, hospital: hospitalId });
+    await scheduleDoctorHolidayJobsFromDoc(doctor);
     res.status(201).json({
       success: true,
       data: { doctor: withNormalizedAvailability(doctor.toObject()) },
@@ -223,6 +228,10 @@ const update = async (req, res, next) => {
     const body = { ...req.body };
     delete body.hospital;
 
+    if (req.user.role === ROLES.DOCTOR) {
+      delete body.doctorId;
+    }
+
     if (body.availability != null && typeof body.availability === 'string') {
       const n = sanitizeAvailabilityForDisplay(body.availability);
       body.availability = n || body.availability;
@@ -231,17 +240,26 @@ const update = async (req, res, next) => {
     const filter = { _id: req.params.id };
     mergeHospitalFilter(req, filter);
 
-    const doctor = await Doctor.findOneAndUpdate(
-      filter,
-      { $set: body },
-      { new: true, runValidators: true }
-    ).lean();
+    const previous = await Doctor.findOne(filter).select('holidays').lean();
+    const previousHolidayIds = (previous?.holidays || [])
+      .filter((h) => h && h._id)
+      .map((h) => String(h._id));
+
+    const doctor = await Doctor.findOneAndUpdate(filter, { $set: body }, {
+      new: true,
+      runValidators: true,
+    });
 
     if (!doctor) {
       return res.status(404).json({ success: false, message: 'Doctor not found' });
     }
 
-    res.json({ success: true, data: { doctor: withNormalizedAvailability(doctor) } });
+    await syncDoctorHolidayJobs(doctor, previousHolidayIds);
+
+    res.json({
+      success: true,
+      data: { doctor: withNormalizedAvailability(doctor.toObject()) },
+    });
   } catch (err) {
     if (err.code === 11000) {
       return res.status(409).json({

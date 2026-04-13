@@ -50,6 +50,27 @@ const createDoctor = [
     .trim()
     .isLength({ max: 500 })
     .withMessage('profileImage URL must be at most 500 characters'),
+  body('holidays')
+    .optional()
+    .isArray()
+    .withMessage('holidays must be an array')
+    .custom((arr) => {
+      if (!Array.isArray(arr)) return true;
+      for (const item of arr) {
+        if (!item || item.startDate == null || item.endDate == null) {
+          throw new Error('Each holiday must have startDate and endDate');
+        }
+        const s = new Date(item.startDate);
+        const e = new Date(item.endDate);
+        if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+          throw new Error('Invalid holiday startDate or endDate');
+        }
+        if (e < s) {
+          throw new Error('Holiday endDate must be on or after startDate');
+        }
+      }
+      return true;
+    }),
 ];
 
 const updateDoctor = [
@@ -114,6 +135,27 @@ const updateDoctor = [
     .trim()
     .isLength({ max: 500 })
     .withMessage('profileImage URL must be at most 500 characters'),
+  body('holidays')
+    .optional()
+    .isArray()
+    .withMessage('holidays must be an array')
+    .custom((arr) => {
+      if (!Array.isArray(arr)) return true;
+      for (const item of arr) {
+        if (!item || item.startDate == null || item.endDate == null) {
+          throw new Error('Each holiday must have startDate and endDate');
+        }
+        const s = new Date(item.startDate);
+        const e = new Date(item.endDate);
+        if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+          throw new Error('Invalid holiday startDate or endDate');
+        }
+        if (e < s) {
+          throw new Error('Holiday endDate must be on or after startDate');
+        }
+      }
+      return true;
+    }),
 ];
 
 const searchDoctorsQuery = [

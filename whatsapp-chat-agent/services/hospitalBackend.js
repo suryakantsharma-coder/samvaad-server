@@ -9,6 +9,9 @@ const {
 const {
   combineToAppointmentDate,
 } = require("../utils/appointmentDateTime");
+const {
+  findHolidayCoveringYmd,
+} = require("../../src/utils/doctorHoliday");
 
 /** Digits only, for comparing phones across formats */
 function phoneDigitsOnly(s) {
@@ -538,6 +541,14 @@ async function createAppointment(params) {
 
   const doctor = await Doctor.findById(docId).lean();
   if (!doctor) throw new Error("Doctor not found");
+
+  const dateYmd = String(date || "").trim().slice(0, 10);
+  const holidayBlock = findHolidayCoveringYmd(doctor.holidays || [], dateYmd);
+  if (holidayBlock) {
+    throw new Error(
+      `Sorry — this doctor is not available then (leave through ${holidayBlock.endLabel}). Please try another date after ${holidayBlock.endLabel}.`,
+    );
+  }
 
   let patient = null;
   if (existingPatientId) {

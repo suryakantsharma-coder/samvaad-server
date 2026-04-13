@@ -52,6 +52,12 @@ const hospitalSchema = new mongoose.Schema(
       trim: true,
     },
 
+    state: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
     pincode: {
       type: String,
       required: true,
@@ -111,6 +117,13 @@ const hospitalSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+
+    /** Tele-caller consult price in main currency units (e.g. INR); null if not configured. */
+    teleCallerPrice: {
+      type: Number,
+      default: null,
+      min: 0,
     },
   },
   {

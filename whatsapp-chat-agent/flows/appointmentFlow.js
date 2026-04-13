@@ -16,6 +16,7 @@ const {
   isTimeWithinDoctorAvailability,
 } = require("../utils/doctorAvailability");
 const { FLOW_EXIT_HINT } = require("../utils/flowHints");
+const { findHolidayCoveringYmd } = require("../../src/utils/doctorHoliday");
 
 const STEPS = {
   ASK_PATIENT_TYPE: "ASK_PATIENT_TYPE",
@@ -259,6 +260,22 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
     }
     st.dateYmd = toYyyyMmDd(parsedDate.y, parsedDate.m0, parsedDate.d);
     st.dateLabel = parsedDate.display;
+
+    const docForHoliday = await Doctor.findById(st.selectedDoctorId)
+      .select("holidays fullName")
+      .lean();
+    const holidayBlock = findHolidayCoveringYmd(
+      docForHoliday?.holidays || [],
+      st.dateYmd,
+    );
+    if (holidayBlock) {
+      const name = docForHoliday?.fullName?.trim() || "This doctor";
+      return {
+        reply:
+          `Sorry — *${name}* is not available for *${parsedDate.display}* (leave through *${holidayBlock.endLabel}*).\n\nPlease try another date *after ${holidayBlock.endLabel}*.`,
+      };
+    }
+
     st.step = STEPS.ASK_TIME;
     const hoursLabel = st.doctorAvailabilityLabel || "9 AM - 5 PM";
     return {

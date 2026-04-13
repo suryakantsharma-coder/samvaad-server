@@ -22,6 +22,56 @@ const requireRoles = (...allowedRoles) => {
 /** Shorthand: admin or hospital admin only */
 const requireAdmin = requireRoles(ROLES.ADMIN, ROLES.HOSPITAL_ADMIN);
 
+/**
+ * Same access as `requireAdmin` for doctor CRUD, plus `doctor` role for PATCH when * `req.user.doctorProfile` matches `req.params.id` (self-service profile update).
+ */
+/**
+ * `POST /api/admin/users/:id/link-doctor`: admins as usual, or `doctor` only when `:id` is their own user id.
+ */
+const requireAdminOrSelfDoctorLink = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: 'Authentication required' });
+  }
+  const gate = [ROLES.ADMIN, ROLES.HOSPITAL_ADMIN];
+  const isAdminLevel =
+    gate.includes(req.user.role) || gate.some((r) => hasRoleOrAbove(req.user.role, r));
+  if (isAdminLevel) {
+    return next();
+  }
+  if (req.user.role === ROLES.DOCTOR) {
+    const targetId = req.params.id;
+    if (targetId && String(targetId) === String(req.user._id)) {
+      return next();
+    }
+  }
+  return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+};
+
+const requireAdminOrOwnDoctorProfile = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ success: false, message: 'Authentication required' });
+  }
+  const gate = [ROLES.ADMIN, ROLES.HOSPITAL_ADMIN];
+  const isAdminLevel =
+    gate.includes(req.user.role) || gate.some((r) => hasRoleOrAbove(req.user.role, r));
+  if (isAdminLevel) {
+    return next();
+  }
+  if (req.user.role === ROLES.DOCTOR) {
+    const pid = req.user.doctorProfile;
+    const targetId = req.params.id;
+    if (pid && targetId && String(pid) === String(targetId)) {
+      return next();
+    }
+    return res.status(403).json({
+      success: false,
+      message:
+        'You can only update your linked doctor profile. Ask a hospital administrator to link your account.',
+    });
+  }
+  return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+};
+
 /** Shorthand: admin only (no hospital_admin). Super admin is also allowed via hierarchy. */
 const requireAdminOnly = requireRoles(ROLES.ADMIN);
 
@@ -190,6 +240,8 @@ module.exports = {
   requireRoles,
   requireExactRoles,
   requireAdmin,
+  requireAdminOrSelfDoctorLink,
+  requireAdminOrOwnDoctorProfile,
   requireAdminOnly,
   requireAdminOrSuperAdminOnly,
   requireWhatsAppCredsAccess,

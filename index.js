@@ -3,7 +3,12 @@ const connectDB = require('./src/config/db');
 const app = require('./src/app');
 const { startLiveKitWorker, stopLiveKitWorker } = require('./src/startLiveKitWorker');
 const { startReminderWorker, stopReminderWorker } = require('./src/workers/reminder.worker');
+const {
+  startDoctorHolidayWorker,
+  stopDoctorHolidayWorker,
+} = require('./src/workers/doctorHoliday.worker');
 const { closeReminderQueue } = require('./src/queues/reminder.queue');
+const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
 
 let shuttingDown = false;
 
@@ -17,9 +22,19 @@ async function shutdown(signal) {
     console.error('[Samvaad] Reminder worker stop:', err.message);
   }
   try {
+    await stopDoctorHolidayWorker();
+  } catch (err) {
+    console.error('[Samvaad] Doctor holiday worker stop:', err.message);
+  }
+  try {
     await closeReminderQueue();
   } catch (err) {
     console.error('[Samvaad] Reminder queue close:', err.message);
+  }
+  try {
+    await closeDoctorHolidayQueue();
+  } catch (err) {
+    console.error('[Samvaad] Doctor holiday queue close:', err.message);
   }
   stopLiveKitWorker();
   process.exit(0);
@@ -51,6 +66,7 @@ const start = async () => {
     startLiveKitWorker();
     /* For multiple worker processes: set REMINDER_WORKER_DISABLED=1 here and run `npm run reminder-worker`. */
     await startReminderWorker();
+    await startDoctorHolidayWorker();
   });
 
   server.on('error', (err) => {

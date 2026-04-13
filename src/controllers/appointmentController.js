@@ -12,6 +12,7 @@ const {
 } = require('../utils/queryDateRange');
 const { generateAppointmentId } = require('../utils/appointmentId');
 const { notifyAppointmentBooked } = require('../services/appointmentWhatsAppNotify');
+const { findHolidayCoveringYmd, toYyyyMmDdLocal } = require('../utils/doctorHoliday');
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -253,6 +254,15 @@ const create = async (req, res, next) => {
     }
     if (!patientExists) {
       return res.status(404).json({ success: false, message: 'Patient not found' });
+    }
+
+    const apptDayYmd = toYyyyMmDdLocal(new Date(req.body.appointmentDateTime));
+    const holidayBlock = findHolidayCoveringYmd(doctorExists.holidays || [], apptDayYmd);
+    if (holidayBlock) {
+      return res.status(400).json({
+        success: false,
+        message: `Doctor is on leave through ${holidayBlock.endLabel}. Choose a date after that.`,
+      });
     }
 
     // Ensure doctor and patient belong to the same hospital (if set)

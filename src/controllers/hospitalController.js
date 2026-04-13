@@ -112,6 +112,7 @@ const search = async (req, res, next) => {
         { name: regex },
         { address: regex },
         { city: regex },
+        { state: regex },
         { pincode: regex },
         { phoneNumber: regex },
         { email: regex },

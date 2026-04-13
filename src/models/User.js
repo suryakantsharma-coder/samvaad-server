@@ -33,6 +33,14 @@ const userSchema = new mongoose.Schema(
       required: false,
       index: true,
     },
+
+    /** Linked hospital Doctor record for accounts with role `doctor` (set via admin API). */
+    doctorProfile: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Doctor',
+      required: false,
+      default: undefined,
+    },
     phoneNumber: {
       type: String,
       trim: true,
@@ -65,8 +73,12 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ role: 1 });
+userSchema.index({ doctorProfile: 1 }, { unique: true, sparse: true });
 
 userSchema.pre('save', async function (next) {
+  if (this.isModified('role') && this.role !== ROLES.DOCTOR) {
+    this.doctorProfile = undefined;
+  }
   if (this.isModified('role') || this.isModified('hospital')) {
     if ([ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN, ROLES.TELE_CALLER].includes(this.role)) {
       if (!this.hospital) {

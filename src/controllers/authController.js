@@ -124,8 +124,12 @@ const logoutAll = async (req, res, next) => {
 
 const me = async (req, res, next) => {
   try {
+    const authService = require('../services/authService');
     const { getLinkedHospitalForResponse } = require('../utils/hospitalScope');
-    const user = req.user.toObject ? req.user.toObject() : { ...req.user };
+    const user = await authService.getUserForAuthResponse(req.user._id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
     let hospital = null;
     if (req.user.hospital) {
       const Hospital = require('../models/hospital.model');

@@ -13,7 +13,12 @@ require('dotenv').config({
 
 const connectDB = require('../config/db');
 const { startReminderWorker, stopReminderWorker } = require('./reminder.worker');
+const {
+  startDoctorHolidayWorker,
+  stopDoctorHolidayWorker,
+} = require('./doctorHoliday.worker');
 const { closeReminderQueue } = require('../queues/reminder.queue');
+const { closeDoctorHolidayQueue } = require('../queues/doctorHoliday.queue');
 
 let exiting = false;
 
@@ -27,9 +32,19 @@ async function graceful(signal) {
     console.error('[Reminder] Worker stop error:', err.message);
   }
   try {
+    await stopDoctorHolidayWorker();
+  } catch (err) {
+    console.error('[DoctorHoliday] Worker stop error:', err.message);
+  }
+  try {
     await closeReminderQueue();
   } catch (err) {
     console.error('[Reminder] Queue close error:', err.message);
+  }
+  try {
+    await closeDoctorHolidayQueue();
+  } catch (err) {
+    console.error('[DoctorHoliday] Queue close error:', err.message);
   }
   process.exit(0);
 }
@@ -40,11 +55,15 @@ process.once('SIGTERM', () => graceful('SIGTERM'));
 connectDB()
   .then(async () => {
     const w = await startReminderWorker();
-    if (w) {
-      console.log('[Reminder] Standalone worker ready');
-    } else {
+    if (!w) {
       console.error('[Reminder] Standalone worker did not start (check Redis). Exiting.');
       process.exit(1);
+    }
+    const h = await startDoctorHolidayWorker();
+    if (h) {
+      console.log('[Reminder] Standalone workers ready (reminders + doctor holidays)');
+    } else {
+      console.warn('[Reminder] Doctor holiday worker did not start (see logs). Reminders only.');
     }
   })
   .catch((err) => {

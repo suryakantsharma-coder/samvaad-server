@@ -1,6 +1,11 @@
 const express = require('express');
 const { protect } = require('../middleware/auth');
-const { requireAdmin, requireStaff, requireHospitalLink } = require('../middleware/roles');
+const {
+  requireAdmin,
+  requireAdminOrOwnDoctorProfile,
+  requireStaff,
+  requireHospitalLink,
+} = require('../middleware/roles');
 const { validate } = require('../middleware/validate');
 const { validObjectId, paginationQuery } = require('../validators/common');
 const { searchDoctorsQuery } = require('../validators/doctor.validator');
@@ -22,7 +27,14 @@ router.get('/:id', requireStaff, validObjectId('id'), validate, doctorController
 
 // hospital_admin, admin only: create, update, delete
 router.post('/', requireAdmin, createDoctor, validate, doctorController.create);
-router.patch('/:id', requireAdmin, validObjectId('id'), updateDoctor, validate, doctorController.update);
+router.patch(
+  '/:id',
+  requireAdminOrOwnDoctorProfile,
+  validObjectId('id'),
+  updateDoctor,
+  validate,
+  doctorController.update,
+);
 router.delete('/:id', requireAdmin, validObjectId('id'), validate, doctorController.remove);
 
 module.exports = router;

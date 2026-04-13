@@ -67,6 +67,17 @@ const doctorSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    /** Optional leave ranges; inclusive calendar days in server local time. */
+    holidays: {
+      type: [
+        {
+          startDate: { type: Date, required: true },
+          endDate: { type: Date, required: true },
+        },
+      ],
+      default: undefined,
+    },
   },
   { timestamps: true }
 );

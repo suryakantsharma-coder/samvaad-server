@@ -2,18 +2,46 @@ const express = require('express');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const { protect } = require('../middleware/auth');
-const { requireAdmin, requireAdminOnly, requireHospitalLink } = require('../middleware/roles');
+const {
+  requireAdmin,
+  requireAdminOnly,
+  requireAdminOrSelfDoctorLink,
+  requireHospitalLink,
+} = require('../middleware/roles');
 const { getHospitalFilter, getLinkedHospitalForResponse } = require('../utils/hospitalScope');
 const { validate } = require('../middleware/validate');
 const { validObjectId } = require('../validators/common');
 const { body } = require('express-validator');
 const { ROLES } = require('../constants/roles');
+const adminUserController = require('../controllers/adminUserController');
 
 const router = express.Router();
 
 router.use(protect);
-router.use(requireAdmin);
 router.use(requireHospitalLink);
+
+const linkDoctorBody = [
+  body('doctorId')
+    .exists()
+    .withMessage('doctorId is required (Mongo ObjectId of the doctor, or null to unlink)')
+    .custom((value) => {
+      if (value === null || value === '') return true;
+      if (mongoose.isValidObjectId(String(value))) return true;
+      throw new Error('doctorId must be a valid Mongo ObjectId or null');
+    }),
+];
+
+/** POST /api/admin/users/:id/link-doctor — admins: any user in scope; doctors: only their own account (`:id` = JWT user). */
+router.post(
+  '/users/:id/link-doctor',
+  requireAdminOrSelfDoctorLink,
+  validObjectId('id'),
+  linkDoctorBody,
+  validate,
+  adminUserController.linkUserToDoctor,
+);
+
+router.use(requireAdmin);
 
 /** GET /api/admin/users — list all users (admin: optional ?hospitalId=; hospital_admin: scoped to linked hospital) */
 router.get('/users', async (req, res, next) => {
