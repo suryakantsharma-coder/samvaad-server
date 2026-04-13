@@ -10,6 +10,7 @@ const googleOAuthTokenSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    /** Logical provider key; uniqueness is `{ hospital, provider }`, never unique on `provider` alone. */
     provider: {
       type: String,
       required: true,
