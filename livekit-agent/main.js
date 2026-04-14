@@ -4,7 +4,9 @@ require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const mongoose = require("mongoose");
 const { ServerOptions, cli, defineAgent, voice } = require("@livekit/agents");
 const openai = require("@livekit/agents-plugin-openai");
-const { BackgroundVoiceCancellation } = require("@livekit/noise-cancellation-node");
+const {
+  BackgroundVoiceCancellation,
+} = require("@livekit/noise-cancellation-node");
 const { HospitalVoiceAgent } = require("./agent");
 const { ensureMongoConnected } = require("./dbConnect");
 const HospitalModel = require("../src/models/hospital.model");
@@ -24,12 +26,20 @@ function parseHospitalIdFromRoom(roomName) {
 
 const agentDef = defineAgent({
   entry: async (ctx) => {
-    console.log("[LiveKit Agent] JOB RECEIVED — call connected, agent starting...");
+    console.log(
+      "[LiveKit Agent] JOB RECEIVED — call connected, agent starting...",
+    );
     try {
-      const roomName = (ctx.job && ctx.job.room && ctx.job.room.name)
-        ? String(ctx.job.room.name)
-        : (ctx.room && ctx.room.name ? String(ctx.room.name) : "");
-      console.log("[LiveKit Agent] Job started. Room:", roomName || "(unknown)");
+      const roomName =
+        ctx.job && ctx.job.room && ctx.job.room.name
+          ? String(ctx.job.room.name)
+          : ctx.room && ctx.room.name
+            ? String(ctx.room.name)
+            : "";
+      console.log(
+        "[LiveKit Agent] Job started. Room:",
+        roomName || "(unknown)",
+      );
 
       await ensureMongoConnected();
 
@@ -59,7 +69,7 @@ const agentDef = defineAgent({
       const session = new voice.AgentSession({
         llm: new openai.realtime.RealtimeModel({
           model: OPENAI_REALTIME_MODEL,
-          voice: "coral",
+          voice: "sage",
           toolChoice: "auto",
           turnDetection: {
             type: "server_vad",
