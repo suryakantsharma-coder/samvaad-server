@@ -15,6 +15,7 @@ const publicRoutes = require('./publicRoutes');
 const medicineRoutes = require('./medicineRoutes');
 const hospitalSettingsRoutes = require('./hospitalSettingsRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
+const payoutRoutes = require('./payoutRoutes');
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.use('/livekit', livekitRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/tele-caller', teleCallerRoutes);
 router.use('/payments', paymentRoutes);
+router.use('/payouts', payoutRoutes);
 router.use('/razorpay', razorpayRoutes);
 
 router.get('/health', (req, res) => {

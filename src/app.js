@@ -6,6 +6,7 @@ const routes = require("./routes");
 const cors = require("cors");
 const { exchangeCodeAndStoreTokensForHospital } = require("./services/googleMeet.service");
 const env = require("./config/env");
+const authController = require("./controllers/authController");
 const app = express();
 
 // Serve uploaded files (e.g. hospital logos) — same root as multer (see env.UPLOADS_ROOT)
@@ -126,6 +127,9 @@ app.get("/auth/google/callback", async (req, res) => {
   }
 });
 
+/** Public HTML page for password reset (no login or role required). */
+app.get("/auth/reset-password", authController.renderResetPasswordPage);
+
 const json10kb = express.json({ limit: "10kb" });
 app.use((req, res, next) => {
   if (req.method === "POST" && req.path === "/api/whatsapp/webhook") {
@@ -153,6 +157,7 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error("[Samvaad] Error:", err.message);
+  if (err.stack) console.error(err.stack);
 
   let status = err.statusCode || 500;
   let message = err.message || "Internal server error";

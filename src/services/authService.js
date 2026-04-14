@@ -1,10 +1,18 @@
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const Hospital = require('../models/hospital.model');
 const { ROLES } = require('../constants/roles');
-const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const {
+  signAccessToken,
+  signRefreshToken,
+  verifyRefreshToken,
+  signPasswordResetToken,
+  verifyPasswordResetToken,
+} = require('../utils/jwt');
 const env = require('../config/env');
+const { isMailConfigured, sendPasswordResetMail } = require('./mailService');
 
 const DOCTOR_PROFILE_POPULATE = {
   path: 'doctorProfile',
@@ -236,6 +244,101 @@ const updateMyProfile = async (userId, fields) => {
   return getUserForAuthResponse(userId);
 };
 
+const getPublicApiBase = () =>
+  (env.API_PUBLIC_URL || `http://127.0.0.1:${env.PORT}`).replace(/\/$/, '');
+
+/**
+ * Sends a 2-minute reset link (or logs it in development when SMTP is unset).
+ * Always returns the same shape to avoid email enumeration.
+ */
+const requestPasswordReset = async (email) => {
+  const normalized = String(email || '').toLowerCase().trim();
+  if (!normalized) {
+    const err = new Error('Email is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const user = await User.findOne({ email: normalized }).select('_id email').lean();
+  if (!user) {
+    if (env.NODE_ENV !== 'production') {
+      console.log(
+        '[mail] Password reset (dev): no user with this email — no mail sent. API still returns success.'
+      );
+    }
+    return { ok: true };
+  }
+
+  const nnc = crypto.randomBytes(32).toString('hex');
+  await User.updateOne({ _id: user._id }, { $set: { passwordResetNonce: nnc } });
+
+  const token = signPasswordResetToken({ sub: user._id.toString(), nnc });
+  const resetUrl = `${getPublicApiBase()}/auth/reset-password?token=${encodeURIComponent(token)}`;
+
+  if (!isMailConfigured()) {
+    if (env.NODE_ENV === 'production') {
+      console.error(
+        '[mail] Password reset: not sent — SMTP not configured in production (set SMTP_HOST, MAIL_FROM)'
+      );
+      const err = new Error('Password reset email is not configured on the server');
+      err.statusCode = 503;
+      throw err;
+    }
+    console.warn(
+      '[mail] Password reset: email NOT sent — SMTP not configured (dev). Use this link:',
+      resetUrl
+    );
+    return { ok: true };
+  }
+
+  await sendPasswordResetMail({ to: user.email, resetUrl });
+  return { ok: true };
+};
+
+const resetPasswordWithToken = async (token, newPassword) => {
+  if (!token || !newPassword) {
+    const err = new Error('Token and password are required');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (String(newPassword).length < 6) {
+    const err = new Error('Password must be at least 6 characters');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let decoded;
+  try {
+    decoded = verifyPasswordResetToken(token);
+  } catch (e) {
+    if (e.name === 'TokenExpiredError') {
+      const err = new Error('Reset link expired (valid for 2 minutes)');
+      err.statusCode = 400;
+      throw err;
+    }
+    const err = new Error('Invalid or expired reset link');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const user = await User.findById(decoded.sub).select('+password +passwordResetNonce');
+  if (!user) {
+    const err = new Error('Invalid or expired reset link');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!user.passwordResetNonce || user.passwordResetNonce !== decoded.nnc) {
+    const err = new Error('This reset link is no longer valid');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  user.password = newPassword;
+  user.passwordResetNonce = '';
+  await user.save();
+  await RefreshToken.deleteMany({ user: user._id });
+};
+
 module.exports = {
   register,
   login,
@@ -244,4 +347,6 @@ module.exports = {
   logoutAll,
   updateMyProfile,
   getUserForAuthResponse,
+  requestPasswordReset,
+  resetPasswordWithToken,
 };

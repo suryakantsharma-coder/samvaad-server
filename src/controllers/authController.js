@@ -1,4 +1,5 @@
 const authService = require('../services/authService');
+const { buildResetPasswordPageHtml } = require('../templates/resetPasswordPageHtml');
 
 const register = async (req, res, next) => {
   try {
@@ -169,6 +170,51 @@ const updateMe = async (req, res, next) => {
   }
 };
 
+const forgotPassword = async (req, res, next) => {
+  try {
+    await authService.requestPasswordReset(req.body.email);
+    res.status(200).json({
+      success: true,
+      message: 'If an account exists for that email, we sent reset instructions.',
+    });
+  } catch (err) {
+    console.error('[auth] forgot-password:', err.message);
+    if (err.stack) console.error(err.stack);
+    if (err.statusCode === 400 || err.statusCode === 503) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
+};
+
+const resetPassword = async (req, res, next) => {
+  try {
+    await authService.resetPasswordWithToken(req.body.token, req.body.password);
+    res.status(200).json({ success: true, message: 'Password updated' });
+  } catch (err) {
+    console.error('[auth] reset-password:', err.message);
+    if (err.stack) console.error(err.stack);
+    if (err.statusCode === 400) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+    next(err);
+  }
+};
+
+/** GET /auth/reset-password?token= — server page to set a new password (link expires in 2 minutes). */
+const renderResetPasswordPage = (req, res) => {
+  const raw = req.query.token;
+  const token = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
+  if (!token) {
+    res.status(400).type('html');
+    return res.send(
+      '<!DOCTYPE html><html><body><p>Missing token. Open the link from your email.</p></body></html>'
+    );
+  }
+  res.type('html');
+  res.send(buildResetPasswordPageHtml({ token }));
+};
+
 /**
  * POST /api/auth/me/profile-picture — multipart image (field: logo | file | image). Replaces previous local file.
  */
@@ -225,4 +271,7 @@ module.exports = {
   me,
   updateMe,
   uploadProfilePicture,
+  forgotPassword,
+  resetPassword,
+  renderResetPasswordPage,
 };

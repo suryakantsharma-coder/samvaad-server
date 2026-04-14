@@ -31,10 +31,34 @@ const decodeToken = (token) => {
   }
 };
 
+const passwordResetSecret = () =>
+  env.JWT_PASSWORD_RESET_SECRET || env.JWT_ACCESS_SECRET;
+
+/** @param {{ sub: string, nnc: string }} payload */
+const signPasswordResetToken = (payload) => {
+  return jwt.sign(
+    { ...payload, typ: 'pwd_reset' },
+    passwordResetSecret(),
+    { expiresIn: '2m', issuer: 'samvaad' }
+  );
+};
+
+const verifyPasswordResetToken = (token) => {
+  const decoded = jwt.verify(token, passwordResetSecret(), { issuer: 'samvaad' });
+  if (decoded.typ !== 'pwd_reset') {
+    const err = new Error('Invalid reset token');
+    err.name = 'JsonWebTokenError';
+    throw err;
+  }
+  return decoded;
+};
+
 module.exports = {
   signAccessToken,
   signRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
   decodeToken,
+  signPasswordResetToken,
+  verifyPasswordResetToken,
 };

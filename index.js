@@ -7,6 +7,10 @@ const {
   startDoctorHolidayWorker,
   stopDoctorHolidayWorker,
 } = require('./src/workers/doctorHoliday.worker');
+const {
+  startHourlyPayoutCron,
+  stopHourlyPayoutCron,
+} = require('./src/cron/hourlyPayout/hourlyPayoutCron');
 const { closeReminderQueue } = require('./src/queues/reminder.queue');
 const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
 
@@ -25,6 +29,11 @@ async function shutdown(signal) {
     await stopDoctorHolidayWorker();
   } catch (err) {
     console.error('[Samvaad] Doctor holiday worker stop:', err.message);
+  }
+  try {
+    stopHourlyPayoutCron();
+  } catch (err) {
+    console.error('[Samvaad] Hourly payout cron stop:', err.message);
   }
   try {
     await closeReminderQueue();
@@ -67,6 +76,8 @@ const start = async () => {
     /* For multiple worker processes: set REMINDER_WORKER_DISABLED=1 here and run `npm run reminder-worker`. */
     await startReminderWorker();
     await startDoctorHolidayWorker();
+    console.log('[Samvaad] Starting hourly payout cron…');
+    startHourlyPayoutCron();
   });
 
   server.on('error', (err) => {

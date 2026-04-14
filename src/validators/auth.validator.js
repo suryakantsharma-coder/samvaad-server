@@ -21,6 +21,25 @@ function allowOnlyProfileFields(req, res, next) {
   next();
 }
 
+/** Match login/register: lowercase + trim only. Do not use normalizeEmail() — it strips dots on Gmail
+ *  (e.g. a.b@gmail.com → ab@gmail.com) and breaks lookup vs stored addresses. */
+const forgotPasswordRules = [
+  body("email")
+    .trim()
+    .notEmpty()
+    .withMessage("email is required")
+    .isEmail()
+    .withMessage("Invalid email")
+    .customSanitizer((v) => String(v).toLowerCase().trim()),
+];
+
+const resetPasswordRules = [
+  body("token").trim().notEmpty().withMessage("token is required"),
+  body("password")
+    .isLength({ min: 6 })
+    .withMessage("password must be at least 6 characters"),
+];
+
 const updateMeProfile = [
   body("name").optional().trim().isLength({ max: 200 }).withMessage("name must be at most 200 characters"),
   body("email")
@@ -44,4 +63,6 @@ module.exports = {
   allowOnlyProfileFields,
   updateMeProfile,
   PROFILE_ALLOWED_FIELDS,
+  forgotPasswordRules,
+  resetPasswordRules,
 };

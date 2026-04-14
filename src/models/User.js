@@ -64,6 +64,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /** Opaque nonce: must match the JWT `nnc` claim for password reset; cleared after reset or superseded on new request. */
+    passwordResetNonce: {
+      type: String,
+      default: '',
+      select: false,
+    },
   },
   {
     timestamps: true,

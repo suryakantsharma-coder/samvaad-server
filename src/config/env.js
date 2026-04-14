@@ -87,6 +87,11 @@ const env = {
   /** Set to "1" to run API without embedding the reminder worker (use `npm run reminder-worker`). */
   REMINDER_WORKER_DISABLED: process.env.REMINDER_WORKER_DISABLED || "",
   /**
+   * When "1" or "true": hourly payout cron aggregates the **current** calendar month (local server time).
+   * Default (unset): **previous** calendar month. Use only for testing; leave unset in production.
+   */
+  PAYOUT_CRON_USE_CURRENT_MONTH: (process.env.PAYOUT_CRON_USE_CURRENT_MONTH || "").trim(),
+  /**
    * When "1" or "true": breakfast/lunch/dinner fire at ~2 / 25 / 48 min after each compact "day",
    * and each follow-up day is 1 hour apart (good for local testing). Leave unset in production.
    */
@@ -128,6 +133,17 @@ const env = {
   FRONTEND_GOOGLE_OAUTH_RETURN_URL: (process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || "")
     .trim()
     .replace(/\/$/, ""),
+  /** Public base URL of this API (no trailing slash). Used in password-reset emails, e.g. http://localhost:3000 */
+  API_PUBLIC_URL: (process.env.API_PUBLIC_URL || "").trim().replace(/\/$/, ""),
+  /** Secret for short-lived password-reset JWTs (defaults to access secret for local dev only). */
+  JWT_PASSWORD_RESET_SECRET: (process.env.JWT_PASSWORD_RESET_SECRET || "").trim() || null,
+  /** Nodemailer / SMTP — port 587: leave SMTP_SECURE unset/false (STARTTLS). Port 465: SMTPS (secure). */
+  SMTP_HOST: (process.env.SMTP_HOST || "").trim(),
+  SMTP_PORT: parseInt(process.env.SMTP_PORT, 10) || 587,
+  SMTP_SECURE: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
+  SMTP_USER: (process.env.SMTP_USER || "").trim(),
+  SMTP_PASS: (process.env.SMTP_PASS || "").trim(),
+  MAIL_FROM: (process.env.MAIL_FROM || "").trim(),
 };
 
 module.exports = env;
