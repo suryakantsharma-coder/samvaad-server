@@ -10,6 +10,7 @@ const { validate } = require("../middleware/validate");
 const {
   listPayoutsQuery,
   patchPayoutTransactionStatus,
+  patchPayoutListStatus,
   searchPayoutTransactionsQuery,
 } = require("../validators/payout.validator");
 const payoutListController = require("../controllers/payoutListController");
@@ -34,6 +35,14 @@ router.patch(
   patchPayoutTransactionStatus,
   validate,
   payoutSuperAdminController.patchTransactionStatus
+);
+
+router.patch(
+  "/list/:id/status",
+  requireExactRoles(ROLES.SUPER_ADMIN),
+  patchPayoutListStatus,
+  validate,
+  payoutSuperAdminController.patchPayoutListRecordStatus
 );
 
 router.get(

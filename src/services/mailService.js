@@ -1,6 +1,9 @@
-const nodemailer = require('nodemailer');
-const env = require('../config/env');
-const { buildPasswordResetHtml, buildPasswordResetText } = require('../templates/passwordResetEmail');
+const nodemailer = require("nodemailer");
+const env = require("../config/env");
+const {
+  buildPasswordResetHtml,
+  buildPasswordResetText,
+} = require("../templates/passwordResetEmail");
 
 let transporter;
 
@@ -17,14 +20,14 @@ function resolveSmtpSecure(port, explicitSecure) {
   if (port === 465) {
     if (!explicitSecure) {
       console.warn(
-        '[mail] SMTP: port 465 uses implicit TLS; using secure: true (set SMTP_SECURE=true or omit).'
+        "[mail] SMTP: port 465 uses implicit TLS; using secure: true (set SMTP_SECURE=true or omit).",
       );
     }
     return true;
   }
   if (explicitSecure) {
     console.warn(
-      `[mail] SMTP: SMTP_SECURE=true on port ${port} breaks most providers; using secure: false (STARTTLS). Use port 465 for SMTPS.`
+      `[mail] SMTP: SMTP_SECURE=true on port ${port} breaks most providers; using secure: false (STARTTLS). Use port 465 for SMTPS.`,
     );
     return false;
   }
@@ -40,6 +43,7 @@ function getTransporter() {
       host: env.SMTP_HOST,
       port,
       secure,
+      family: 4,
       auth:
         env.SMTP_USER || env.SMTP_PASS
           ? { user: env.SMTP_USER, pass: env.SMTP_PASS }
@@ -55,13 +59,17 @@ function getTransporter() {
 async function sendPasswordResetMail({ to, resetUrl }) {
   const from = env.MAIL_FROM;
   const transport = getTransporter();
-  const subject = 'Reset your password';
+  const subject = "Reset your password";
   const text = buildPasswordResetText({ resetUrl });
   const html = buildPasswordResetHtml({ resetUrl });
 
   if (!transport) {
-    console.error('[mail] Password reset: cannot send — transporter missing (set SMTP_HOST and MAIL_FROM)');
-    const err = new Error('Email is not configured (set SMTP_HOST and MAIL_FROM)');
+    console.error(
+      "[mail] Password reset: cannot send — transporter missing (set SMTP_HOST and MAIL_FROM)",
+    );
+    const err = new Error(
+      "Email is not configured (set SMTP_HOST and MAIL_FROM)",
+    );
     err.statusCode = 503;
     throw err;
   }
@@ -74,10 +82,8 @@ async function sendPasswordResetMail({ to, resetUrl }) {
       text,
       html,
     });
-    const preview = info.response
-      ? String(info.response).slice(0, 160)
-      : '';
-    console.log('[mail] Password reset email sent OK', {
+    const preview = info.response ? String(info.response).slice(0, 160) : "";
+    console.log("[mail] Password reset email sent OK", {
       to,
       messageId: info.messageId || null,
       accepted: info.accepted,
@@ -85,7 +91,10 @@ async function sendPasswordResetMail({ to, resetUrl }) {
       responsePreview: preview || undefined,
     });
   } catch (err) {
-    console.error('[mail] Password reset email FAILED (not sent):', err.message);
+    console.error(
+      "[mail] Password reset email FAILED (not sent):",
+      err.message,
+    );
     if (err.stack) console.error(err.stack);
     throw err;
   }

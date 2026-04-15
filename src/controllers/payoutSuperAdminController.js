@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const PaymentTransaction = require("../models/paymentTransaction.model");
+const PayoutList = require("../models/payoutList.model");
 const {
   getDateRangeFromQuery,
   parseCalendarDayStartUtc,
@@ -20,12 +21,21 @@ const ALLOWED_RAZORPAY_STATUS = new Set([
   "pending",
 ]);
 
+/** PayoutList.status enum — super_admin manual override. */
+const ALLOWED_PAYOUT_LIST_STATUS = new Set(["draft", "paid"]);
+
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeTransactionStatus(body) {
   const raw = body.razorpayStatus ?? body.status;
+  if (raw == null || String(raw).trim() === "") return null;
+  return String(raw).trim().toLowerCase();
+}
+
+function normalizePayoutListStatus(body) {
+  const raw = body.status ?? body.payoutStatus;
   if (raw == null || String(raw).trim() === "") return null;
   return String(raw).trim().toLowerCase();
 }
@@ -61,17 +71,91 @@ const patchTransactionStatus = async (req, res, next) => {
   }
 };
 
+/**
+ * PATCH /api/payouts/list/:id/status
+ * Super admin only. Updates PayoutList.status (draft | paid).
+ */
+const patchPayoutListRecordStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const nextStatus = normalizePayoutListStatus(req.body);
+    if (!nextStatus || !ALLOWED_PAYOUT_LIST_STATUS.has(nextStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: `status must be one of: ${[...ALLOWED_PAYOUT_LIST_STATUS].join(", ")}`,
+      });
+    }
+
+    const doc = await PayoutList.findByIdAndUpdate(
+      id,
+      { $set: { status: nextStatus } },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!doc) {
+      return res.status(404).json({ success: false, message: "Payout list not found" });
+    }
+
+    return res.json({ success: true, data: doc });
+  } catch (err) {
+    return next(err);
+  }
+};
+
 function parseTxStatusFilter(query) {
-  const raw = firstTrimmedQueryValue(query, ["razorpayStatus", "transactionStatus", "payment_status"]);
+  const raw = firstTrimmedQueryValue(query, [
+    "razorpayStatus",
+    "transactionStatus",
+    "payment_status",
+    "status",
+  ]);
   if (!raw) return null;
   const s = String(raw).toLowerCase();
   if (s === "all") return null;
   return s;
 }
 
+/** Full-text-ish match across PaymentTransaction fields for `q` (ANDs with date, hospital, status filters). */
+function buildTransactionSearchOrClause(q) {
+  const trimmed = String(q).trim();
+  if (!trimmed) return null;
+  const regex = new RegExp(escapeRegex(trimmed), "i");
+  const orClause = [
+    { razorpayPaymentId: regex },
+    { razorpayOrderId: regex },
+    { razorpaySignature: regex },
+    { patientNameSnapshot: regex },
+    { patientPhoneSnapshot: regex },
+    { hospitalNameSnapshot: regex },
+    { appointmentIdDisplaySnapshot: regex },
+    { paymentMethod: regex },
+    { currency: regex },
+    { recordedVia: regex },
+    { internalNotes: regex },
+    { termsVersion: regex },
+    { razorpayStatus: regex },
+    { clientIp: regex },
+    { userAgent: regex },
+  ];
+  if (mongoose.isValidObjectId(trimmed)) {
+    const oid = new mongoose.Types.ObjectId(trimmed);
+    orClause.push({ _id: oid });
+    orClause.push({ patient: oid });
+    orClause.push({ hospital: oid });
+    orClause.push({ appointment: oid });
+    orClause.push({ recordedBy: oid });
+  }
+  const asNum = Number(trimmed);
+  if (trimmed !== "" && Number.isFinite(asNum) && String(asNum) === trimmed) {
+    orClause.push({ amount: asNum });
+  }
+  return orClause;
+}
+
 /**
  * GET /api/payouts/transactions/search
- * Super admin only. At least one of: q, hospitalId, or fromDate/toDate (date range).
+ * Super admin only. At least one of: q, hospitalId, fromDate/toDate, or payment status filter.
+ * `q` matches payment/order IDs, snapshots, status substring, method, notes, IPs, amounts (numeric), ObjectIds on linked refs.
  */
 const searchTransactions = async (req, res, next) => {
   try {
@@ -82,10 +166,14 @@ const searchTransactions = async (req, res, next) => {
 
     const hasHospital = requestedHospital.length > 0;
     const hasQ = q.length > 0;
-    if (!hasQ && !hasHospital && !hasDateRange) {
+    const statusFilter = parseTxStatusFilter(req.query);
+    const hasStatusOnly = Boolean(statusFilter);
+
+    if (!hasQ && !hasHospital && !hasDateRange && !hasStatusOnly) {
       return res.status(400).json({
         success: false,
-        message: "Provide q and/or hospitalId and/or fromDate & toDate (date range on createdAt)",
+        message:
+          "Provide q and/or hospitalId and/or fromDate & toDate (createdAt range) and/or status (razorpay payment status)",
       });
     }
 
@@ -114,25 +202,15 @@ const searchTransactions = async (req, res, next) => {
       }
     }
 
-    const statusFilter = parseTxStatusFilter(req.query);
     if (statusFilter) {
       filter.razorpayStatus = new RegExp(`^${escapeRegex(statusFilter)}$`, "i");
     }
 
     if (hasQ) {
-      const regex = new RegExp(escapeRegex(q), "i");
-      const orClause = [
-        { razorpayPaymentId: regex },
-        { razorpayOrderId: regex },
-        { patientNameSnapshot: regex },
-        { patientPhoneSnapshot: regex },
-        { hospitalNameSnapshot: regex },
-        { appointmentIdDisplaySnapshot: regex },
-      ];
-      if (mongoose.isValidObjectId(q)) {
-        orClause.push({ _id: new mongoose.Types.ObjectId(q) });
+      const orClause = buildTransactionSearchOrClause(q);
+      if (orClause && orClause.length) {
+        filter.$or = orClause;
       }
-      filter.$or = orClause;
     }
 
     const page = Math.max(1, parseInt(req.query.page, 10) || DEFAULT_PAGE);
@@ -168,5 +246,6 @@ const searchTransactions = async (req, res, next) => {
 
 module.exports = {
   patchTransactionStatus,
+  patchPayoutListRecordStatus,
   searchTransactions,
 };
