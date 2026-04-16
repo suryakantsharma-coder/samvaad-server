@@ -95,7 +95,7 @@ const updateAppointment = [
     .withMessage("videoUrl must be a valid URL (e.g. Google Meet link)"),
 ];
 
-/** GET /api/appointments list: filter (all|today|tomorrow); date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST calendar day); doctorId, patientId, status, type, sortOrder, pagination. Date range overrides filter for the listed rows. */
+/** GET /api/appointments list: filter (all|today|tomorrow); date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST calendar day); doctor (ObjectId | doctorId | name), doctorId, patientId, status, type, sortOrder, pagination. filter=today|tomorrow wins over date range for listed rows. */
 const appointmentListQuery = [
   ...paginationQuery,
   query("filter")
@@ -153,6 +153,11 @@ const appointmentListQuery = [
     .withMessage("end_date must be a valid ISO date (e.g. YYYY-MM-DD)")
     .escape(),
   query("doctorId").optional().trim().isMongoId().withMessage("Invalid doctorId"),
+  query("doctor")
+    .optional({ values: "falsy" })
+    .trim()
+    .isLength({ max: 200 })
+    .withMessage("doctor must be at most 200 characters"),
   query("patientId").optional().trim().isMongoId().withMessage("Invalid patientId"),
   query("status")
     .optional()

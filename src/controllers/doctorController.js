@@ -1,4 +1,5 @@
 const Doctor = require('../models/doctor.model');
+const User = require('../models/User');
 const mongoose = require('mongoose');
 const {
   mergeHospitalFilter,
@@ -22,6 +23,103 @@ function withNormalizedAvailability(doc) {
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+/**
+ * Lookup doctor(s) by normalized email with the same hospital scoping as other doctor routes.
+ * @returns {Promise<{ doctor: object }|{ error: number, message: string }>}
+ */
+async function findDoctorByEmailScoped(req, normalizedEmail) {
+  const filter = { email: normalizedEmail };
+  mergeHospitalFilter(req, filter);
+
+  if (req.user.role !== ROLES.DOCTOR && !filter.hospital) {
+    if (req.query.hospitalId && mongoose.isValidObjectId(String(req.query.hospitalId).trim())) {
+      filter.hospital = String(req.query.hospitalId).trim();
+    }
+  }
+
+  const doctors = await Doctor.find(filter)
+    .populate('hospital', 'name registrationNumber city')
+    .lean();
+
+  if (!doctors.length) {
+    return { error: 404, message: 'Doctor not found' };
+  }
+  if (doctors.length > 1) {
+    return {
+      error: 400,
+      message: 'Multiple doctors match this email; pass hospitalId to narrow results',
+    };
+  }
+  return { doctor: doctors[0] };
+}
+
+/**
+ * @route GET /api/doctors/by-email?email=
+ * Optional ?hospitalId= for platform admins when the email exists under more than one hospital.
+ */
+const getByEmail = async (req, res, next) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    const outcome = await findDoctorByEmailScoped(req, email);
+    if (outcome.error) {
+      return res.status(outcome.error).json({ success: false, message: outcome.message });
+    }
+    res.json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: { doctor: withNormalizedAvailability(outcome.doctor) },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * @route GET /api/doctors/link-status?email=
+ * Hospital linkage (Doctor.hospital) and login linkage (User.doctorProfile).
+ */
+const getLinkStatusByEmail = async (req, res, next) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    const outcome = await findDoctorByEmailScoped(req, email);
+    if (outcome.error) {
+      return res.status(outcome.error).json({ success: false, message: outcome.message });
+    }
+    const doctor = outcome.doctor;
+    const linkedUser = await User.findOne({ doctorProfile: doctor._id })
+      .select('_id email name role isActive hospital doctorProfile')
+      .lean();
+
+    const hospitalId = doctor.hospital ? String(doctor.hospital._id || doctor.hospital) : null;
+
+    res.json({
+      success: true,
+      ...getLinkedHospitalForResponse(req),
+      data: {
+        email: doctor.email,
+        doctorRecordId: String(doctor._id),
+        businessDoctorId: doctor.doctorId,
+        linkedToHospital: Boolean(hospitalId),
+        hospitalId,
+        hospital: doctor.hospital || null,
+        userAccountLinked: Boolean(linkedUser),
+        user: linkedUser
+          ? {
+              _id: String(linkedUser._id),
+              email: linkedUser.email,
+              name: linkedUser.name,
+              role: linkedUser.role,
+              isActive: linkedUser.isActive,
+              hospital: linkedUser.hospital ? String(linkedUser.hospital) : null,
+            }
+          : null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
 
 /**
  * @route GET /api/doctors/names
@@ -292,6 +390,8 @@ module.exports = {
   listDoctorNames,
   getAll,
   searchByName,
+  getByEmail,
+  getLinkStatusByEmail,
   getById,
   create,
   update,

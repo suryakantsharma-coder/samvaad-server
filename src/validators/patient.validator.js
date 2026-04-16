@@ -61,7 +61,7 @@ const updatePatient = [
     .escape(),
 ];
 
-/** GET /api/patients list: filter (all|today|tomorrow, IST calendar day), date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST day), optional doctorId, pagination. Date range overrides filter for the patient list; embedded appointments match the range when set. */
+/** GET /api/patients list: filter (all|today|tomorrow, IST calendar day), date range fromDate/toDate or startDate/endDate (ISO YYYY-MM-DD = IST day), optional doctorId, pagination. filter=today|tomorrow wins over date range; embedded appointments match the active slice (preset day or range). */
 const patientListQuery = [
   ...paginationQuery,
   query('doctorId')

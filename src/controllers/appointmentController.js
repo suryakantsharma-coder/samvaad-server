@@ -19,10 +19,46 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
 /**
+ * Optional `doctor` query: MongoDB id, or match hospital-scoped Doctor.doctorId / fullName (case-insensitive).
+ * If `doctor` is set, it takes precedence over `doctorId`.
+ */
+async function applyDoctorFilterToAppointmentQuery(req, baseFilter) {
+  const doctorQ = String(req.query.doctor || '').trim();
+  const doctorIdQ = req.query.doctorId;
+
+  if (doctorQ) {
+    if (mongoose.isValidObjectId(doctorQ)) {
+      baseFilter.doctor = doctorQ;
+      return;
+    }
+    const doctorScope = {};
+    mergeHospitalFilter(req, doctorScope);
+    const esc = doctorQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const docs = await Doctor.find({
+      ...doctorScope,
+      $or: [{ doctorId: new RegExp(`^${esc}$`, 'i') }, { fullName: new RegExp(esc, 'i') }],
+    })
+      .select('_id')
+      .lean();
+    if (!docs.length) {
+      baseFilter.doctor = { $in: [] };
+      return;
+    }
+    baseFilter.doctor = docs.length === 1 ? docs[0]._id : { $in: docs.map((d) => d._id) };
+    return;
+  }
+
+  if (doctorIdQ && mongoose.isValidObjectId(String(doctorIdQ).trim())) {
+    baseFilter.doctor = String(doctorIdQ).trim();
+  }
+}
+
+/**
  * @route GET /api/appointments
  * Query: filter=all|today|tomorrow; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day);
- * doctorId, patientId, status, type, sortOrder, page, limit.
- * If any date range param is set, it overrides filter for listing; counts.today / counts.tomorrow stay as chips.
+ * doctor (optional: ObjectId | doctorId string | name), doctorId, patientId, status, type, sortOrder, page, limit.
+ * filter=today|tomorrow uses IST calendar day for appointmentDateTime and wins over fromDate/toDate (UI often sends both).
+ * Date range applies only when filter is all or omitted as today/tomorrow.
  */
 const getAll = async (req, res, next) => {
   try {
@@ -30,13 +66,12 @@ const getAll = async (req, res, next) => {
     const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_LIMIT));
     const skip = (page - 1) * limit;
     const filterChoice = (req.query.filter || 'all').toLowerCase();
+    const usePresetDayFilter = filterChoice === 'today' || filterChoice === 'tomorrow';
 
     const { fromDate, toDate, hasDateRange: rangeParamsPresent } = getDateRangeFromQuery(req.query);
 
     const baseFilter = {};
-    if (req.query.doctorId && mongoose.isValidObjectId(req.query.doctorId)) {
-      baseFilter.doctor = req.query.doctorId;
-    }
+    await applyDoctorFilterToAppointmentQuery(req, baseFilter);
     if (req.query.patientId && mongoose.isValidObjectId(req.query.patientId)) {
       baseFilter.patient = req.query.patientId;
     }
@@ -76,21 +111,23 @@ const getAll = async (req, res, next) => {
       }
     }
 
-    const dateRangeActive = Boolean(rangeClause);
+    const dateRangeActive = Boolean(rangeClause) && !usePresetDayFilter;
 
-    const countAll =
-      dateRangeActive
-        ? await Appointment.countDocuments({ ...baseFilter, appointmentDateTime: rangeClause })
-        : countAllUnscoped;
+    let countAll;
+    if (usePresetDayFilter) {
+      countAll = filterChoice === 'today' ? countToday : countTomorrow;
+    } else if (dateRangeActive) {
+      countAll = await Appointment.countDocuments({ ...baseFilter, appointmentDateTime: rangeClause });
+    } else {
+      countAll = countAllUnscoped;
+    }
 
-    // Apply date filter to the list (explicit range overrides filter=today|tomorrow)
     const listFilter = { ...baseFilter };
-    if (dateRangeActive) {
+    if (usePresetDayFilter) {
+      listFilter.appointmentDateTime =
+        filterChoice === 'today' ? istTodayRange() : istTomorrowRange();
+    } else if (dateRangeActive) {
       listFilter.appointmentDateTime = rangeClause;
-    } else if (filterChoice === 'today') {
-      listFilter.appointmentDateTime = istTodayRange();
-    } else if (filterChoice === 'tomorrow') {
-      listFilter.appointmentDateTime = istTomorrowRange();
     }
 
     const sortOrder =

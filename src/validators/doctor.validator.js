@@ -1,4 +1,5 @@
 const { body, query } = require('express-validator');
+const mongoose = require('mongoose');
 
 const createDoctor = [
   body('fullName')
@@ -183,8 +184,32 @@ const searchDoctorsQuery = [
     .toInt(),
 ];
 
+/** GET /api/doctors/by-email and /api/doctors/link-status — platform admins without a linked hospital may pass hospitalId when the email is not unique globally. */
+const doctorByEmailQuery = [
+  query('email')
+    .trim()
+    .notEmpty()
+    .withMessage('email is required')
+    .isEmail()
+    .withMessage('Invalid email format')
+    .normalizeEmail(),
+  query('hospitalId')
+    .optional({ values: 'falsy' })
+    .trim()
+    .custom((val) => {
+      if (val === undefined || val === null || val === '') return true;
+      const s = String(val).trim();
+      if (s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null') return true;
+      if (!mongoose.isValidObjectId(s)) {
+        throw new Error('hospitalId must be a valid MongoDB id');
+      }
+      return true;
+    }),
+];
+
 module.exports = {
   createDoctor,
   updateDoctor,
   searchDoctorsQuery,
+  doctorByEmailQuery,
 };

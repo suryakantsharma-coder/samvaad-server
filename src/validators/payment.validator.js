@@ -79,6 +79,12 @@ const listPaymentsQuery = [
     .isIn(["captured", "failed", "pending", "all"])
     .withMessage("payment_status must be captured, failed, pending, or all")
     .escape(),
+  query("sort")
+    .optional()
+    .trim()
+    .isIn(["newest", "oldest"])
+    .withMessage("sort must be newest or oldest")
+    .escape(),
   ...paymentDateRangeQuery,
 ];
 
@@ -107,6 +113,12 @@ const searchPaymentsQuery = [
     .trim()
     .isIn(["captured", "failed", "pending", "all"])
     .withMessage("payment_status must be captured, failed, pending, or all")
+    .escape(),
+  query("sort")
+    .optional()
+    .trim()
+    .isIn(["newest", "oldest"])
+    .withMessage("sort must be newest or oldest")
     .escape(),
   ...paymentDateRangeQuery,
 ];

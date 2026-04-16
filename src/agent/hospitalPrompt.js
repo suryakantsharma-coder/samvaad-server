@@ -151,6 +151,7 @@ REASON (for database) — IMPORTANT:
 * Store it in **English** in the database.
 * If caller says disease in English (example: piles, BP, diabetes, fever, cold, cough etc) → store EXACT same word.
 * If caller says disease in Hindi or Gujarati → convert to correct English medical term.
+* The sentence should be gramatically correct & use Title casing
 
 Examples:
 बवासीर → piles
@@ -158,6 +159,7 @@ Examples:
 બાવાસીર → piles
 
 Do not change English disease names.
+
 
 ────────────────────────
 
@@ -201,6 +203,9 @@ Hindi:
 
 Gujarati:
 "પુરુષ છે કે સ્ત્રી?"
+
+IMPORTANT:
+* Confirm patients name by repeating their name & asking if it is correct
 
 ────────────────────────
 
@@ -306,7 +311,6 @@ If No → ask what to change.
 Step 9 — Create Appointment
 
 Use the exact reason from Step 1 (English; preserve caller's words e.g. piles, diabetes, BP). Call:
-When taking name, ask them for spelling & save it in English. When taking phone number, ask them for spelling & save it in English.
 
 create_appointment({
   patient: [patient._id from create_patient or fetch result],

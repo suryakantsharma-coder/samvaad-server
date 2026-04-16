@@ -88,8 +88,15 @@ function applyStatusToFilter(filter, statusOutcome) {
   if (statusOutcome) filter.status = statusOutcome;
 }
 
+/** @returns {1|-1} Mongo sort direction on createdAt: newest first (-1) or oldest first (1) */
+function getPaymentCreatedAtSortDirection(query) {
+  const raw = firstTrimmedQueryValue(query, ["sort"]);
+  if (String(raw).toLowerCase() === "oldest") return 1;
+  return -1;
+}
+
 /**
- * GET /api/payments?hospitalId=&filter=all|today|tomorrow&paymentStatus=captured|failed|pending|all
+ * GET /api/payments?hospitalId=&filter=all|today|tomorrow&paymentStatus=captured|failed|pending|all&sort=newest|oldest
  * Optional fromDate/toDate (IST calendar day on createdAt) overrides filter for the listed rows.
  */
 const listByHospital = async (req, res, next) => {
@@ -104,6 +111,7 @@ const listByHospital = async (req, res, next) => {
     const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_LIMIT));
     const skip = (page - 1) * limit;
     const filterChoice = (req.query.filter || "all").toLowerCase();
+    const createdAtSortDir = getPaymentCreatedAtSortDirection(req.query);
 
     const hospitalOid = new mongoose.Types.ObjectId(requested);
     const baseFilter = { hospital: hospitalOid };
@@ -140,7 +148,7 @@ const listByHospital = async (req, res, next) => {
         .populate("hospital", "name registrationNumber city")
         .populate("patient", "fullName patientId phoneNumber")
         .populate("doctor", "fullName doctorId designation email")
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: createdAtSortDir })
         .skip(skip)
         .limit(limit)
         .lean(),
@@ -196,7 +204,7 @@ const listByHospital = async (req, res, next) => {
 };
 
 /**
- * GET /api/payments/search?q=&hospitalId=&paymentStatus=&fromDate=&toDate=
+ * GET /api/payments/search?q=&hospitalId=&paymentStatus=&fromDate=&toDate=&sort=newest|oldest
  * Search payment_id, order_id, and patient/doctor name or id (hospital-scoped).
  */
 const search = async (req, res, next) => {
@@ -211,6 +219,7 @@ const search = async (req, res, next) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || DEFAULT_PAGE);
     const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_LIMIT));
     const skip = (page - 1) * limit;
+    const createdAtSortDir = getPaymentCreatedAtSortDirection(req.query);
 
     const hospitalOid = new mongoose.Types.ObjectId(requested);
     const filter = { hospital: hospitalOid };
@@ -246,7 +255,7 @@ const search = async (req, res, next) => {
         .populate("hospital", "name registrationNumber city")
         .populate("patient", "fullName patientId phoneNumber")
         .populate("doctor", "fullName doctorId designation email")
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: createdAtSortDir })
         .skip(skip)
         .limit(limit)
         .lean(),

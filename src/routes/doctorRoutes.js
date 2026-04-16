@@ -8,7 +8,10 @@ const {
 } = require('../middleware/roles');
 const { validate } = require('../middleware/validate');
 const { validObjectId, paginationQuery } = require('../validators/common');
-const { searchDoctorsQuery } = require('../validators/doctor.validator');
+const {
+  searchDoctorsQuery,
+  doctorByEmailQuery,
+} = require('../validators/doctor.validator');
 const { createDoctor, updateDoctor } = require('../validators/doctor.validator');
 const doctorController = require('../controllers/doctorController');
 
@@ -23,6 +26,14 @@ router.get('/names', requireStaff, doctorController.listDoctorNames);
 // Doctor, hospital_admin, admin: read-only (hospital-scoped for doctor/hospital_admin)
 router.get('/', requireStaff, paginationQuery, validate, doctorController.getAll);
 router.get('/search', requireStaff, searchDoctorsQuery, validate, doctorController.searchByName);
+router.get('/by-email', requireStaff, doctorByEmailQuery, validate, doctorController.getByEmail);
+router.get(
+  '/link-status',
+  requireStaff,
+  doctorByEmailQuery,
+  validate,
+  doctorController.getLinkStatusByEmail,
+);
 router.get('/:id', requireStaff, validObjectId('id'), validate, doctorController.getById);
 
 // hospital_admin, admin only: create, update, delete

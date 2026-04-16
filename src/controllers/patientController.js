@@ -19,9 +19,9 @@ const MAX_LIMIT = 100;
 /**
  * @route GET /api/patients
  * Query: filter=all|today|tomorrow; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day);
- * optional doctorId; page, limit. If any date range param is set, the **list** uses patients with an appointment
- * in that window (overrides filter=today|tomorrow for listing). doctorId scopes appointments and counts.
- * Response counts.today / counts.tomorrow stay calendar chips; counts.inRange when a range is applied.
+ * optional doctorId; page, limit. filter=today|tomorrow wins over date range for listing (UI often sends both).
+ * With filter=all, date range limits to patients who have an appointment in that window. doctorId scopes appointments.
+ * Response counts.today / counts.tomorrow stay calendar chips; counts.inRange when a range is applied (not with preset filter).
  */
 const getAll = async (req, res, next) => {
   try {
@@ -32,6 +32,7 @@ const getAll = async (req, res, next) => {
     );
     const skip = (page - 1) * limit;
     const filterChoice = (req.query.filter || 'all').toLowerCase();
+    const usePresetDayFilter = filterChoice === 'today' || filterChoice === 'tomorrow';
 
     const { fromDate, toDate, hasDateRange: rangeParamsPresent } = getDateRangeFromQuery(req.query);
 
@@ -75,9 +76,17 @@ const getAll = async (req, res, next) => {
       }
     }
 
-    const dateRangeActive = Array.isArray(patientIdsInRange);
+    const dateRangeActive = Array.isArray(patientIdsInRange) && !usePresetDayFilter;
 
-    const appointmentCountFilter = dateRangeActive ? rangeFilterForList : appointmentBaseFilter;
+    const appointmentCountFilter = dateRangeActive
+      ? rangeFilterForList
+      : usePresetDayFilter
+        ? {
+            ...appointmentBaseFilter,
+            appointmentDateTime:
+              filterChoice === 'today' ? istTodayRange() : istTomorrowRange(),
+          }
+        : appointmentBaseFilter;
 
     const [totalAppointments, patientIdsToday, patientIdsTomorrow] = await Promise.all([
       Appointment.countDocuments(appointmentCountFilter),
@@ -86,7 +95,9 @@ const getAll = async (req, res, next) => {
     ]);
 
     let countAll;
-    if (dateRangeActive) {
+    if (usePresetDayFilter) {
+      countAll = filterChoice === 'today' ? patientIdsToday.length : patientIdsTomorrow.length;
+    } else if (dateRangeActive) {
       countAll = patientIdsInRange.length;
     } else if (doctorId) {
       countAll = (await Appointment.distinct('patient', appointmentBaseFilter)).length;
@@ -98,12 +109,12 @@ const getAll = async (req, res, next) => {
     const countTomorrow = patientIdsTomorrow.length;
 
     const listFilter = { ...baseFilter };
-    if (dateRangeActive) {
+    if (usePresetDayFilter) {
+      listFilter._id = {
+        $in: filterChoice === 'today' ? patientIdsToday : patientIdsTomorrow,
+      };
+    } else if (dateRangeActive) {
       listFilter._id = { $in: patientIdsInRange };
-    } else if (filterChoice === 'today') {
-      listFilter._id = { $in: patientIdsToday };
-    } else if (filterChoice === 'tomorrow') {
-      listFilter._id = { $in: patientIdsTomorrow };
     } else if (doctorId && filterChoice === 'all') {
       const patientIdsForDoctor = await Appointment.find(appointmentBaseFilter).distinct('patient');
       listFilter._id = { $in: patientIdsForDoctor };
@@ -130,6 +141,9 @@ const getAll = async (req, res, next) => {
         const lte = parseCalendarDayEndUtc(toDate);
         if (lte) appointmentFilter.appointmentDateTime.$lte = lte;
       }
+    } else if (usePresetDayFilter) {
+      appointmentFilter.appointmentDateTime =
+        filterChoice === 'today' ? istTodayRange() : istTomorrowRange();
     }
     const appointments = patientIds.length
       ? await Appointment.find(appointmentFilter)
