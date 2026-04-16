@@ -6,6 +6,25 @@ require("dotenv").config({
   path: path.resolve(__dirname, "..", "..", ".env"),
 });
 
+/** Strip BOM, quotes, accidental "Bearer " prefix (common .env / copy-paste mistakes). */
+function normalizeMailtrapToken(raw) {
+  if (raw == null) return "";
+  let s = String(raw)
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .replace(/\r/g, "");
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  if (/^Bearer\s+/i.test(s)) {
+    s = s.replace(/^Bearer\s+/i, "").trim();
+  }
+  return s;
+}
+
 /**
  * Filesystem directory for public `/uploads/...` (logos, etc.). Uses repo `uploads/` by default
  * so paths do not depend on `process.cwd()`. Set `UPLOADS_ROOT` for Docker volumes.
@@ -137,12 +156,18 @@ const env = {
   API_PUBLIC_URL: (process.env.API_PUBLIC_URL || "").trim().replace(/\/$/, ""),
   /** Secret for short-lived password-reset JWTs (defaults to access secret for local dev only). */
   JWT_PASSWORD_RESET_SECRET: (process.env.JWT_PASSWORD_RESET_SECRET || "").trim() || null,
-  /** Nodemailer / SMTP — port 587: leave SMTP_SECURE unset/false (STARTTLS). Port 465: SMTPS (secure). */
-  SMTP_HOST: (process.env.SMTP_HOST || "").trim(),
-  SMTP_PORT: parseInt(process.env.SMTP_PORT, 10) || 587,
-  SMTP_SECURE: String(process.env.SMTP_SECURE || "").toLowerCase() === "true",
-  SMTP_USER: (process.env.SMTP_USER || "").trim(),
-  SMTP_PASS: (process.env.SMTP_PASS || "").trim(),
+  /**
+   * Mailtrap Sending API — POST https://send.api.mailtrap.io/api/send
+   * Token: https://mailtrap.io/api-tokens (same value as curl `Authorization: Bearer <token>`)
+   */
+  MAILTRAP_API_KEY: normalizeMailtrapToken(
+    process.env.MAILTRAP_API_KEY || process.env.MAILTRAP_TOKEN,
+  ),
+  /** Optional `category` on the send JSON (e.g. Integration Test). */
+  MAILTRAP_EMAIL_CATEGORY: (process.env.MAILTRAP_EMAIL_CATEGORY || "").trim(),
+  /**
+   * Must match the sender domain allowed for your token (e.g. Mailtrap demo: `Mailtrap Test <hello@demomailtrap.co>`).
+   */
   MAIL_FROM: (process.env.MAIL_FROM || "").trim(),
 };
 

@@ -248,7 +248,7 @@ const getPublicApiBase = () =>
   (env.API_PUBLIC_URL || `http://127.0.0.1:${env.PORT}`).replace(/\/$/, '');
 
 /**
- * Sends a 2-minute reset link (or logs it in development when SMTP is unset).
+ * Sends a 2-minute reset link (or logs it in development when Mailtrap is unset).
  * Always returns the same shape to avoid email enumeration.
  */
 const requestPasswordReset = async (email) => {
@@ -278,14 +278,14 @@ const requestPasswordReset = async (email) => {
   if (!isMailConfigured()) {
     if (env.NODE_ENV === 'production') {
       console.error(
-        '[mail] Password reset: not sent — SMTP not configured in production (set SMTP_HOST, MAIL_FROM)'
+        '[mail] Password reset: not sent — Mailtrap not configured in production (set MAILTRAP_API_KEY, MAIL_FROM)'
       );
       const err = new Error('Password reset email is not configured on the server');
       err.statusCode = 503;
       throw err;
     }
     console.warn(
-      '[mail] Password reset: email NOT sent — SMTP not configured (dev). Use this link:',
+      '[mail] Password reset: email NOT sent — Mailtrap not configured (dev). Use this link:',
       resetUrl
     );
     return { ok: true };
