@@ -2,6 +2,10 @@
  * Hospital system prompt and dynamic instructions (used by Exotel agent and Realtime frontend voice).
  */
 const DoctorModel = require("../models/doctor.model");
+const {
+  formatCalendarDateIST,
+  parseCalendarDayStartUtc,
+} = require("../utils/queryDateRange");
 
 const HOSPITAL_PROMPT = `
 You are a Hospital Calling Assistant. Follow this flow strictly.
@@ -76,6 +80,19 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
         )
         .join(", ");
     });
+
+    const istTodayYmd = formatCalendarDateIST(new Date());
+    const istTomorrowYmd = (() => {
+      const todayStart = parseCalendarDayStartUtc(istTodayYmd);
+      if (!todayStart) {
+        return formatCalendarDateIST(
+          new Date(Date.now() + 24 * 60 * 60 * 1000),
+        );
+      }
+      return formatCalendarDateIST(
+        new Date(todayStart.getTime() + 24 * 60 * 60 * 1000),
+      );
+    })();
 
     const dynamicPrompt = `You are **Neha**, a polite, friendly, and professional **female AI Hospital Receptionist** from ${hospital.name}.
 
@@ -240,24 +257,24 @@ Gujarati:
 
 Hindi:
 
-अगर यूज़र "आज" कहे तो वर्तमान तारीख का उपयोग करें:
-${new Date().toISOString().split("T")[0]}
+अगर यूज़र "आज" कहे तो वर्तमान तारीख का उपयोग करें (India IST कैलेंडर):
+${istTodayYmd}
 
 अगर यूज़र "कल" कहे तो संदर्भ के अनुसार:
 - अगर भविष्य की बात हो → कल (tomorrow):
-${new Date(Date.now() + 86400000).toISOString().split("T")[0]}
+${istTomorrowYmd}
 
 अगर यूज़र बोले "आज की तारीख डालो", तो इसी फ़ॉर्मेट का उपयोग करें।
 
 
 Gujarati:
 
-જો યુઝર "આજ" કહે તો હાલની તારીખનો ઉપયોગ કરો:
-${new Date().toISOString().split("T")[0]}
+જો યુઝર "આજ" કહે તો હાલની તારીખનો ઉપયોગ કરો (India IST કૅલેન્ડર):
+${istTodayYmd}
 
 જો યુઝર "કાલ" કહે તો સંદર્ભ મુજબ:
 - જો ભવિષ્યની વાત હોય → આવતી કાલ (tomorrow):
-${new Date(Date.now() + 86400000).toISOString().split("T")[0]}
+${istTomorrowYmd}
 
 જો યુઝર કહે "આજની તારીખ નાખો", તો આ જ ફોર્મેટનો ઉપયોગ કરો।
 
@@ -271,7 +288,7 @@ Hindi:
 Gujarati:
 "કયા સમયે આવવું અનુકૂળ રહેશે?"
 
-Convert to ISO UTC format.
+For create_appointment: combine the agreed **date (YYYY-MM-DD in India IST)** and **time** into one ISO string with **+05:30**, e.g. 2026-02-12T17:30:00+05:30. Times are always **India local (IST)**, not UTC.
 
 ────────────────────────
 
@@ -317,7 +334,7 @@ create_appointment({
   doctor: [doctor._id from list_doctors],
   hospital: ${hospital._id},
   reason: [Reason from Step 1 in English],
-  appointmentDateTimeISO: [ISO date/time],
+  appointmentDateTimeISO: [IST datetime, e.g. 2026-02-12T17:30:00+05:30],
   type: "call"
 })
 

@@ -70,26 +70,9 @@ function normalizeBookingNotes(notes) {
   return n;
 }
 
-/**
- * Interprets the booking datetime as **India (IST, UTC+5:30) wall-clock**, then returns the stored UTC `Date`.
- * Trailing `Z` is stripped so values like `2026-04-09T05:00:00.000Z` mean **05:00 on that date in IST**, not UTC.
- * If the string already includes a non-Z timezone offset, it is parsed as-is.
- */
-function parseAppointmentDateTimeAsIST(raw) {
-  if (raw instanceof Date) return raw;
-  if (raw == null) return new Date(NaN);
-  const s = String(raw).trim();
-  if (!s) return new Date(NaN);
-
-  // Explicit offset (e.g. +05:30, +0530, -04:00) — use instant as given
-  if (/[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
-    return new Date(s);
-  }
-
-  const withoutZ = s.replace(/Z$/i, "");
-  const isoLocal = withoutZ.includes("T") ? withoutZ : `${withoutZ}T00:00:00`;
-  return new Date(`${isoLocal}+05:30`);
-}
+const {
+  parseAppointmentDateTimeAsIST,
+} = require("../utils/appointmentDateTimeIST");
 
 /**
  * On `payment.captured` webhook: if order/payment notes request a video booking, create appointment.

@@ -116,7 +116,8 @@ function getRealtimeTools() {
           },
           appointmentDateTimeISO: {
             type: "string",
-            description: "UTC ISO string, e.g. 2026-02-12T12:00:00.000Z",
+            description:
+              "India (IST) wall-clock as ISO: combine the agreed date (YYYY-MM-DD) and time into one string. Prefer explicit offset, e.g. 2026-02-12T17:30:00+05:30. If you use a trailing Z, the server treats the numbers as IST wall time (not UTC).",
           },
           type: { type: "string", default: "call" },
         },

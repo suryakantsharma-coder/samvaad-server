@@ -6,6 +6,10 @@ const mongoose = require("mongoose");
 const AppointmentModel = require("../models/appointment.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
+const {
+  parseAppointmentDateTimeAsIST,
+  formatInstantAsISTIso,
+} = require("../utils/appointmentDateTimeIST");
 
 const logTag = "[RealtimeTools]";
 
@@ -198,7 +202,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       ) {
         return { ok: false, message: "Invalid doctor or patient id." };
       }
-      const dt = new Date(appointmentDateTimeISO);
+      const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
       if (Number.isNaN(dt.getTime())) {
         return { ok: false, message: "Invalid appointmentDateTimeISO." };
       }
@@ -254,8 +258,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           reason: appointment.reason,
           status: appointment.status,
           type: appointment.type,
-          appointmentDateTime:
-            appointment.appointmentDateTime?.toISOString?.() || null,
+          appointmentDateTime: formatInstantAsISTIso(
+            appointment.appointmentDateTime,
+          ),
         },
       };
     }

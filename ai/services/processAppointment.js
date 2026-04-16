@@ -7,6 +7,10 @@ const AppointmentModel = require("../../src/models/appointment.model");
 const PatientModel = require("../../src/models/patient.model");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { notifyAppointmentBookedById } = require("../../src/services/appointmentWhatsAppNotify");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const {
+  parseAppointmentDateTimeAsIST,
+} = require("../../src/utils/appointmentDateTimeIST");
 
 async function createPatient({
   hospitalId,
@@ -65,11 +69,11 @@ async function createAppointment({
     : 1;
   const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
 
+  const parsedDt = appointmentDateTimeISO
+    ? parseAppointmentDateTimeAsIST(appointmentDateTimeISO)
+    : null;
   const dt =
-    appointmentDateTimeISO &&
-    !Number.isNaN(new Date(appointmentDateTimeISO).getTime())
-      ? new Date(appointmentDateTimeISO)
-      : null;
+    parsedDt && !Number.isNaN(parsedDt.getTime()) ? parsedDt : null;
 
   const doc = await AppointmentModel.create({
     hospital: new mongoose.Types.ObjectId(hospitalId),
