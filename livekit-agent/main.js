@@ -11,6 +11,8 @@ const { HospitalVoiceAgent } = require("./agent");
 const { ensureMongoConnected } = require("./dbConnect");
 const HospitalModel = require("../src/models/hospital.model");
 const { getHospitalInstructions } = require("../src/agent/hospitalPrompt");
+const { runPostCallPipeline } = require("./postCallPipeline");
+const { resolveCallerPhone } = require("./resolveCallerPhone");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -55,16 +57,26 @@ const agentDef = defineAgent({
         throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
       }
 
-      const instructions = await getHospitalInstructions(hospital, null);
+      await ctx.connect();
+
+      const callerPhone = await resolveCallerPhone(ctx);
+      const sessionPhoneRef = { value: callerPhone || null };
+      if (callerPhone) {
+        console.log("[LiveKit Agent] Caller phone resolved:", callerPhone);
+      } else {
+        console.warn(
+          "[LiveKit Agent] Caller phone not resolved from line/SIP; agent will ask the caller and use set_calling_phone.",
+        );
+      }
+
+      const instructions = await getHospitalInstructions(
+        hospital,
+        sessionPhoneRef.value,
+      );
       console.log(
         "[LiveKit Agent] Loaded hospital:",
         hospital.name || hospitalId,
       );
-
-      const callerPhone =
-        (ctx.job && ctx.job.metadata && ctx.job.metadata.callerPhone) ||
-        (ctx.job && ctx.job.metadata && ctx.job.metadata.phone) ||
-        null;
 
       const session = new voice.AgentSession({
         llm: new openai.realtime.RealtimeModel({
@@ -82,19 +94,32 @@ const agentDef = defineAgent({
         }),
       });
 
+      session.once(voice.AgentSessionEventTypes.Close, () => {
+        void runPostCallPipeline({
+          session,
+          hospital,
+          callerPhone: sessionPhoneRef.value || callerPhone,
+          roomName,
+        }).catch((err) => {
+          console.error(
+            "[LiveKit Agent] Post-call pipeline error:",
+            err && err.message ? err.message : err,
+          );
+        });
+      });
+
       await session.start({
         agent: new HospitalVoiceAgent({
           instructions,
           hospitalObjectId: hospital._id,
           callerPhone,
+          sessionPhoneRef,
         }),
         room: ctx.room,
         inputOptions: {
           noiseCancellation: BackgroundVoiceCancellation(),
         },
       });
-
-      await ctx.connect();
 
       const handle = session.generateReply({
         instructions: `Start the call: Greet in Hindi - "नमस्ते, मैं नेहा बोल रही हूँ। मैं ${hospital.name} से हूँ।" Then ask in Hindi: "क्या आप हिंदी में बात करेंगे या गुजराती में?"`,

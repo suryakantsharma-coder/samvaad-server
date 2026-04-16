@@ -1,7 +1,10 @@
 /**
  * Doctor holiday ranges: calendar-day logic in the server's local timezone
  * (matches WhatsApp `parseFlexibleDate` / `toYyyyMmDd`).
+ * For voice / IST booking, use findHolidayCoveringYmdIST + formatCalendarDateIST.
  */
+
+const { formatCalendarDateIST } = require('./queryDateRange');
 
 const MONTH_SHORT = [
   'Jan',
@@ -73,6 +76,50 @@ function findHolidayCoveringYmd(holidays, appointmentYmd) {
 }
 
 /**
+ * @param {string} appointmentYmd — YYYY-MM-DD in Asia/Kolkata
+ * @param {{ startDate?: Date, endDate?: Date }} h
+ */
+function holidayRangeCoversYmdIST(appointmentYmd, h) {
+  if (!h || !h.startDate || !h.endDate) return false;
+  const start = formatCalendarDateIST(h.startDate);
+  const end = formatCalendarDateIST(h.endDate);
+  if (!start || !end) return false;
+  return appointmentYmd >= start && appointmentYmd <= end;
+}
+
+/**
+ * @param {Array<{ startDate?: Date, endDate?: Date }>} holidays
+ * @param {string} appointmentYmd — YYYY-MM-DD (IST calendar day of appointment)
+ * @returns {{ endDate: Date, endLabel: string } | null}
+ */
+function findHolidayCoveringYmdIST(holidays, appointmentYmd) {
+  if (!Array.isArray(holidays) || !appointmentYmd) return null;
+  for (const h of holidays) {
+    if (holidayRangeCoversYmdIST(appointmentYmd, h)) {
+      const end = h.endDate instanceof Date ? h.endDate : new Date(h.endDate);
+      if (Number.isNaN(end.getTime())) continue;
+      return { endDate: end, endLabel: formatHolidayEndForUserIST(end) };
+    }
+  }
+  return null;
+}
+
+/**
+ * @param {Date|string|number} v
+ * @returns {string} e.g. "12 Apr 2026" in Asia/Kolkata
+ */
+function formatHolidayEndForUserIST(v) {
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(d);
+}
+
+/**
  * @param {Date|string|number} startDate
  * @param {Date|string|number} endDate
  * @returns {number} ms from now until local midnight at start of startDate (clamped 0)
@@ -112,6 +159,9 @@ module.exports = {
   formatHolidayEndForUser,
   holidayRangeCoversYmd,
   findHolidayCoveringYmd,
+  holidayRangeCoversYmdIST,
+  findHolidayCoveringYmdIST,
+  formatHolidayEndForUserIST,
   msUntilLocalStartOfHolidayDay,
   msUntilLocalMidnightAfterHolidayEnd,
   isNowInsideAnyHoliday,

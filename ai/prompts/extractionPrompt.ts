@@ -39,7 +39,9 @@ ExistingDoctorRef:
 - designation: string
 
 Your job:
-- Read the entire transcript carefully.
+- Read the entire transcript carefully, from the first turn to the last.
+- Callers often correct themselves: if the same field (name, age, gender, doctor, date, time, existing vs new patient) is mentioned more than once, use only the **last** correction as the ground truth. Later turns override earlier ones.
+- If the assistant clearly states that the appointment is already booked and the caller does **not** afterward change doctor, date, time, or patient identity, set action to "no_appointment" and explain in notes (avoid duplicate database rows when the live call already finalized booking).
 - Decide if the caller is an EXISTING or NEW patient for this hospital.
 - If EXISTING:
   - Use existingPatientsByPhone to find the best match by comparing names/age mentioned in the call with that list.

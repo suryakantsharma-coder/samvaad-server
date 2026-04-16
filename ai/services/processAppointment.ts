@@ -16,6 +16,10 @@ const {
 const {
   parseAppointmentDateTimeAsIST,
 } = require("../../src/utils/appointmentDateTimeIST");
+const {
+  normalizePatientFieldsForStorage,
+  normalizeReasonForStorage,
+} = require("../../src/utils/storageEnglishNormalize");
 
 interface CreateAppointmentArgs {
   hospitalId: string;
@@ -57,14 +61,24 @@ async function createPatient({
     : 1;
   const patientId = `${prefix}${String(nextNum).padStart(6, "0")}`;
 
+  const {
+    fullName: fullNameDb,
+    reason: reasonDb,
+    gender: genderDb,
+  } = await normalizePatientFieldsForStorage({
+    fullName,
+    reason,
+    gender,
+  });
+
   const doc = await PatientModel.create({
     hospital: new mongoose.Types.ObjectId(hospitalId),
     patientId,
-    fullName,
+    fullName: fullNameDb,
     age,
-    gender,
+    gender: genderDb,
     phoneNumber,
-    reason,
+    reason: reasonDb,
   });
 
   return doc;
@@ -98,12 +112,14 @@ async function createAppointment({
   const dt =
     parsedDt && !Number.isNaN(parsedDt.getTime()) ? parsedDt : null;
 
+  const reasonDb = await normalizeReasonForStorage(reason);
+
   const doc = await AppointmentModel.create({
     hospital: new mongoose.Types.ObjectId(hospitalId),
     appointmentId,
     patient: new mongoose.Types.ObjectId(patientObjectId),
     doctor: new mongoose.Types.ObjectId(doctorObjectId),
-    reason,
+    reason: reasonDb,
     status: "Upcoming",
     type,
     appointmentDateTime: dt,

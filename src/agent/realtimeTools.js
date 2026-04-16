@@ -6,6 +6,24 @@ function getRealtimeTools() {
   return [
     {
       type: "function",
+      name: "set_calling_phone",
+      description:
+        "Save the caller's correct 10-digit Indian mobile for this call. Call this immediately after the caller tells you their number or confirms the number you read out. Required before create_patient or fetch_patient_by_phone when the automatic line ID is missing or wrong (browser/demo calls).",
+      parameters: {
+        type: "object",
+        properties: {
+          phoneNumber: {
+            type: "string",
+            description:
+              "10-digit mobile, e.g. 9876543210 (digits only or with spaces/+91)",
+          },
+        },
+        required: ["phoneNumber"],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: "function",
       name: "fetch_patient_by_patientId",
       description:
         "Find the patient using patientId (e.g. P-2026-000001) for the current hospital. Lookup is by patientId only. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
@@ -43,7 +61,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_patient",
       description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment.",
+        "Create a new patient for the current hospital and return patientId + details including _id. You MUST have a confirmed 10-digit mobile: call set_calling_phone first (and/or pass phoneNumber). SIP trunk calls may auto-fill from the phone line. Use the returned _id when linking to an appointment via create_appointment.",
       parameters: {
         type: "object",
         properties: {
@@ -95,7 +113,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_appointment",
       description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said.",
+        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. The server rejects the booking if the doctor is on leave that day (IST) or the time is outside the doctor's usual hours (same rules as WhatsApp booking); on failure, speak messageHindi or messageGujarati from the tool result to the caller.",
       parameters: {
         type: "object",
         properties: {
