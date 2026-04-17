@@ -60,7 +60,7 @@ const payoutDateRangeQuery = [
     .escape(),
 ];
 
-/** GET /api/payouts — status draft|paid|all; date range on payout period startDate; hospitalId optional for platform admins */
+/** GET /api/payouts — status or filter or payoutStatus: draft|paid|all (precedence: status → payoutStatus → filter); date range; hospitalId; sort=newest|oldest */
 const listPayoutsQuery = [
   query("hospitalId")
     .optional({ values: "falsy" })
@@ -68,6 +68,12 @@ const listPayoutsQuery = [
     .isMongoId()
     .withMessage("hospitalId must be a valid MongoDB id"),
   ...paginationQuery,
+  query("filter")
+    .optional({ values: "falsy" })
+    .trim()
+    .isIn(["draft", "paid", "all"])
+    .withMessage("filter must be draft, paid, or all")
+    .escape(),
   query("status")
     .optional({ values: "falsy" })
     .trim()
@@ -79,6 +85,52 @@ const listPayoutsQuery = [
     .trim()
     .isIn(["draft", "paid", "all"])
     .withMessage("payoutStatus must be draft, paid, or all")
+    .escape(),
+  query("sort")
+    .optional()
+    .trim()
+    .isIn(["newest", "oldest"])
+    .withMessage("sort must be newest or oldest")
+    .escape(),
+  ...payoutDateRangeQuery,
+];
+
+/** GET /api/payouts/search — same scope as list; q matches hospital name, payout list id, hospital id, status, total amount (numeric); filter|status|payoutStatus draft|paid|all */
+const searchPayoutsQuery = [
+  query("hospitalId")
+    .optional({ values: "falsy" })
+    .trim()
+    .isMongoId()
+    .withMessage("hospitalId must be a valid MongoDB id"),
+  query("q")
+    .optional()
+    .trim()
+    .isLength({ max: 200 })
+    .withMessage("q must be at most 200 characters"),
+  ...paginationQuery,
+  query("filter")
+    .optional({ values: "falsy" })
+    .trim()
+    .isIn(["draft", "paid", "all"])
+    .withMessage("filter must be draft, paid, or all")
+    .escape(),
+  query("status")
+    .optional({ values: "falsy" })
+    .trim()
+    .isIn(["draft", "paid", "all"])
+    .withMessage("status must be draft, paid, or all")
+    .escape(),
+  query("payoutStatus")
+    .optional({ values: "falsy" })
+    .trim()
+    .isIn(["draft", "paid", "all"])
+    .withMessage("payoutStatus must be draft, paid, or all")
+    .escape(),
+  query("sort")
+    .optional()
+    .trim()
+    .isIn(["newest", "oldest"])
+    .withMessage("sort must be newest or oldest")
     .escape(),
   ...payoutDateRangeQuery,
 ];
@@ -192,6 +244,7 @@ const searchPayoutTransactionsQuery = [
 
 module.exports = {
   listPayoutsQuery,
+  searchPayoutsQuery,
   patchPayoutTransactionStatus,
   patchPayoutListStatus,
   searchPayoutTransactionsQuery,

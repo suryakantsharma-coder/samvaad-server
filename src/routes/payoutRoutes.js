@@ -9,6 +9,7 @@ const {
 const { validate } = require("../middleware/validate");
 const {
   listPayoutsQuery,
+  searchPayoutsQuery,
   patchPayoutTransactionStatus,
   patchPayoutListStatus,
   searchPayoutTransactionsQuery,
@@ -43,6 +44,19 @@ router.patch(
   patchPayoutListStatus,
   validate,
   payoutSuperAdminController.patchPayoutListRecordStatus
+);
+
+router.get(
+  "/search",
+  requireRoles(
+    ROLES.SUPER_ADMIN,
+    ROLES.ADMIN,
+    ROLES.HOSPITAL_ADMIN,
+    ROLES.TELE_CALLER
+  ),
+  searchPayoutsQuery,
+  validate,
+  payoutListController.search
 );
 
 router.get(
