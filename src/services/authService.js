@@ -12,7 +12,7 @@ const {
   verifyPasswordResetToken,
 } = require('../utils/jwt');
 const env = require('../config/env');
-const { isMailConfigured, sendPasswordResetMail } = require('./mailService');
+const { isMailConfigured, sendPasswordResetMail, sendWelcomeMail } = require('./mailService');
 
 const DOCTOR_PROFILE_POPULATE = {
   path: 'doctorProfile',
@@ -80,6 +80,14 @@ const register = async ({ email, password, name, role = ROLES.USER, hospitalId }
     role: normalizedRole,
     hospital: hospital ? hospital._id : undefined,
   });
+
+  void sendWelcomeMail({
+    to: user.email,
+    name: user.name,
+    hospitalName: hospital ? hospital.name : null,
+    dashboardUrl: env.DASHBOARD_URL || '',
+  });
+
   return { user, linkedHospital: hospital || null };
 };
 

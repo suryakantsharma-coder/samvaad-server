@@ -146,7 +146,7 @@ const prescriptionDateRangeQuery = [
     .escape(),
 ];
 
-/** GET /api/prescriptions list: page, limit, status; optional date range (IST day); dateBy omitted = appointment (visit date); dateBy=created = createdAt. */
+/** GET /api/prescriptions list: page, limit, status; optional doctorEmail (Doctor.email); optional date range (IST day); dateBy omitted = appointment (visit date); dateBy=created = createdAt. */
 const prescriptionListQuery = [
   ...paginationQuery,
   query('status')
@@ -155,10 +155,20 @@ const prescriptionListQuery = [
     .isIn(['Draft', 'Completed', 'Cancelled'])
     .withMessage('status must be one of: Draft, Completed, Cancelled')
     .escape(),
+  query('doctorEmail')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isEmail()
+    .withMessage('doctorEmail must be a valid email'),
+  query('doctor_email')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isEmail()
+    .withMessage('doctor_email must be a valid email'),
   ...prescriptionDateRangeQuery,
 ];
 
-/** GET /api/prescriptions/search — q matches notes, patientName, medicines, or linked patient fullName/patientId; optional status + date range like list. */
+/** GET /api/prescriptions/search — q matches notes, patientName, medicines, or linked patient fullName/patientId; optional doctorEmail; optional status + date range like list. */
 const prescriptionSearchQuery = [
   query('q')
     .optional()
@@ -173,6 +183,16 @@ const prescriptionSearchQuery = [
     .isIn(['Draft', 'Completed', 'Cancelled'])
     .withMessage('status must be one of: Draft, Completed, Cancelled')
     .escape(),
+  query('doctorEmail')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isEmail()
+    .withMessage('doctorEmail must be a valid email'),
+  query('doctor_email')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isEmail()
+    .withMessage('doctor_email must be a valid email'),
   ...prescriptionDateRangeQuery,
 ];
 

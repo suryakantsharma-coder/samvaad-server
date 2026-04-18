@@ -1,6 +1,7 @@
 const Prescription = require('../models/prescription.model');
 const Patient = require('../models/patient.model');
 const Appointment = require('../models/appointment.model');
+const Doctor = require('../models/doctor.model');
 const mongoose = require('mongoose');
 const { mergeHospitalFilter, getLinkedHospitalForResponse, getHospitalFilter } = require('../utils/hospitalScope');
 const { notifyPrescriptionCreated } = require('../services/prescriptionWhatsAppNotify');
@@ -127,8 +128,36 @@ async function mergePrescriptionDateRange(req, filter, query) {
 }
 
 /**
+ * Optional `doctorEmail` / `doctor_email`: only prescriptions whose linked appointment’s doctor has this email
+ * (hospital-scoped like other list filters). Prescriptions without an appointment are excluded.
+ * @param {import('express').Request} req
+ * @param {Record<string, unknown>} filter
+ */
+async function applyDoctorEmailFilter(req, filter) {
+  const raw = firstTrimmedQueryValue(req.query, ['doctorEmail', 'doctor_email']);
+  if (!raw) return;
+
+  const email = String(raw).toLowerCase().trim();
+  const doctorQuery = { email };
+  mergeHospitalFilter(req, doctorQuery);
+
+  const doctors = await Doctor.find(doctorQuery).select('_id').lean();
+  if (!doctors.length) {
+    filter.appointment = { $in: [] };
+    return;
+  }
+  const doctorIds = doctors.map((d) => d._id);
+
+  const apptFilter = { doctor: { $in: doctorIds } };
+  mergeHospitalFilter(req, apptFilter);
+
+  const apptIds = await Appointment.find(apptFilter).distinct('_id');
+  filter.appointment = { $in: apptIds.length ? apptIds : [] };
+}
+
+/**
  * @route GET /api/prescriptions
- * Query: page, limit, status; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day).
+ * Query: page, limit, status; optional doctorEmail (doctor’s login email); date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day).
  * `dateBy` (or `date_by`): omitted → **appointment** (`prescription.appointmentDate` only, IST days);
  * `created` → createdAt.
  */
@@ -141,6 +170,7 @@ const getAll = async (req, res, next) => {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     mergeHospitalFilter(req, filter);
+    await applyDoctorEmailFilter(req, filter);
     const baseFilter = { ...filter };
 
     const { dateRangeApplied, fromDate, toDate, filterByAppointmentDate } = await mergePrescriptionDateRange(
@@ -202,7 +232,7 @@ const getAll = async (req, res, next) => {
 /**
  * @route GET /api/prescriptions/search?q=...
  * Search notes, snapshot patientName, medicine fields, and patients (fullName / patientId) hospital-scoped.
- * Optional status, fromDate/toDate (IST), dateBy (omit → appointment on prescription.appointmentDate).
+ * Optional doctorEmail, status, fromDate/toDate (IST), dateBy (omit → appointment on prescription.appointmentDate).
  */
 const search = async (req, res, next) => {
   try {
@@ -214,6 +244,7 @@ const search = async (req, res, next) => {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     mergeHospitalFilter(req, filter);
+    await applyDoctorEmailFilter(req, filter);
 
     if (q) {
       const regex = { $regex: q, $options: 'i' };

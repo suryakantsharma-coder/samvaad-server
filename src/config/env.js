@@ -154,6 +154,8 @@ const env = {
     .replace(/\/$/, ""),
   /** Public base URL of this API (no trailing slash). Used in password-reset emails, e.g. http://localhost:3000 */
   API_PUBLIC_URL: (process.env.API_PUBLIC_URL || "").trim().replace(/\/$/, ""),
+  /** Web app URL for welcome-after-register emails (no trailing slash), e.g. https://dashboard.samvaadai.com */
+  DASHBOARD_URL: (process.env.DASHBOARD_URL || "").trim().replace(/\/$/, ""),
   /** Secret for short-lived password-reset JWTs (defaults to access secret for local dev only). */
   JWT_PASSWORD_RESET_SECRET: (process.env.JWT_PASSWORD_RESET_SECRET || "").trim() || null,
   /**

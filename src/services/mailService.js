@@ -3,6 +3,10 @@ const {
   buildPasswordResetHtml,
   buildPasswordResetText,
 } = require("../templates/passwordResetEmail");
+const {
+  buildWelcomeHtml,
+  buildWelcomeText,
+} = require("../templates/welcomeEmail");
 
 /** @see https://api-docs.mailtrap.io — transactional send */
 const MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send";
@@ -141,7 +145,52 @@ async function sendPasswordResetMail({ to, resetUrl }) {
   }
 }
 
+/**
+ * Welcome email after POST /api/auth/register. Best-effort: never throws (registration must still succeed).
+ * @param {{ to: string, name?: string, hospitalName?: string | null, dashboardUrl?: string }} opts
+ */
+async function sendWelcomeMail({ to, name, hospitalName, dashboardUrl = "" }) {
+  const { email, name: fromName } = parseMailFrom(env.MAIL_FROM);
+  const subject = "Welcome to Samvaad AI";
+  const text = buildWelcomeText({ name, hospitalName, dashboardUrl });
+  const html = buildWelcomeHtml({ name, hospitalName, dashboardUrl });
+
+  if (!isMailConfigured()) {
+    if (env.NODE_ENV !== "production") {
+      console.warn(
+        "[mail] Welcome email NOT sent — set MAILTRAP_API_KEY and MAIL_FROM. Registration still succeeded.",
+      );
+    } else {
+      console.error(
+        "[mail] Welcome email NOT sent — Mailtrap not configured in production (set MAILTRAP_API_KEY, MAIL_FROM)",
+      );
+    }
+    return;
+  }
+
+  const payload = {
+    from: { email, name: fromName },
+    to: [{ email: to }],
+    subject,
+    text,
+    html,
+    category: env.MAILTRAP_EMAIL_CATEGORY || "welcome",
+  };
+
+  try {
+    const result = await postMailtrapSend(payload);
+    console.log("[mail] Welcome email sent OK", { to, mailtrapResponse: result ?? null });
+  } catch (err) {
+    console.error("[mail] Welcome email FAILED (registration still OK):", err.message, {
+      to,
+      fromEmail: email,
+    });
+    if (err.stack) console.error(err.stack);
+  }
+}
+
 module.exports = {
   isMailConfigured,
   sendPasswordResetMail,
+  sendWelcomeMail,
 };

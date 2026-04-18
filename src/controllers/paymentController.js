@@ -98,6 +98,7 @@ function getPaymentCreatedAtSortDirection(query) {
 /**
  * GET /api/payments?hospitalId=&filter=all|today|tomorrow&paymentStatus=captured|failed|pending|all&sort=newest|oldest
  * Optional fromDate/toDate (IST calendar day on createdAt) overrides filter for the listed rows.
+ * When a date range is active, `data.dateRange.totalAmountPaise` is the sum of captured amounts in that window (same as `overall.totalAmountPaise`).
  */
 const listByHospital = async (req, res, next) => {
   try {
@@ -186,6 +187,7 @@ const listByHospital = async (req, res, next) => {
               dateRange: {
                 fromDate: rangeFrom,
                 toDate: rangeTo,
+                totalAmountPaise,
               },
             }
           : {}),
@@ -283,6 +285,7 @@ const search = async (req, res, next) => {
               dateRange: {
                 fromDate: rangeFrom,
                 toDate: rangeTo,
+                totalAmountPaise,
               },
             }
           : {}),
