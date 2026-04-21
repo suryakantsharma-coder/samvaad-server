@@ -5,7 +5,7 @@ const { runHospitalTool } = require("../src/agent/realtimeToolHandlers");
 /**
  * Build LiveKit function tools from OpenAI-style definitions, backed by runHospitalTool.
  */
-function buildHospitalTools(hospitalObjectId, callerPhone, sessionPhoneRef) {
+function buildHospitalTools(hospitalObjectId, callerPhone) {
   const defs = getRealtimeTools();
   const tools = {};
   for (const def of defs) {
@@ -19,10 +19,7 @@ function buildHospitalTools(hospitalObjectId, callerPhone, sessionPhoneRef) {
           hospitalObjectId,
           name,
           args && typeof args === "object" ? args : {},
-          {
-            callerPhone: callerPhone || null,
-            sessionPhoneRef: sessionPhoneRef || null,
-          },
+          { callerPhone: callerPhone || null },
         );
       },
     });
@@ -31,14 +28,33 @@ function buildHospitalTools(hospitalObjectId, callerPhone, sessionPhoneRef) {
 }
 
 class HospitalVoiceAgent extends voice.Agent {
-  constructor({ instructions, hospitalObjectId, callerPhone, sessionPhoneRef }) {
-    const ref =
-      sessionPhoneRef ||
-      (callerPhone ? { value: callerPhone } : { value: null });
+  constructor({
+    instructions,
+    hospitalObjectId,
+    callerPhone,
+    /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
+    routeUserTextThroughRealtime = false,
+  }) {
     super({
       instructions,
-      tools: buildHospitalTools(hospitalObjectId, callerPhone, ref),
+      tools: buildHospitalTools(hospitalObjectId, callerPhone),
     });
+    this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
+  }
+
+  /**
+   * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
+   */
+  async onUserTurnCompleted(_chatCtx, newMessage) {
+    if (!this._routeUserTextThroughRealtime) return;
+    const text = (newMessage && newMessage.textContent
+      ? String(newMessage.textContent).trim()
+      : "");
+    if (!text) {
+      throw new voice.StopResponse();
+    }
+    this.session.generateReply({ userMessage: newMessage });
+    throw new voice.StopResponse();
   }
 }
 
