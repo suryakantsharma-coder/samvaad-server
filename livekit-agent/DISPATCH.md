@@ -24,3 +24,8 @@ For the browser UI to talk to **Neha**, your worker must receive a job when a pa
 
 5. **Hospital data**
    - The worker loads the hospital document with `HospitalModel.findById`; no HTTP call to the REST API is used.
+
+6. **Caller phone & `caller-numbers/`**
+   - Resolution uses job / room / participant **metadata** and **non-`sip.*` attributes** (e.g. `phone`, `callerPhone`, `callerId`, `ani`), plus participant **identity** when it looks like a 10-digit number. **`sip.*` fields are ignored** — they are often trunk/SIP identities, not the caller’s mobile.
+   - **Web / wrong ID:** put the real number in **job or token metadata** as JSON (`callerPhone` / `phoneNumber`), or rely on **`set_calling_phone`** after the caller says it (Step 1 in the prompt).
+   - Post-call transcripts use the **final** session number. English transcript when `OPENAI_API_KEY` is set (`TRANSCRIPT_TRANSLATE_MODEL` optional).

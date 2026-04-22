@@ -64,7 +64,7 @@ export interface AppointmentExtractionOutput {
   preferredDateText: string | null;
   preferredTimeText: string | null;
 
-  // Parsed ISO datetime in UTC, or null if not confidently determined
+  // Parsed ISO datetime in India (IST, +05:30), or null if not confidently determined
   appointmentDateTimeISO: string | null;
 
   // What backend should do with this result

@@ -28,11 +28,33 @@ function buildHospitalTools(hospitalObjectId, callerPhone) {
 }
 
 class HospitalVoiceAgent extends voice.Agent {
-  constructor({ instructions, hospitalObjectId, callerPhone }) {
+  constructor({
+    instructions,
+    hospitalObjectId,
+    callerPhone,
+    /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
+    routeUserTextThroughRealtime = false,
+  }) {
     super({
       instructions,
       tools: buildHospitalTools(hospitalObjectId, callerPhone),
     });
+    this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
+  }
+
+  /**
+   * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
+   */
+  async onUserTurnCompleted(_chatCtx, newMessage) {
+    if (!this._routeUserTextThroughRealtime) return;
+    const text = (newMessage && newMessage.textContent
+      ? String(newMessage.textContent).trim()
+      : "");
+    if (!text) {
+      throw new voice.StopResponse();
+    }
+    this.session.generateReply({ userMessage: newMessage });
+    throw new voice.StopResponse();
   }
 }
 

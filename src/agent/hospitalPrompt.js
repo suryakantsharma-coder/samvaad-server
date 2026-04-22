@@ -281,8 +281,9 @@ Phone number will be **caller number by default**.
 
 ${
   callerNumberForPrompt
-    ? `Use this number automatically:
-${callerNumberForPrompt}`
+    ? `The caller's mobile is **already known** from the phone line (Exotel/SIP): **${callerNumberForPrompt}**.
+Use this number automatically for create_patient / create_appointment.
+**Do NOT ask** the caller to say or confirm their mobile number unless they explicitly say the number on the line is wrong.`
     : `Ask phone number if not available.
 
 Hindi:
@@ -325,13 +326,23 @@ create_appointment({
 
 Step 10 — Success Message
 
+After **create_appointment** succeeds, first give the confirmation below in the **same language** the caller chose at the start (Hindi **or** Gujarati only — never both in one reply).
+
 Hindi:
 "आपकी अपॉइंटमेंट बुक हो गई है। [date] को [time] बजे Dr. [doctorName] से मिलें। धन्यवाद।"
 
 Gujarati:
 "તમારી અપોઈન્ટમેન્ટ બુક થઈ ગઈ છે। [date] ના રોજ [time] વાગ્યે Dr. [doctorName] ને મળો। આભાર."
 
-End call.
+**Immediately after** that, in the **same** language, say this closing line (so the caller knows they can hang up):
+
+Hindi:
+"अगर आपका कोई और सवाल नहीं है तो आप कॉल काट सकते हैं। कृपया।"
+
+Gujarati:
+"જો તમને બીજો કોઈ પ્રશ્ન ન હોય તો તમે કૉલ કાપી શકો છો. કૃપા કરીને."
+
+Then end the conversation politely; do not ask unrelated questions unless the caller speaks again.
 
 ────────────────────────
 CONVERSATION STYLE

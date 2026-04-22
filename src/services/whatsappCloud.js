@@ -6,16 +6,55 @@
 const DEFAULT_API_VERSION = "v21.0";
 
 /**
- * Build digits-only `to` for Cloud API (country code + national number, no +).
- * @param {string} phoneRaw - e.g. "9876543210", "+91 98765 43210"
- * @param {string} [defaultCountryDigits] - e.g. "91" when local 10-digit numbers are used
+ * India-only deployment: WhatsApp `to` must be country code + national number (digits, no +).
+ * Used when the stored number has no country code (10-digit mobile).
  */
-function normalizeWhatsAppTo(phoneRaw, defaultCountryDigits = "91") {
-  const cc = String(defaultCountryDigits || "91").replace(/\D/g, "") || "91";
-  let digits = String(phoneRaw || "").replace(/\D/g, "");
+const DEFAULT_WHATSAPP_COUNTRY_DIGITS = "91";
+
+/**
+ * Build digits-only `to` for Cloud API / WhatsAPI (country code + national number, no +).
+ * - 10-digit numbers → prefixed with default country (India **91** by default).
+ * - Already includes country code (e.g. 91… or +91…) → unchanged.
+ * - Leading `00` international prefix stripped; leading national `0` (11-digit 0XXXXXXXXXX) stripped.
+ *
+ * @param {string|null|undefined} phoneRaw - e.g. "9876543210", "+91 98765 43210", "919876543210"
+ * @param {string} [defaultCountryDigits="91"] - ITU country calling code digits (no +)
+ */
+function normalizeWhatsAppTo(phoneRaw, defaultCountryDigits = DEFAULT_WHATSAPP_COUNTRY_DIGITS) {
+  const cc =
+    String(defaultCountryDigits || DEFAULT_WHATSAPP_COUNTRY_DIGITS).replace(/\D/g, "") ||
+    DEFAULT_WHATSAPP_COUNTRY_DIGITS;
+
+  let digits = String(phoneRaw ?? "")
+    .trim()
+    .replace(/\D/g, "");
   if (!digits) return null;
-  if (digits.length === 10) digits = `${cc}${digits}`;
-  return digits;
+
+  while (digits.startsWith("00") && digits.length > 2) {
+    digits = digits.slice(2);
+  }
+
+  // Indian national trunk: 0 + 10-digit mobile → 11 digits
+  if (digits.length === 11 && digits.startsWith("0")) {
+    digits = digits.slice(1);
+  }
+
+  // Already has country code (e.g. 91 + 10-digit mobile = 12 digits)
+  if (digits.startsWith(cc) && digits.length >= cc.length + 10) {
+    return digits;
+  }
+
+  // Local mobile without country code (10 digits)
+  if (digits.length === 10) {
+    return `${cc}${digits}`;
+  }
+
+  // Longer international-style number without leading +
+  if (digits.length >= 11) {
+    return digits;
+  }
+
+  return null;
 }
 
 function messagesUrl(phoneNumberId, apiVersion = DEFAULT_API_VERSION) {
@@ -71,9 +110,10 @@ async function sendWhatsAppText({
   defaultCountryDigits,
   apiVersion,
 }) {
-  const toDigits = defaultCountryDigits
-    ? normalizeWhatsAppTo(to, defaultCountryDigits)
-    : normalizeWhatsAppTo(to);
+  const toDigits = normalizeWhatsAppTo(
+    to,
+    defaultCountryDigits ?? DEFAULT_WHATSAPP_COUNTRY_DIGITS,
+  );
   if (!toDigits) {
     throw new Error("Invalid WhatsApp recipient phone");
   }
@@ -111,9 +151,10 @@ async function sendWhatsAppInteractiveButtons({
   defaultCountryDigits,
   apiVersion,
 }) {
-  const toDigits = defaultCountryDigits
-    ? normalizeWhatsAppTo(to, defaultCountryDigits)
-    : normalizeWhatsAppTo(to);
+  const toDigits = normalizeWhatsAppTo(
+    to,
+    defaultCountryDigits ?? DEFAULT_WHATSAPP_COUNTRY_DIGITS,
+  );
   if (!toDigits) {
     throw new Error("Invalid WhatsApp recipient phone");
   }
@@ -173,9 +214,10 @@ async function sendWhatsAppTemplate({
   defaultCountryDigits,
   apiVersion,
 }) {
-  const toDigits = defaultCountryDigits
-    ? normalizeWhatsAppTo(to, defaultCountryDigits)
-    : normalizeWhatsAppTo(to);
+  const toDigits = normalizeWhatsAppTo(
+    to,
+    defaultCountryDigits ?? DEFAULT_WHATSAPP_COUNTRY_DIGITS,
+  );
   if (!toDigits) {
     throw new Error("Invalid WhatsApp recipient phone");
   }
@@ -229,6 +271,7 @@ function templateBodyNamedParameters(namedValues) {
 
 module.exports = {
   DEFAULT_API_VERSION,
+  DEFAULT_WHATSAPP_COUNTRY_DIGITS,
   normalizeWhatsAppTo,
   messagesUrl,
   graphSendMessages,

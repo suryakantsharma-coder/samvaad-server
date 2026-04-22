@@ -6,13 +6,80 @@ const mongoose = require("mongoose");
 const AppointmentModel = require("../models/appointment.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
-
+const {
+  parseAppointmentDateTimeAsIST,
+  formatInstantAsISTIso,
+} = require("../utils/appointmentDateTimeIST");
+const { formatCalendarDateIST } = require("../utils/queryDateRange");
+const { findHolidayCoveringYmdIST } = require("../utils/doctorHoliday");
+const {
+  parseDoctorAvailabilityWindow,
+  isTimeWithinDoctorAvailability,
+} = require("../../whatsapp-chat-agent/utils/doctorAvailability");
+const {
+  holidayBlockMessages,
+  outsideHoursMessages,
+} = require("./doctorAvailabilityVoiceMessages");
+const {
+  normalizePatientFieldsForStorage,
+  normalizeReasonForStorage,
+} = require("../utils/storageEnglishNormalize");
 const logTag = "[RealtimeTools]";
+
+function getHourMinuteIST(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type) =>
+    parseInt(parts.find((x) => x.type === type)?.value || "0", 10);
+  return { h: get("hour"), min: get("minute") };
+}
+
+function normalizeDigits10(raw) {
+  if (raw == null) return "";
+  const d = String(raw).replace(/\D/g, "");
+  if (d.length >= 10) return d.slice(-10);
+  return "";
+}
+
+/** set_calling_phone ref first, then auto line / job metadata. */
+function effectiveSessionPhone10(options) {
+  const ref = options.sessionPhoneRef;
+  if (ref && ref.value != null && String(ref.value).trim() !== "") {
+    const v = normalizeDigits10(ref.value);
+    if (v) return v;
+  }
+  const c = options.callerPhone;
+  if (c == null || String(c).trim() === "") return "";
+  if (String(c).trim().toLowerCase() === "unknown") return "";
+  return normalizeDigits10(c);
+}
 
 async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
   const { callerPhone = null } = options;
 
   try {
+    if (name === "set_calling_phone") {
+      const phone10 = normalizeDigits10(args.phoneNumber);
+      if (!phone10 || phone10.length !== 10) {
+        return {
+          ok: false,
+          message:
+            "Invalid phone number. Ask for a 10-digit Indian mobile and try again.",
+        };
+      }
+      if (options.sessionPhoneRef) {
+        options.sessionPhoneRef.value = phone10;
+      }
+      return {
+        ok: true,
+        callerPhoneNumber: phone10,
+      };
+    }
+
     if (name === "fetch_patient_by_patientId") {
       const patientId = String(args.patientId || "").trim();
       const patient = await PatientModel.findOne({
@@ -39,12 +106,15 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
 
     if (name === "fetch_patient_by_phone") {
       const raw = String(args.phoneNumber || "").trim();
-      const digits = raw.replace(/\D/g, "");
-      const phoneNumber = digits.length >= 10 ? digits.slice(-10) : digits;
+      let phoneNumber = normalizeDigits10(raw);
+      if (!phoneNumber) {
+        phoneNumber = effectiveSessionPhone10(options);
+      }
       if (!phoneNumber || phoneNumber.length !== 10) {
         return {
           ok: false,
-          message: "Invalid phone number. Provide a 10-digit mobile number.",
+          message:
+            "Invalid or missing phone. Call set_calling_phone with the 10-digit mobile, or pass phoneNumber.",
         };
       }
       const patient = await PatientModel.findOne({
@@ -84,11 +154,12 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const gender = String(args.gender || "").trim();
       const reason = String(args.reason || "").trim();
       const argsPhone = String(args.phoneNumber || "").trim();
-      const fromCall =
-        callerPhone && callerPhone !== "unknown" ? callerPhone : "";
-      const phoneNumber =
-        fromCall ||
-        (argsPhone && argsPhone.toLowerCase() !== "not provided" ? argsPhone : "");
+      const fromArgs =
+        argsPhone && argsPhone.toLowerCase() !== "not provided"
+          ? normalizeDigits10(argsPhone)
+          : "";
+      const fromSession = effectiveSessionPhone10(options);
+      const phoneNumber = fromArgs || fromSession;
       if (
         !fullName ||
         !Number.isFinite(age) ||
@@ -96,8 +167,23 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         !phoneNumber ||
         !reason
       ) {
-        return { ok: false, message: "Missing/invalid patient fields." };
+        return {
+          ok: false,
+          message:
+            phoneNumber
+              ? "Missing/invalid patient fields."
+              : "No confirmed mobile. Ask the caller for their 10-digit number, call set_calling_phone, then create_patient.",
+        };
       }
+      const {
+        fullName: fullNameDb,
+        reason: reasonDb,
+        gender: genderDb,
+      } = await normalizePatientFieldsForStorage({
+        fullName,
+        reason,
+        gender,
+      });
       const year = new Date().getFullYear();
       const prefix = `P-${year}-`;
       const last = await PatientModel.findOne({
@@ -113,11 +199,11 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const patient = await PatientModel.create({
         hospital: hospitalObjectId,
         patientId,
-        fullName,
+        fullName: fullNameDb,
         age,
-        gender,
+        gender: genderDb,
         phoneNumber,
-        reason,
+        reason: reasonDb,
       });
       return {
         ok: true,
@@ -198,11 +284,13 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       ) {
         return { ok: false, message: "Invalid doctor or patient id." };
       }
-      const dt = new Date(appointmentDateTimeISO);
+      const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
       if (Number.isNaN(dt.getTime())) {
         return { ok: false, message: "Invalid appointmentDateTimeISO." };
       }
       if (!reason) return { ok: false, message: "Reason is required." };
+
+      const reasonDb = await normalizeReasonForStorage(reason);
 
       const [doctor, patient] = await Promise.all([
         DoctorModel.findOne({
@@ -219,6 +307,40 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       }
       if (!patient) {
         return { ok: false, message: "Patient not found for this hospital." };
+      }
+
+      const appointmentYmdIST = formatCalendarDateIST(dt);
+      const holidayBlock = findHolidayCoveringYmdIST(
+        doctor.holidays || [],
+        appointmentYmdIST,
+      );
+      if (holidayBlock) {
+        const msgs = holidayBlockMessages(
+          doctor.fullName,
+          holidayBlock.endLabel,
+        );
+        return {
+          ok: false,
+          code: "DOCTOR_ON_LEAVE",
+          messageHindi: msgs.messageHindi,
+          messageGujarati: msgs.messageGujarati,
+          message: msgs.messageEnglish,
+        };
+      }
+
+      const win = parseDoctorAvailabilityWindow(doctor.availability);
+      const { h, min } = getHourMinuteIST(dt);
+      if (
+        !isTimeWithinDoctorAvailability(h, min, { ranges: win.ranges })
+      ) {
+        const msgs = outsideHoursMessages(doctor.fullName, win.label);
+        return {
+          ok: false,
+          code: "OUTSIDE_DOCTOR_HOURS",
+          messageHindi: msgs.messageHindi,
+          messageGujarati: msgs.messageGujarati,
+          message: msgs.messageEnglish,
+        };
       }
 
       const year = new Date().getFullYear();
@@ -238,7 +360,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         appointmentId,
         patient: patientObjectId,
         doctor: doctorObjectId,
-        reason,
+        reason: reasonDb,
         status: "Upcoming",
         type,
         appointmentDateTime: dt,
@@ -254,8 +376,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           reason: appointment.reason,
           status: appointment.status,
           type: appointment.type,
-          appointmentDateTime:
-            appointment.appointmentDateTime?.toISOString?.() || null,
+          appointmentDateTime: formatInstantAsISTIso(
+            appointment.appointmentDateTime,
+          ),
         },
       };
     }

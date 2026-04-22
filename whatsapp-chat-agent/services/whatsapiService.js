@@ -1,5 +1,8 @@
 const env = require("../../src/config/env");
-const { normalizeWhatsAppTo } = require("../../src/services/whatsappCloud");
+const {
+  normalizeWhatsAppTo,
+  DEFAULT_WHATSAPP_COUNTRY_DIGITS,
+} = require("../../src/services/whatsappCloud");
 
 /**
  * Self-hosted WhatsAPI (manjit/whatsapi) — send plain text.
@@ -32,9 +35,10 @@ async function sendWhatsApiText({ to, textBody, defaultCountryDigits }) {
   const instanceKey = encodeURIComponent(env.WHATSAPI_INSTANCE_KEY.trim());
   const url = `${base}/api/instances/${instanceKey}/send/text`;
 
-  const toDigits = defaultCountryDigits
-    ? normalizeWhatsAppTo(to, defaultCountryDigits)
-    : normalizeWhatsAppTo(to);
+  const toDigits = normalizeWhatsAppTo(
+    to,
+    defaultCountryDigits ?? DEFAULT_WHATSAPP_COUNTRY_DIGITS,
+  );
   if (!toDigits) {
     throw new Error("Invalid WhatsApp recipient phone");
   }
