@@ -50,6 +50,12 @@ class HospitalVoiceAgent extends voice.Agent {
     const text = (newMessage && newMessage.textContent
       ? String(newMessage.textContent).trim()
       : "");
+    if (process.env.SARVAM_STT_DEBUG !== "0") {
+      const preview = text
+        ? `"${text.slice(0, 200)}${text.length > 200 ? "…" : ""}"`
+        : "(empty — agent will not reply)";
+      console.log("[Sarvam STT] onUserTurnCompleted user text:", preview);
+    }
     if (!text) {
       throw new voice.StopResponse();
     }

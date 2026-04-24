@@ -18,6 +18,8 @@ const {
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
   process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-mini-2025-12-15";
+const OPENAI_LLM_MODEL =
+  process.env.OPENAI_LLM_MODEL || "gpt-4.1";
 
 const useSarvamStt = Boolean(
   process.env.SARVAM_API_KEY && process.env.SARVAM_API_KEY.trim(),
@@ -248,13 +250,38 @@ const agentDef = defineAgent({
         instructionsLength: instructions ? String(instructions).length : 0,
       });
 
+      const {
+        useSamvaadVoiceLlmPipeline,
+        SarvamTTS: SarvamTTSClass,
+      } = require("./sarvamTts");
+      const useSamvaadLlmTts = useSarvamStt && useSamvaadVoiceLlmPipeline();
+
       let vad;
       let sarvamStt;
       if (useSarvamStt) {
         const { VAD } = require("@livekit/agents-plugin-silero");
-        const { SarvamSTT } = require("./sarvamStt");
+        const { SarvamSTT, useWebSocketStreaming } = require("./sarvamStt");
         vad = await VAD.load({ sampleRate: 16000 });
         sarvamStt = new SarvamSTT();
+        sarvamStt.on("error", (ev) => {
+          console.error(
+            "[Sarvam STT] stt error event:",
+            ev && ev.error != null ? ev.error : ev,
+          );
+        });
+        sarvamStt.on("metrics_collected", (m) => {
+          if (process.env.SARVAM_STT_DEBUG === "0") return;
+          console.log(
+            "[Sarvam STT] metrics:",
+            m && m.metadata ? m.metadata : m,
+            m && m.audioDurationMs != null ? `audioMs=${m.audioDurationMs}` : "",
+          );
+        });
+        console.log(
+          "[LiveKit Agent] Sarvam STT:",
+          useWebSocketStreaming() ? "WebSocket streaming" : "batch REST + Silero VAD",
+          "| SARVAM_STT_DEBUG=1 logs transcripts (SARVAM_STT_DEBUG=0 to disable)",
+        );
       }
 
       const realtimeModelOpts = useSarvamStt
@@ -279,38 +306,93 @@ const agentDef = defineAgent({
             },
           };
 
-      const session = new voice.AgentSession({
-        llm: new openai.realtime.RealtimeModel(realtimeModelOpts),
-        ...(useSarvamStt && vad && sarvamStt ? { vad, stt: sarvamStt } : {}),
-      });
+      const samvaadTts =
+        useSamvaadLlmTts && useSarvamStt ? new SarvamTTSClass() : null;
+      if (samvaadTts) {
+        samvaadTts.on("error", (ev) => {
+          console.error(
+            "[Sarvam TTS] error event:",
+            ev && ev.error != null ? ev.error : ev,
+          );
+        });
+        console.log(
+          "[LiveKit Agent] Voice pipeline: Sarvam STT →",
+          OPENAI_LLM_MODEL,
+          "→ Sarvam TTS (WebSocket, linear16) | aecWarmup=0, optional NC off",
+        );
+      }
+
+      const lowLatency = process.env.LOW_LATENCY_AUDIO !== "0";
+      const session = useSamvaadLlmTts
+        ? new voice.AgentSession({
+            vad,
+            stt: sarvamStt,
+            llm: new openai.LLM({ model: OPENAI_LLM_MODEL }),
+            tts: samvaadTts,
+            aecWarmupDuration: 0,
+            turnHandling: { turnDetection: "vad" },
+            connOptions: {
+              llmConnOptions: { maxRetry: 2 },
+              ttsConnOptions: { maxRetry: 1 },
+            },
+          })
+        : new voice.AgentSession({
+            llm: new openai.realtime.RealtimeModel(realtimeModelOpts),
+            ...(useSarvamStt && vad && sarvamStt ? { vad, stt: sarvamStt } : {}),
+          });
 
       const hospitalAgent = new HospitalVoiceAgent({
         instructions,
         hospitalObjectId: hospital._id,
         callerPhone,
-        routeUserTextThroughRealtime: useSarvamStt,
+        routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
       });
+
+      const inputOpts =
+        useSamvaadLlmTts && lowLatency
+          ? {
+              textEnabled: true,
+              audioEnabled: true,
+              noiseCancellation: void 0,
+            }
+          : { noiseCancellation: BackgroundVoiceCancellation() };
 
       await session.start({
         agent: hospitalAgent,
         room: ctx.room,
-        inputOptions: {
-          noiseCancellation: BackgroundVoiceCancellation(),
-        },
+        inputOptions: inputOpts,
       });
 
-      if (useSarvamStt) {
+      if (useSarvamStt && !useSamvaadLlmTts) {
         patchRealtimeCommitToClearOnly(hospitalAgent);
       }
 
       await logCallConnection(ctx, "rtc_connected", {
-        voicePipeline: useSarvamStt
-          ? "sarvam_stt + silero_vad → text → openai_realtime"
-          : "openai_realtime (server_vad + built-in transcription)",
-        inputProcessing: useSarvamStt
-          ? "Sarvam REST STT; Realtime commitAudio patched to clearAudio"
-          : "default",
-        noiseCancellation: "BackgroundVoiceCancellation",
+        voicePipeline: (() => {
+          if (!useSarvamStt) {
+            return "openai_realtime (server_vad + built-in transcription)";
+          }
+          if (useSamvaadLlmTts) {
+            return "sarvam_stt → openai_LLM+tools → sarvam_tts_ws (linear16)";
+          }
+          return require("./sarvamStt").useWebSocketStreaming()
+            ? "sarvam_ws_stream + silero_vad → text → openai_realtime"
+            : "sarvam_rest + silero_vad (StreamAdapter) → text → openai_realtime";
+        })(),
+        inputProcessing: (() => {
+          if (!useSarvamStt) return "default";
+          if (useSamvaadLlmTts) {
+            return "no Realtime; aecWarmup=0; LOW_LATENCY_AUDIO=0 restores NC";
+          }
+          return require("./sarvamStt").useWebSocketStreaming()
+            ? "Sarvam WebSocket (PCM) STT; Realtime commitAudio → clearAudio"
+            : "Sarvam batch REST per utterance; Realtime commitAudio → clearAudio";
+        })(),
+        noiseCancellation: useSamvaadLlmTts
+          ? lowLatency
+            ? "off (LOW_LATENCY default)"
+            : "BackgroundVoiceCancellation"
+          : "BackgroundVoiceCancellation",
       });
 
       const handle = session.generateReply({
@@ -342,7 +424,18 @@ console.log(
 );
 if (useSarvamStt) {
   console.log(
-    "[LiveKit Agent] Optional: SARVAM_STT_MODEL (default saaras:v3), SARVAM_LANGUAGE_CODE (default unknown), SARVAM_STT_MODE (default transcribe)",
+    "[LiveKit Agent] Sarvam env: SARVAM_STT_STREAMING=1 for WebSocket (default is batch REST). SARVAM_STT_DEBUG=0 silences [Sarvam STT] logs.",
+  );
+  console.log(
+    "[LiveKit Agent] Optional: SARVAM_STT_MODEL (default saaras:v3), SARVAM_LANGUAGE_CODE (default unknown), SARVAM_STT_MODE (default transcribe, REST only)",
+  );
+  console.log(
+    "[LiveKit Agent] USE_SAMVAAD_VOICE_LLM=1 → Sarvam STT + OpenAI chat (" +
+      (process.env.OPENAI_LLM_MODEL || "gpt-4.1") +
+      ") + Sarvam TTS (WebSocket). LOW_LATENCY_AUDIO=0 keeps noise cancellation (default: fast path without NC).",
+  );
+  console.log(
+    "[LiveKit Agent] TTS: SARVAM_TTS_MODEL (default bulbul:v3), SARVAM_TTS_SPEAKER, SARVAM_TTS_LANGUAGE, SARVAM_TTS_DEBUG=0",
   );
 }
 cli.runApp(

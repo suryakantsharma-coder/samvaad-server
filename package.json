@@ -38,6 +38,8 @@
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
     "openai": "^6.21.0",
-    "razorpay": "^2.9.6"
+    "razorpay": "^2.9.6",
+    "sarvamai": "^1.1.7",
+    "zod": "^3.25.76"
   }
 }
