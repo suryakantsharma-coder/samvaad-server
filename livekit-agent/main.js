@@ -25,6 +25,41 @@ const useSarvamStt = Boolean(
   process.env.SARVAM_API_KEY && process.env.SARVAM_API_KEY.trim(),
 );
 
+/** @param {string} name @param {number} def */
+function parseEnvMs(name, def) {
+  const v = process.env[name];
+  if (v == null || v === "") return def;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : def;
+}
+
+/** Slides ~300ms off default stack (Silero 550ms silence + LiveKit 500ms endpointing). Tweak with env. */
+const SARVAM_VAD_LOAD_OPTS = {
+  sampleRate: 16000,
+  minSilenceDuration: parseEnvMs("VAD_MIN_SILENCE_MS", 360),
+  prefixPaddingDuration: parseEnvMs("VAD_PREFIX_PADDING_MS", 280),
+};
+
+function getSarvamTurnHandling() {
+  return {
+    turnDetection: "vad",
+    endpointing: {
+      minDelay: parseEnvMs("AGENT_ENDPOINTING_MIN_MS", 220),
+    },
+  };
+}
+
+function buildOpenAiChatLlm() {
+  const opts = { model: OPENAI_LLM_MODEL };
+  const t = process.env.OPENAI_LLM_TEMPERATURE;
+  if (t != null && t !== "" && !Number.isNaN(Number(t))) {
+    opts.temperature = Number(t);
+  } else {
+    opts.temperature = 0.45;
+  }
+  return new openai.LLM(opts);
+}
+
 function parseHospitalIdFromRoom(roomName) {
   const prefix = "hospital-";
   if (!roomName || !String(roomName).startsWith(prefix)) return null;
@@ -206,6 +241,22 @@ async function resolveCallerPhone(ctx) {
 }
 
 const agentDef = defineAgent({
+  prewarm: async (proc) => {
+    if (!useSarvamStt) return;
+    try {
+      const { VAD } = require("@livekit/agents-plugin-silero");
+      proc.userData.vad = await VAD.load(SARVAM_VAD_LOAD_OPTS);
+      console.log(
+        "[LiveKit Agent] Prewarm: Silero VAD ready",
+        `minSilence=${SARVAM_VAD_LOAD_OPTS.minSilenceDuration}ms`,
+      );
+    } catch (e) {
+      console.warn(
+        "[LiveKit Agent] Prewarm: VAD load failed, will load in entry:",
+        e && e.message ? e.message : e,
+      );
+    }
+  },
   entry: async (ctx) => {
     await logCallConnection(ctx, "job_received", {
       agentName: AGENT_NAME,
@@ -261,7 +312,12 @@ const agentDef = defineAgent({
       if (useSarvamStt) {
         const { VAD } = require("@livekit/agents-plugin-silero");
         const { SarvamSTT, useWebSocketStreaming } = require("./sarvamStt");
-        vad = await VAD.load({ sampleRate: 16000 });
+        vad = ctx.proc?.userData?.vad
+          ? ctx.proc.userData.vad
+          : await VAD.load(SARVAM_VAD_LOAD_OPTS);
+        if (ctx.proc?.userData && !ctx.proc.userData.vad) {
+          ctx.proc.userData.vad = vad;
+        }
         sarvamStt = new SarvamSTT();
         sarvamStt.on("error", (ev) => {
           console.error(
@@ -277,10 +333,13 @@ const agentDef = defineAgent({
             m && m.audioDurationMs != null ? `audioMs=${m.audioDurationMs}` : "",
           );
         });
+        const _epMin = getSarvamTurnHandling().endpointing.minDelay;
         console.log(
           "[LiveKit Agent] Sarvam STT:",
           useWebSocketStreaming() ? "WebSocket streaming" : "batch REST + Silero VAD",
-          "| SARVAM_STT_DEBUG=1 logs transcripts (SARVAM_STT_DEBUG=0 to disable)",
+          `| VAD minSilence=${SARVAM_VAD_LOAD_OPTS.minSilenceDuration}ms prefixPad=${SARVAM_VAD_LOAD_OPTS.prefixPaddingDuration}ms endpointingMin=${_epMin}ms`,
+          "| env: VAD_MIN_SILENCE_MS, VAD_PREFIX_PADDING_MS, AGENT_ENDPOINTING_MIN_MS | try SARVAM_STT_STREAMING=1, OPENAI_LLM_MODEL=gpt-4o-mini",
+          "| SARVAM_STT_DEBUG=1 for transcripts; SARVAM_STT_DEBUG=0 off",
         );
       }
 
@@ -323,14 +382,15 @@ const agentDef = defineAgent({
       }
 
       const lowLatency = process.env.LOW_LATENCY_AUDIO !== "0";
+      const sarvamTurnHandling = useSarvamStt ? getSarvamTurnHandling() : void 0;
       const session = useSamvaadLlmTts
         ? new voice.AgentSession({
             vad,
             stt: sarvamStt,
-            llm: new openai.LLM({ model: OPENAI_LLM_MODEL }),
+            llm: buildOpenAiChatLlm(),
             tts: samvaadTts,
             aecWarmupDuration: 0,
-            turnHandling: { turnDetection: "vad" },
+            turnHandling: sarvamTurnHandling,
             connOptions: {
               llmConnOptions: { maxRetry: 2 },
               ttsConnOptions: { maxRetry: 1 },
@@ -338,7 +398,9 @@ const agentDef = defineAgent({
           })
         : new voice.AgentSession({
             llm: new openai.realtime.RealtimeModel(realtimeModelOpts),
-            ...(useSarvamStt && vad && sarvamStt ? { vad, stt: sarvamStt } : {}),
+            ...(useSarvamStt && vad && sarvamStt
+              ? { vad, stt: sarvamStt, aecWarmupDuration: 0, turnHandling: sarvamTurnHandling }
+              : {}),
           });
 
       const hospitalAgent = new HospitalVoiceAgent({
@@ -362,6 +424,20 @@ const agentDef = defineAgent({
         room: ctx.room,
         inputOptions: inputOpts,
       });
+
+      const { PcmGainAudioOutput, getAgentOutputPcmGain } = require("./pcmGainAudioOutput");
+      const outPcmGain = getAgentOutputPcmGain(Boolean(useSamvaadLlmTts));
+      if (session.output.audio && outPcmGain !== 1) {
+        session.output.audio = new PcmGainAudioOutput(
+          session.output.audio,
+          outPcmGain,
+        );
+        console.log(
+          "[LiveKit Agent] output PCM gain (all published agent audio):",
+          outPcmGain,
+          "| env: LIVEKIT_AGENT_OUTPUT_PCM_GAIN (all pipelines), OPENAI_REALTIME_OUTPUT_PCM_GAIN (Realtime only, default 1.85 if unset), Samvaad default 1 (use SARVAM_TTS_GAIN)",
+        );
+      }
 
       if (useSarvamStt && !useSamvaadLlmTts) {
         patchRealtimeCommitToClearOnly(hospitalAgent);
@@ -424,6 +500,15 @@ console.log(
 );
 if (useSarvamStt) {
   console.log(
+    "[LiveKit Agent] Latency tuners (defaults already tuned down): VAD_MIN_SILENCE_MS=" +
+      SARVAM_VAD_LOAD_OPTS.minSilenceDuration +
+      ", VAD_PREFIX_PADDING_MS=" +
+      SARVAM_VAD_LOAD_OPTS.prefixPaddingDuration +
+      ", AGENT_ENDPOINTING_MIN_MS=" +
+      parseEnvMs("AGENT_ENDPOINTING_MIN_MS", 220) +
+      " | TTS first-chunk: SARVAM_TTS_MIN_BUFFER (default 12 chars) | LLM: OPENAI_LLM_TEMPERATURE (default 0.45 for Samvaad path)",
+  );
+  console.log(
     "[LiveKit Agent] Sarvam env: SARVAM_STT_STREAMING=1 for WebSocket (default is batch REST). SARVAM_STT_DEBUG=0 silences [Sarvam STT] logs.",
   );
   console.log(
@@ -435,7 +520,12 @@ if (useSarvamStt) {
       ") + Sarvam TTS (WebSocket). LOW_LATENCY_AUDIO=0 keeps noise cancellation (default: fast path without NC).",
   );
   console.log(
-    "[LiveKit Agent] TTS: SARVAM_TTS_MODEL (default bulbul:v3), SARVAM_TTS_SPEAKER, SARVAM_TTS_LANGUAGE, SARVAM_TTS_DEBUG=0",
+    "[LiveKit Agent] TTS: bulbul — SARVAM_TTS_LOUDNESS (API 0.3–3, default 3), SARVAM_TTS_GAIN (PCM after decode, default 3, max 4; 1=off), bulbul:v3 may ignore API loudness; SARVAM_TTS_MODEL, SARVAM_TTS_SPEAKER, SARVAM_TTS_LANGUAGE, SARVAM_TTS_DEBUG=0",
+  );
+}
+if (useSarvamStt && !process.env.USE_SAMVAAD_VOICE_LLM) {
+  console.log(
+    "[LiveKit Agent] Realtime output loudness: default OPENAI_REALTIME_OUTPUT_PCM_GAIN=1.85 (empty env). Override: OPENAI_REALTIME_OUTPUT_PCM_GAIN=2.5, or LIVEKIT_AGENT_OUTPUT_PCM_GAIN=2 (all voice pipelines). See startup log after each job for applied gain.",
   );
 }
 cli.runApp(

@@ -43,13 +43,22 @@ function getRealtimeTools() {
       type: "function",
       name: "create_patient",
       description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment.",
+        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment. For age: always pass an **integer** (years) — the caller may say the age in Hindi or Gujarati; convert words like चौबीस→24, पचीस→25 to a number, never a string. For gender: use Male/Female/Other after you confirmed with the caller (including after inferring from name and they said yes).",
       parameters: {
         type: "object",
         properties: {
           fullName: { type: "string" },
-          age: { type: "number" },
-          gender: { type: "string", enum: ["Male", "Female", "Other"] },
+          age: {
+            type: "number",
+            description:
+              "Age in years as an integer, e.g. 24. Convert from spoken Hindi/Gujarati if needed.",
+          },
+          gender: {
+            type: "string",
+            enum: ["Male", "Female", "Other"],
+            description:
+              "Male, Female, or Other. On Hindi/Gujarati calls the agent asks the caller using the English words male, female, other — use that result here.",
+          },
           phoneNumber: {
             type: "string",
             description:

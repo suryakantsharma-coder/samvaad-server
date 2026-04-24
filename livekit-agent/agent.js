@@ -1,6 +1,7 @@
 const { voice, llm } = require("@livekit/agents");
 const { getRealtimeTools } = require("../src/agent/realtimeTools");
 const { runHospitalTool } = require("../src/agent/realtimeToolHandlers");
+const { normalizeShortYesNoInPlace } = require("./userTranscriptNormalize");
 
 /**
  * Build LiveKit function tools from OpenAI-style definitions, backed by runHospitalTool.
@@ -46,6 +47,8 @@ class HospitalVoiceAgent extends voice.Agent {
    * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
    */
   async onUserTurnCompleted(_chatCtx, newMessage) {
+    // Make "haa", "ha", "h" etc. unambiguous to the model (STT is often 2–3 letters).
+    normalizeShortYesNoInPlace(newMessage);
     if (!this._routeUserTextThroughRealtime) return;
     const text = (newMessage && newMessage.textContent
       ? String(newMessage.textContent).trim()

@@ -16,28 +16,71 @@ function normalizeTtsMessage(raw) {
   };
 }
 
+/**
+ * Sarvam `configureConnection.loudness` — API range 0.3–3.0 (may be ignored for bulbul:v3; still sent as max).
+ * @param {string | undefined} [raw]
+ */
+function getSarvamApiLoudness(raw) {
+  if (raw == null || raw === "") return 3.0;
+  const g = Number(raw);
+  if (!Number.isFinite(g)) return 3.0;
+  return Math.min(3, Math.max(0.3, g));
+}
+
+/**
+ * software PCM gain after decode — effective for all models, applied to linear16. Can exceed API loudness cap.
+ * @param {number} [rawEnv] SARVAM_TTS_GAIN: 1 = off, default 3.0; max 4.0 (higher may clip)
+ */
+function getTtsOutputGain(rawEnv) {
+  if (rawEnv == null || rawEnv === "") return 3.0;
+  const g = Number(rawEnv);
+  if (!Number.isFinite(g) || g <= 0) return 3.0;
+  if (g === 1) return 1;
+  return Math.min(4, Math.max(0.3, g));
+}
+
+/** Linear16 / s16le little-endian. Clips to int16. */
+function applyPcmS16leGain(pcmBuffer, gain) {
+  if (!gain || gain === 1) return pcmBuffer;
+  const n = Math.floor(pcmBuffer.length / 2);
+  const out = Buffer.allocUnsafe(pcmBuffer.length);
+  for (let i = 0; i < n; i++) {
+    const o = i * 2;
+    const s = pcmBuffer.readInt16LE(o);
+    const v = Math.round(s * gain);
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, v)), o);
+  }
+  return out;
+}
+
 class SarvamTTS extends TTS {
   /**
    * @param {object} [opts]
    * @param {string} [opts.apiKey]
    * @param {string} [opts.model] e.g. bulbul:v2, bulbul:v3
-   * @param {string} [opts.speaker] Sarvam speaker id, default shubh
+   * @param {string} [opts.speaker] Sarvam speaker id, default pooja
    * @param {string} [opts.targetLanguageCode] e.g. hi-IN, gu-IN
    * @param {number} [opts.speechSampleRate] default 22050 (Sarvam streaming default)
+   * @param {number} [opts.outputGain] PCM boost (v3 ignores API loudness); default from SARVAM_TTS_GAIN
    */
   constructor(opts = {}) {
-    const sr = opts.speechSampleRate || Number(process.env.SARVAM_TTS_SAMPLE_RATE) || 22050;
+    const sr =
+      opts.speechSampleRate ||
+      Number(process.env.SARVAM_TTS_SAMPLE_RATE) ||
+      22050;
     super(sr, 1, { streaming: true, alignedTranscript: false });
     this.label = "sarvam.TTS";
     this._apiKey = opts.apiKey || process.env.SARVAM_API_KEY;
-    this._model =
-      opts.model || process.env.SARVAM_TTS_MODEL || "bulbul:v3";
-    this._speaker = opts.speaker || process.env.SARVAM_TTS_SPEAKER || "shubh";
+    this._model = opts.model || process.env.SARVAM_TTS_MODEL || "bulbul:v3";
+    this._speaker = opts.speaker || process.env.SARVAM_TTS_SPEAKER || "pooja";
     this._targetLanguageCode =
-      opts.targetLanguageCode ||
-      process.env.SARVAM_TTS_LANGUAGE ||
-      "hi-IN";
+      opts.targetLanguageCode || process.env.SARVAM_TTS_LANGUAGE || "hi-IN";
     this._speechSampleRate = sr;
+    this._outputGain =
+      opts.outputGain != null
+        ? getTtsOutputGain(String(opts.outputGain))
+        : getTtsOutputGain(process.env.SARVAM_TTS_GAIN);
+    this._apiLoudness = getSarvamApiLoudness(process.env.SARVAM_TTS_LOUDNESS);
   }
 
   get model() {
@@ -91,7 +134,9 @@ class SarvamSynthesizeStream extends SynthesizeStream {
   async run() {
     const tts = this._sarvamTts;
     if (!tts._apiKey) {
-      throw new APIError("Sarvam TTS: set SARVAM_API_KEY", { retryable: false });
+      throw new APIError("Sarvam TTS: set SARVAM_API_KEY", {
+        retryable: false,
+      });
     }
     const client = new SarvamAIClient({ apiSubscriptionKey: tts._apiKey });
     const ttsSocket = await client.textToSpeechStreaming.connect({
@@ -102,16 +147,27 @@ class SarvamSynthesizeStream extends SynthesizeStream {
     ttsSocket.connect();
     await ttsSocket.waitForOpen();
 
-    ttsLog("stream: WebSocket open, model=", tts._model, "lang=", tts._targetLanguageCode);
+    ttsLog(
+      "stream: WebSocket open, model=",
+      tts._model,
+      "lang=",
+      tts._targetLanguageCode,
+      "pcmGain=",
+      tts._outputGain,
+      "apiLoudness=",
+      tts._apiLoudness,
+    );
     ttsSocket.configureConnection({
       target_language_code: tts._targetLanguageCode,
       speaker: tts._speaker,
       output_audio_codec: "linear16",
       speech_sample_rate: tts._speechSampleRate,
+      /** bulbul:v2; v3 may ignore but sending max 3.0 is harmless */
+      loudness: tts._apiLoudness,
       enable_preprocessing: false,
       min_buffer_size: Math.max(
         1,
-        Math.min(50, Number(process.env.SARVAM_TTS_MIN_BUFFER) || 20),
+        Math.min(50, Number(process.env.SARVAM_TTS_MIN_BUFFER) || 12),
       ),
       max_chunk_length: Math.max(
         30,
@@ -165,7 +221,10 @@ class SarvamSynthesizeStream extends SynthesizeStream {
 
       if (type === "error" && data) {
         const m = (data && data.message) || "Sarvam TTS error";
-        this.emitError({ error: new APIError(m, { retryable: true }), recoverable: true });
+        this.emitError({
+          error: new APIError(m, { retryable: true }),
+          recoverable: true,
+        });
         onFinal();
         return;
       }
@@ -178,6 +237,7 @@ class SarvamSynthesizeStream extends SynthesizeStream {
           ttsLog("base64 decode failed", e);
           return;
         }
+        buf = applyPcmS16leGain(buf, tts._outputGain);
         const u8 = new Int8Array(buf);
         for (const frame of bstream.write(u8)) {
           pushFrame(frame, false);
@@ -185,7 +245,11 @@ class SarvamSynthesizeStream extends SynthesizeStream {
         return;
       }
 
-      if (type === "event" && data && (data.event_type === "final" || data.event_type === "Final")) {
+      if (
+        type === "event" &&
+        data &&
+        (data.event_type === "final" || data.event_type === "Final")
+      ) {
         for (const frame of bstream.flush()) {
           pushFrame(frame, true);
         }
@@ -196,7 +260,10 @@ class SarvamSynthesizeStream extends SynthesizeStream {
     });
 
     ttsSocket.on("error", (err) => {
-      this.emitError({ error: err instanceof Error ? err : new Error(String(err)), recoverable: true });
+      this.emitError({
+        error: err instanceof Error ? err : new Error(String(err)),
+        recoverable: true,
+      });
       onFinal();
     });
 
@@ -249,7 +316,9 @@ class SarvamTTSChunked extends ChunkedStream {
       return;
     }
     if (!tts._apiKey) {
-      throw new APIError("Sarvam TTS: set SARVAM_API_KEY", { retryable: false });
+      throw new APIError("Sarvam TTS: set SARVAM_API_KEY", {
+        retryable: false,
+      });
     }
     ttsLog("synthesize (chunked) chars=", text.length);
 
@@ -267,6 +336,7 @@ class SarvamTTSChunked extends ChunkedStream {
       output_audio_codec: "linear16",
       speech_sample_rate: tts._speechSampleRate,
       enable_preprocessing: false,
+      loudness: tts._apiLoudness,
     });
 
     const bstream = new AudioByteStream(tts._speechSampleRate, 1);
@@ -282,7 +352,8 @@ class SarvamTTSChunked extends ChunkedStream {
         try {
           const msg = normalizeTtsMessage(raw);
           if (msg.type === "audio" && msg.data && msg.data.audio) {
-            const buf = Buffer.from(msg.data.audio, "base64");
+            const raw = Buffer.from(msg.data.audio, "base64");
+            const buf = applyPcmS16leGain(raw, tts._outputGain);
             const u8 = new Int8Array(buf);
             for (const frame of bstream.write(u8)) {
               this.queue.put({ requestId, segmentId, frame, final: false });
@@ -313,7 +384,8 @@ class SarvamTTSChunked extends ChunkedStream {
     ttsSocket.flush();
     const timeout = new Promise((_, r) =>
       setTimeout(
-        () => r(new APIError("Sarvam TTS timeout (chunked)", { retryable: true })),
+        () =>
+          r(new APIError("Sarvam TTS timeout (chunked)", { retryable: true })),
         45e3,
       ),
     );
