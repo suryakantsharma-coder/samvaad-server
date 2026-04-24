@@ -122,7 +122,6 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         $or: [
           { phoneNumber },
           { phoneNumber: raw },
-          { phoneNumber: digits },
           { phoneNumber: "0" + phoneNumber },
         ],
       }).lean();

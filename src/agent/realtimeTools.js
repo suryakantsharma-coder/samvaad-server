@@ -43,7 +43,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_patient",
       description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment. For age: always pass an **integer** (years) — the caller may say the age in Hindi or Gujarati; convert words like चौबीस→24, पचीस→25 to a number, never a string. For gender: use Male/Female/Other after you confirmed with the caller (including after inferring from name and they said yes).",
+        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment. The agent asks **age and gender in one combined question** after the name. For age: always pass an **integer** (years) — the caller may say the age in Hindi or Gujarati; convert words like चौबीस→24, पचीस→25 to a number, never a string. For gender: use Male/Female/Other from that reply (or a short follow-up if they only answered one part).",
       parameters: {
         type: "object",
         properties: {
@@ -51,13 +51,13 @@ function getRealtimeTools() {
           age: {
             type: "number",
             description:
-              "Age in years as an integer, e.g. 24. Convert from spoken Hindi/Gujarati if needed.",
+              "Age in years as an integer, e.g. 24. Convert Hindi/Gujarati words (चौबीस→24), Devanagari numerals (२४→24), digit-by-digit Hindi ('दो चार'→24), or English digits. If ambiguous in transcript, confirm with caller before calling this tool.",
           },
           gender: {
             type: "string",
             enum: ["Male", "Female", "Other"],
             description:
-              "Male, Female, or Other. On Hindi/Gujarati calls the agent asks the caller using the English words male, female, other — use that result here.",
+              "Male, Female, or Other. The agent asks age+gender together using the English words male, female, other in the same question — use the caller’s answer here.",
           },
           phoneNumber: {
             type: "string",
@@ -125,7 +125,8 @@ function getRealtimeTools() {
           },
           appointmentDateTimeISO: {
             type: "string",
-            description: "UTC ISO string, e.g. 2026-02-12T12:00:00.000Z",
+            description:
+              "Appointment date+time as ISO with India offset +05:30 (IST wall clock), e.g. 2026-04-25T15:30:00+05:30. The caller may say date/time in Hindi or Gujarati (month names, आज/कल, साढ़े तीन, etc.) — convert to this format. Prefer +05:30; trailing Z is interpreted as IST wall time by the server, not UTC.",
           },
           type: { type: "string", default: "call" },
         },

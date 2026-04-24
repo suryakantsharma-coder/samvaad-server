@@ -14,6 +14,7 @@ const { getHospitalInstructions } = require("../src/agent/hospitalPrompt");
 const {
   extractSipCallerPhoneFromRoom,
 } = require("./sipCallerPhone");
+const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -425,6 +426,11 @@ const agentDef = defineAgent({
         inputOptions: inputOpts,
       });
 
+      const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
+      if (noInputRepromptMs > 0) {
+        attachNoInputReprompt(session, { ms: noInputRepromptMs });
+      }
+
       const { PcmGainAudioOutput, getAgentOutputPcmGain } = require("./pcmGainAudioOutput");
       const outPcmGain = getAgentOutputPcmGain(Boolean(useSamvaadLlmTts));
       if (session.output.audio && outPcmGain !== 1) {
@@ -497,6 +503,11 @@ module.exports = agentDef;
 console.log("[LiveKit Agent] Starting worker, agent name:", AGENT_NAME);
 console.log(
   "[LiveKit Agent] Ensure LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, OPENAI_API_KEY, MONGODB_URI are set in .env",
+);
+console.log(
+  "[LiveKit Agent] No-input reprompt: AGENT_NO_INPUT_REPROMPT_MS=" +
+    parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000) +
+    " (0=off). After silence, agent says sorry (Hindi or Gujarati) and repeats the last question.",
 );
 if (useSarvamStt) {
   console.log(
