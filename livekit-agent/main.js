@@ -61,12 +61,19 @@ function buildOpenAiChatLlm() {
   return new openai.LLM(opts);
 }
 
+/**
+ * Resolves the hospital Mongo id from a LiveKit room name.
+ * Supports plain `hospital-{objectId}` and common trunk/SIP forms like
+ * `hospital-{objectId}-call-...` (only the 24-hex id segment is used).
+ */
 function parseHospitalIdFromRoom(roomName) {
-  const prefix = "hospital-";
-  if (!roomName || !String(roomName).startsWith(prefix)) return null;
-  const id = String(roomName).slice(prefix.length).trim();
-  if (!mongoose.isValidObjectId(id)) return null;
-  return id;
+  const s = String(roomName || "").trim();
+  if (!s.startsWith("hospital-")) return null;
+  const after = s.slice("hospital-".length);
+  const m = after.match(/^([0-9a-fA-F]{24})(?:$|-)/);
+  if (!m) return null;
+  const id = m[1];
+  return mongoose.isValidObjectId(id) ? id : null;
 }
 
 function redactToken(token) {
@@ -242,11 +249,11 @@ async function resolveCallerPhone(ctx) {
 }
 
 const agentDef = defineAgent({
-  prewarm: async (proc) => {
+  prewarm: async (_proc) => {
     if (!useSarvamStt) return;
     try {
       const { VAD } = require("@livekit/agents-plugin-silero");
-      proc.userData.vad = await VAD.load(SARVAM_VAD_LOAD_OPTS);
+      await VAD.load(SARVAM_VAD_LOAD_OPTS);
       console.log(
         "[LiveKit Agent] Prewarm: Silero VAD ready",
         `minSilence=${SARVAM_VAD_LOAD_OPTS.minSilenceDuration}ms`,
@@ -259,48 +266,32 @@ const agentDef = defineAgent({
     }
   },
   entry: async (ctx) => {
-    await logCallConnection(ctx, "job_received", {
-      agentName: AGENT_NAME,
-      openaiRealtimeModel: OPENAI_REALTIME_MODEL,
-      useSarvamStt,
-    });
+    const roomName =
+      ctx.job && ctx.job.room && ctx.job.room.name
+        ? String(ctx.job.room.name)
+        : ctx.room && ctx.room.name
+          ? String(ctx.room.name)
+          : "";
+
+    const hospitalId = parseHospitalIdFromRoom(roomName);
+    if (!hospitalId) {
+      throw new Error(
+        `[LiveKit Agent] Invalid room name "${roomName}". Expected hospital-{mongoObjectId} (optional suffix after a second hyphen, e.g. -call-…).`,
+      );
+    }
+
+    // Connect first. Anything awaited before connect (e.g. logging + getSid) delays the
+    // agent participant, so the caller can be in the room with no agent visible.
+    await ctx.connect();
+
     try {
-      const roomName =
-        ctx.job && ctx.job.room && ctx.job.room.name
-          ? String(ctx.job.room.name)
-          : ctx.room && ctx.room.name
-            ? String(ctx.room.name)
-            : "";
+      await logCallConnection(ctx, "job_received", {
+        agentName: AGENT_NAME,
+        openaiRealtimeModel: OPENAI_REALTIME_MODEL,
+        useSarvamStt,
+      });
 
       await ensureMongoConnected();
-
-      const hospitalId = parseHospitalIdFromRoom(roomName);
-      if (!hospitalId) {
-        throw new Error(
-          `[LiveKit Agent] Invalid room name "${roomName}". Expected hospital-{mongoObjectId}.`,
-        );
-      }
-
-      const hospital = await HospitalModel.findById(hospitalId).lean();
-      if (!hospital) {
-        throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
-      }
-
-      await ctx.connect();
-
-      const { phone: callerPhone, source: callerPhoneSource } =
-        await resolveCallerPhone(ctx);
-
-      const instructions = await getHospitalInstructions(hospital, callerPhone);
-
-      await logCallConnection(ctx, "hospital_and_caller_resolved", {
-        roomName: roomName || "(unknown)",
-        hospitalId,
-        hospitalName: hospital.name,
-        callerPhone,
-        callerPhoneSource,
-        instructionsLength: instructions ? String(instructions).length : 0,
-      });
 
       const {
         useSamvaadVoiceLlmPipeline,
@@ -308,16 +299,18 @@ const agentDef = defineAgent({
       } = require("./sarvamTts");
       const useSamvaadLlmTts = useSarvamStt && useSamvaadVoiceLlmPipeline();
 
+      let hospital;
       let vad;
       let sarvamStt;
       if (useSarvamStt) {
         const { VAD } = require("@livekit/agents-plugin-silero");
         const { SarvamSTT, useWebSocketStreaming } = require("./sarvamStt");
-        vad = ctx.proc?.userData?.vad
-          ? ctx.proc.userData.vad
-          : await VAD.load(SARVAM_VAD_LOAD_OPTS);
-        if (ctx.proc?.userData && !ctx.proc.userData.vad) {
-          ctx.proc.userData.vad = vad;
+        [hospital, vad] = await Promise.all([
+          HospitalModel.findById(hospitalId).lean(),
+          VAD.load(SARVAM_VAD_LOAD_OPTS),
+        ]);
+        if (!hospital) {
+          throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
         }
         sarvamStt = new SarvamSTT();
         sarvamStt.on("error", (ev) => {
@@ -342,7 +335,26 @@ const agentDef = defineAgent({
           "| env: VAD_MIN_SILENCE_MS, VAD_PREFIX_PADDING_MS, AGENT_ENDPOINTING_MIN_MS | try SARVAM_STT_STREAMING=1, OPENAI_LLM_MODEL=gpt-4o-mini",
           "| SARVAM_STT_DEBUG=1 for transcripts; SARVAM_STT_DEBUG=0 off",
         );
+      } else {
+        hospital = await HospitalModel.findById(hospitalId).lean();
+        if (!hospital) {
+          throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
+        }
       }
+
+      const { phone: callerPhone, source: callerPhoneSource } =
+        await resolveCallerPhone(ctx);
+
+      const instructions = await getHospitalInstructions(hospital, callerPhone);
+
+      await logCallConnection(ctx, "hospital_and_caller_resolved", {
+        roomName: roomName || "(unknown)",
+        hospitalId,
+        hospitalName: hospital.name,
+        callerPhone,
+        callerPhoneSource,
+        instructionsLength: instructions ? String(instructions).length : 0,
+      });
 
       const realtimeModelOpts = useSarvamStt
         ? {
@@ -478,7 +490,7 @@ const agentDef = defineAgent({
       });
 
       const handle = session.generateReply({
-        instructions: `Start the call: Greet in Hindi - "नमस्ते, मैं नेहा बोल रही हूँ। मैं ${hospital.name} से हूँ।" Then ask in Hindi: "क्या आप हिंदी में बात करेंगे या गुजराती में?"`,
+        instructions: `Greeting in Hindi only: "नमस्ते, ${hospital.name} में आपका स्वागत है। मैं नेहा बोल रही हूँ, मैं आपकी कैसे मदद कर सकती हूँ?" Then in Hindi ask: "कृपया बताएं, क्या आप हिंदी में बात करेंगे या गुजराती में?" (Rest of the call then follows the instructions in the caller's language.)`,
       });
       await handle.waitForPlayout();
 

@@ -78,7 +78,7 @@ function getRealtimeTools() {
       type: "function",
       name: "list_doctors",
       description:
-        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status. Use this list to pick the doctor whose designation matches the patient's illness, then use that doctor's _id as doctorObjectId when calling create_appointment.",
+        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status. You MUST select the doctor whose medical specialty (designation) best matches the caller's visit reason or symptoms (e.g. heart issues -> cardiology, skin -> dermatology) — not an arbitrary name. Use that doctor's _id as doctorObjectId. Use their availability (hours/days) so the appointment time fits before final confirmation; adjust with the caller if needed.",
       parameters: {
         type: "object",
         properties: {},
@@ -89,7 +89,7 @@ function getRealtimeTools() {
       type: "function",
       name: "search_doctors",
       description:
-        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id. To get the full list first, use list_doctors instead. Use the selected doctor's _id as doctorObjectId when calling create_appointment.",
+        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id, fullName, designation, availability, status. To get the full list first, use list_doctors instead. Use the selected doctor's _id as doctorObjectId when calling create_appointment. Respect availability when proposing appointment time (see voice instructions section 6b).",
       parameters: {
         type: "object",
         properties: {
@@ -104,7 +104,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_appointment",
       description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said.",
+        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. Before calling this tool, the assistant must say a short wait line in the caller's language, then call this function. On success the result includes messageHindi and messageGujarati — read once as booking status only (caller already confirmed); do not ask to confirm again. On failure: messageHindi, messageGujarati, code — always address the caller in their chosen language, never read raw English to them.",
       parameters: {
         type: "object",
         properties: {

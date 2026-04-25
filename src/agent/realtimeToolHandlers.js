@@ -22,9 +22,49 @@ const {
 } = require("./doctorAvailabilityVoiceMessages");
 const {
   normalizePatientFieldsForStorage,
-  normalizeReasonForStorage,
 } = require("../utils/storageEnglishNormalize");
 const logTag = "[RealtimeTools]";
+
+const IST = "Asia/Kolkata";
+
+/**
+ * Bilingual user-facing copy for the voice agent (Hindi + Gujarati).
+ * `message` stays English for logs / model fallback.
+ */
+function appointmentBilingualError(messageEn, messageHindi, messageGujarati) {
+  return {
+    ok: false,
+    message: messageEn,
+    messageHindi,
+    messageGujarati,
+  };
+}
+
+function formatAppointmentDateTimeForVoice(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return { hindi: "", gujarati: "" };
+  }
+  return {
+    hindi: new Intl.DateTimeFormat("hi-IN", {
+      timeZone: IST,
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date),
+    gujarati: new Intl.DateTimeFormat("gu-IN", {
+      timeZone: IST,
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date),
+  };
+}
 
 function getHourMinuteIST(date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
@@ -168,10 +208,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       ) {
         return {
           ok: false,
-          message:
-            phoneNumber
-              ? "Missing/invalid patient fields."
-              : "No confirmed mobile. Ask the caller for their 10-digit number, call set_calling_phone, then create_patient.",
+          message: phoneNumber
+            ? "Missing/invalid patient fields."
+            : "No confirmed mobile. Ask the caller for their 10-digit number, call set_calling_phone, then create_patient.",
         };
       }
       const {
@@ -281,17 +320,36 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         !mongoose.isValidObjectId(doctorObjectId) ||
         !mongoose.isValidObjectId(patientObjectId)
       ) {
-        return { ok: false, message: "Invalid doctor or patient id." };
+        return appointmentBilingualError(
+          "Invalid doctor or patient id.",
+          "माफ़ कीजिए—डॉक्टर या मरीज़ की मान्य जानकारी नहीं मिली। कृपया सही जानकारी के साथ दोबारा प्रयास करें।",
+          "માફ કરજો—ડૉક્ટર કે દર્દીની માહિતી માન્ય નથી. કૃપા કરીને યોગ્ય માહિતી સાથે ફરી પ્રયાસ કરો.",
+        );
       }
       const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
       if (Number.isNaN(dt.getTime())) {
-        return { ok: false, message: "Invalid appointmentDateTimeISO." };
+        return appointmentBilingualError(
+          "Invalid appointmentDateTimeISO.",
+          "माफ़ कीजिए—तारीख या समय सही ढंग से सेट नहीं है। कृपया सही अपॉइंटमेंट की तारीख और समय दोबारा बताएं।",
+          "માફ કરજો—તારીખ કે સમય યોગ્ય રીતે નથી. કૃપા કરીને એપોઇન્ટમેન્ટની સાચી તારીખ અને સમય ફરી જણાવો.",
+        );
       }
-      if (!reason) return { ok: false, message: "Reason is required." };
+      if (!reason) {
+        return appointmentBilingualError(
+          "Reason is required.",
+          "अपॉइंटमेंट बुक करने के लिए पहले यह ज़रूरी है कि किस बीमारी या समस्या के लिए मुलाकात चाहिए—कृपया वह पहले बताएं।",
+          "એપોઇન્ટમેન્ટ માટે પહેલા કઈ સમસ્યા માટે મુલાકાત જોઇએ તે જણાવવું ફરજિયાત છે.",
+        );
+      }
 
-      const reasonDb = await normalizeReasonForStorage(reason);
+      // Tool contract requires English reason — skip the extra OpenAI call so
+      // final booking is fast (was the main source of latency).
+      const reasonDb = reason;
+      const startedAt = Date.now();
+      const dtWindowMs = 60 * 1000; // ±1 min tolerance for duplicate guard
 
-      const [doctor, patient] = await Promise.all([
+      // Fetch doctor, patient and check for a duplicate — all in parallel.
+      const [doctor, patient, existingAppt] = await Promise.all([
         DoctorModel.findOne({
           _id: doctorObjectId,
           hospital: hospitalObjectId,
@@ -300,12 +358,29 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           _id: patientObjectId,
           hospital: hospitalObjectId,
         }).lean(),
+        AppointmentModel.findOne({
+          hospital: hospitalObjectId,
+          patient: patientObjectId,
+          doctor: doctorObjectId,
+          appointmentDateTime: {
+            $gte: new Date(dt.getTime() - dtWindowMs),
+            $lte: new Date(dt.getTime() + dtWindowMs),
+          },
+        }).lean(),
       ]);
       if (!doctor) {
-        return { ok: false, message: "Doctor not found for this hospital." };
+        return appointmentBilingualError(
+          "Doctor not found for this hospital.",
+          "माफ़ कीजिए—यह डॉक्टर इस अस्पताल के साथ मेल नहीं खाता। कृपया सूची में से सही डॉक्टर चुनें।",
+          "માફ કરજો—આ ડૉક્ટર આ હોસ્પિટલ સાથે મેળ ખાતા નથી. યાદીમાંથી સાચા ડૉક્ટર પસંદ કરો.",
+        );
       }
       if (!patient) {
-        return { ok: false, message: "Patient not found for this hospital." };
+        return appointmentBilingualError(
+          "Patient not found for this hospital.",
+          "माफ़ कीजिए—मरीज़ का रिकॉर्ड नहीं मिला। कृपया सही पहचान वाला मरीज़ पहले ढूंढ लें या नया पंजीकरण करें।",
+          "માફ કરજો—દર્દીનો રેકોર્ડ મળ્યો નથી. પહેલા યોગ્ય દર્દી શોધો કે નવી નોંધણી કરો.",
+        );
       }
 
       const appointmentYmdIST = formatCalendarDateIST(dt);
@@ -329,9 +404,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
 
       const win = parseDoctorAvailabilityWindow(doctor.availability);
       const { h, min } = getHourMinuteIST(dt);
-      if (
-        !isTimeWithinDoctorAvailability(h, min, { ranges: win.ranges })
-      ) {
+      if (!isTimeWithinDoctorAvailability(h, min, { ranges: win.ranges })) {
         const msgs = outsideHoursMessages(doctor.fullName, win.label);
         return {
           ok: false,
@@ -339,6 +412,42 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           messageHindi: msgs.messageHindi,
           messageGujarati: msgs.messageGujarati,
           message: msgs.messageEnglish,
+        };
+      }
+
+      const doctorName = (doctor && doctor.fullName) || "";
+      const { hindi: whenHi, gujarati: whenGu } =
+        formatAppointmentDateTimeForVoice(dt);
+
+      // Return existing appointment if this is a duplicate call (same slot).
+      if (existingAppt) {
+        console.log(
+          logTag,
+          "[create_appointment] DUPLICATE SKIPPED — returning existing",
+          JSON.stringify({
+            appointmentId: existingAppt.appointmentId,
+            durationMs: Date.now() - startedAt,
+          }),
+        );
+        return {
+          ok: true,
+          appointment: {
+            _id: String(existingAppt._id),
+            appointmentId: existingAppt.appointmentId,
+            hospital: String(existingAppt.hospital || ""),
+            patient: String(existingAppt.patient),
+            doctor: String(existingAppt.doctor),
+            reason: existingAppt.reason,
+            status: existingAppt.status,
+            type: existingAppt.type,
+            appointmentDateTime: formatInstantAsISTIso(
+              existingAppt.appointmentDateTime,
+            ),
+          },
+          message:
+            "Already booked. Speak messageHindi or messageGujarati once as booking status.",
+          messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${existingAppt.appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
+          messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${existingAppt.appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
         };
       }
 
@@ -364,6 +473,15 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         type,
         appointmentDateTime: dt,
       });
+      console.log(
+        logTag,
+        "[create_appointment] BOOKED OK",
+        JSON.stringify({
+          appointmentId: appointment.appointmentId,
+          appointmentMongoId: String(appointment._id),
+          durationMs: Date.now() - startedAt,
+        }),
+      );
       return {
         ok: true,
         appointment: {
@@ -379,6 +497,10 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
             appointment.appointmentDateTime,
           ),
         },
+        message:
+          "Booked. Speak messageHindi or messageGujarati once as booking status (no second confirmation — they already confirmed).",
+        messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
+        messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
       };
     }
 

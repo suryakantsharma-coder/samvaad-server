@@ -91,4 +91,11 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+appointmentSchema.index({
+  hospital: 1,
+  patient: 1,
+  doctor: 1,
+  appointmentDateTime: 1,
+});
+
 module.exports = mongoose.model("Appointment", appointmentSchema);
