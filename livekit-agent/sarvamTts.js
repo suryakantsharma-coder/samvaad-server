@@ -147,16 +147,6 @@ class SarvamSynthesizeStream extends SynthesizeStream {
     ttsSocket.connect();
     await ttsSocket.waitForOpen();
 
-    ttsLog(
-      "stream: WebSocket open, model=",
-      tts._model,
-      "lang=",
-      tts._targetLanguageCode,
-      "pcmGain=",
-      tts._outputGain,
-      "apiLoudness=",
-      tts._apiLoudness,
-    );
     ttsSocket.configureConnection({
       target_language_code: tts._targetLanguageCode,
       speaker: tts._speaker,
@@ -320,8 +310,6 @@ class SarvamTTSChunked extends ChunkedStream {
         retryable: false,
       });
     }
-    ttsLog("synthesize (chunked) chars=", text.length);
-
     const client = new SarvamAIClient({ apiSubscriptionKey: tts._apiKey });
     const ttsSocket = await client.textToSpeechStreaming.connect({
       model: tts._model,

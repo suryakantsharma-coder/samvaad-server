@@ -148,11 +148,8 @@ class SarvamSTT extends STT {
       throw new Error("Sarvam STT: set SARVAM_API_KEY");
     }
 
-    sttLog("REST _recognize: merging frames…");
-
     const frame = mergeFrames(buffer);
     if (frame.samplesPerChannel === 0) {
-      sttLog("REST _recognize: empty frame");
       return {
         type: SpeechEventType.FINAL_TRANSCRIPT,
         alternatives: [
@@ -242,9 +239,7 @@ class SarvamBatchPlaceholderSpeechStream extends SpeechStream {
     this.label = "sarvam.STT.batch-adapter";
   }
 
-  async run() {
-    sttLog("batch path: stream.run() is idle; StreamAdapter+VAD use _recognize() only");
-  }
+  async run() {}
 }
 
 class SarvamStreamingSpeechStream extends SpeechStream {
@@ -314,30 +309,10 @@ class SarvamStreamingSpeechStream extends SpeechStream {
     const queue = this.queue;
     /** @type {Error|null} */
     let streamErr = null;
-    let frameCount = 0;
-
     const putEvent = (ev) => {
       if (queue.closed) return;
       try {
         queue.put(ev);
-        const t = ev.type;
-        const name =
-          t === SpeechEventType.START_OF_SPEECH
-            ? "START_OF_SPEECH"
-            : t === SpeechEventType.INTERIM_TRANSCRIPT
-              ? "INTERIM_TRANSCRIPT"
-              : t === SpeechEventType.FINAL_TRANSCRIPT
-                ? "FINAL_TRANSCRIPT"
-                : t === SpeechEventType.END_OF_SPEECH
-                  ? "END_OF_SPEECH"
-                  : t === SpeechEventType.RECOGNITION_USAGE
-                    ? "RECOGNITION_USAGE"
-                    : String(t);
-        const first =
-          ev.alternatives && ev.alternatives[0] && ev.alternatives[0].text
-            ? String(ev.alternatives[0].text).slice(0, 200)
-            : "";
-        sttLog("→ LiveKit", name, first ? `text="${first}${first.length >= 200 ? "…" : ""}"` : "");
       } catch (e) {
         if (e instanceof Error && e.message.includes("Queue is closed")) {
           return;
@@ -351,7 +326,6 @@ class SarvamStreamingSpeechStream extends SpeechStream {
 
       const { type, data: rawData } = normalizeSarvamWsMessage(rawMessage);
       const data = rawData;
-      sttLog("← Sarvam WS", "type=" + type, data ? safeJsonForLog({ ...data, transcript: data.transcript ? `${String(data.transcript).slice(0, 80)}…` : data.transcript }) : "");
 
       if (!type) return;
 
@@ -488,15 +462,9 @@ class SarvamStreamingSpeechStream extends SpeechStream {
         }
         if (item.samplesPerChannel === 0) continue;
 
-        frameCount += 1;
-        if (frameCount === 1 || frameCount % 200 === 0) {
-          sttLog("audio in: frames sent=", frameCount, "samples/ch=", item.samplesPerChannel);
-        }
-
         this._sendPcmFrame(sttSocket, item);
       }
     } finally {
-      sttLog("input loop ended, frames total=", frameCount);
       try {
         sttSocket.close();
       } catch (e) {

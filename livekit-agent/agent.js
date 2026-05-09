@@ -14,6 +14,8 @@ const { normalizeShortYesNoInPlace } = require("./userTranscriptNormalize");
 function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
   const defs = getRealtimeTools();
   const tools = {};
+  // Shared mutable ref so set_calling_phone can update the phone for the whole session.
+  const sessionPhoneRef = { value: null };
   for (const def of defs) {
     const name = def.name;
     if (!name) continue;
@@ -25,7 +27,7 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           hospitalObjectId,
           name,
           args && typeof args === "object" ? args : {},
-          { callerPhone: callerPhone || null },
+          { callerPhone: callerPhone || null, sessionPhoneRef },
         );
 
         // After a successful booking, proactively speak the booking status.
@@ -91,12 +93,6 @@ class HospitalVoiceAgent extends voice.Agent {
     const text = (newMessage && newMessage.textContent
       ? String(newMessage.textContent).trim()
       : "");
-    if (process.env.SARVAM_STT_DEBUG !== "0") {
-      const preview = text
-        ? `"${text.slice(0, 200)}${text.length > 200 ? "…" : ""}"`
-        : "(empty — agent will not reply)";
-      console.log("[Sarvam STT] onUserTurnCompleted user text:", preview);
-    }
     if (!text) {
       throw new voice.StopResponse();
     }

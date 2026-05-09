@@ -6,6 +6,23 @@ function getRealtimeTools() {
   return [
     {
       type: "function",
+      name: "set_calling_phone",
+      description:
+        "Store the caller's 10-digit Indian mobile for this session. Call this when the caller says their number is different from the one detected on the line, or when no phone number was auto-detected. After calling this tool, the stored number will be used automatically by create_patient and fetch_patient_by_phone.",
+      parameters: {
+        type: "object",
+        properties: {
+          phoneNumber: {
+            type: "string",
+            description: "10-digit Indian mobile number, e.g. 9876543210",
+          },
+        },
+        required: ["phoneNumber"],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: "function",
       name: "fetch_patient_by_patientId",
       description:
         "Find the patient using patientId (e.g. P-2026-000001) for the current hospital. Lookup is by patientId only. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",

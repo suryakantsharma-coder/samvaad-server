@@ -440,9 +440,8 @@ Do **not** skip this; it stops the user from thinking the call dropped while the
 Use the exact reason you captured for the visit (English; preserve caller's words e.g. piles, diabetes, BP). Call:
 
 create_appointment({
-  patient: [patient._id from create_patient or fetch result],
-  doctor: [doctor._id from list_doctors],
-  hospital: ${hospital._id},
+  patientObjectId: [patient._id from create_patient or fetch result],
+  doctorObjectId: [doctor._id from list_doctors],
   reason: [Reason in English, as agreed with the caller],
   appointmentDateTimeISO: [ISO date/time],
   type: "call"
