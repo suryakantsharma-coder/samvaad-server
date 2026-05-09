@@ -7,12 +7,14 @@ const {
   startDoctorHolidayWorker,
   stopDoctorHolidayWorker,
 } = require('./src/workers/doctorHoliday.worker');
+const { startPostCallWorker, stopPostCallWorker } = require('./src/workers/postCallWorker');
 const {
   startHourlyPayoutCron,
   stopHourlyPayoutCron,
 } = require('./src/cron/hourlyPayout/hourlyPayoutCron');
 const { closeReminderQueue } = require('./src/queues/reminder.queue');
 const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
+const { closePostCallQueue } = require('./src/queues/postCallQueue');
 
 let shuttingDown = false;
 
@@ -31,6 +33,11 @@ async function shutdown(signal) {
     console.error('[Samvaad] Doctor holiday worker stop:', err.message);
   }
   try {
+    await stopPostCallWorker();
+  } catch (err) {
+    console.error('[Samvaad] Post-call worker stop:', err.message);
+  }
+  try {
     stopHourlyPayoutCron();
   } catch (err) {
     console.error('[Samvaad] Hourly payout cron stop:', err.message);
@@ -44,6 +51,11 @@ async function shutdown(signal) {
     await closeDoctorHolidayQueue();
   } catch (err) {
     console.error('[Samvaad] Doctor holiday queue close:', err.message);
+  }
+  try {
+    await closePostCallQueue();
+  } catch (err) {
+    console.error('[Samvaad] Post-call queue close:', err.message);
   }
   stopLiveKitWorker();
   process.exit(0);
@@ -76,6 +88,7 @@ const start = async () => {
     /* For multiple worker processes: set REMINDER_WORKER_DISABLED=1 here and run `npm run reminder-worker`. */
     await startReminderWorker();
     await startDoctorHolidayWorker();
+    await startPostCallWorker();
     console.log('[Samvaad] Starting hourly payout cron…');
     startHourlyPayoutCron();
   });

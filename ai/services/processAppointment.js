@@ -69,6 +69,37 @@ async function createAppointment({
   appointmentDateTimeISO,
   type = "call",
 }) {
+  const parsedDt = appointmentDateTimeISO
+    ? parseAppointmentDateTimeAsIST(appointmentDateTimeISO)
+    : null;
+  const dt =
+    parsedDt && !Number.isNaN(parsedDt.getTime()) ? parsedDt : null;
+
+  // Duplicate guard: if an appointment already exists for the same
+  // patient/doctor/slot (±5 minutes), return it instead of creating a second one.
+  // This protects against the caller accidentally dialing twice.
+  if (dt) {
+    const windowMs = 5 * 60 * 1000;
+    const existing = await AppointmentModel.findOne({
+      hospital: new mongoose.Types.ObjectId(hospitalId),
+      patient: new mongoose.Types.ObjectId(patientObjectId),
+      doctor: new mongoose.Types.ObjectId(doctorObjectId),
+      appointmentDateTime: {
+        $gte: new Date(dt.getTime() - windowMs),
+        $lte: new Date(dt.getTime() + windowMs),
+      },
+    }).lean();
+
+    if (existing) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[processAppointment] Duplicate detected — returning existing appointment",
+        { appointmentId: existing.appointmentId },
+      );
+      return existing;
+    }
+  }
+
   const year = new Date().getFullYear();
   const prefix = `A-${year}-`;
   const last = await AppointmentModel.findOne({
@@ -82,12 +113,6 @@ async function createAppointment({
     ? parseInt(String(last.appointmentId).slice(prefix.length), 10) + 1
     : 1;
   const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
-
-  const parsedDt = appointmentDateTimeISO
-    ? parseAppointmentDateTimeAsIST(appointmentDateTimeISO)
-    : null;
-  const dt =
-    parsedDt && !Number.isNaN(parsedDt.getTime()) ? parsedDt : null;
 
   const reasonDb = await normalizeReasonForStorage(reason);
 

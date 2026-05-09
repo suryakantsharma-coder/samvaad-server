@@ -42,7 +42,7 @@ function getRealtimeTools() {
       type: "function",
       name: "fetch_patient_by_phone",
       description:
-        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller says they are an existing patient and provides their phone number. Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
+        "Find the patient by registered mobile number (10 digits) for the current hospital. Use when the caller clearly says they are an **existing** returning patient and you need to match their record. If they said **first visit / new patient / पहली बार**, use create_patient instead—even if multiple records share that number (do not disambiguate when they insist they are new). Returns the patient record including _id; use that _id as patientObjectId when calling create_appointment.",
       parameters: {
         type: "object",
         properties: {
@@ -121,7 +121,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_appointment",
       description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. Before calling this tool, the assistant must say a short wait line in the caller's language, then call this function. On success the result includes messageHindi and messageGujarati — read once as booking status only (caller already confirmed); do not ask to confirm again. On failure: messageHindi, messageGujarati, code — always address the caller in their chosen language, never read raw English to them.",
+        "Submit appointment details for patient and doctor by their database _id (final DB row is created after the call). reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. **Do not** tell the caller to wait or that you are checking/saving on the line — section 9 already has them say WhatsApp confirmation after the appointment is created + thanks, then call this tool in the same turn (section 8 should have asked if details are correct **for booking the appointment**, not only for WhatsApp). On success: **do not** read messageHindi/messageGujarati aloud (prompt: hang-up only). On failure: messageHindi, messageGujarati, code — speak in the caller's chosen language only.",
       parameters: {
         type: "object",
         properties: {

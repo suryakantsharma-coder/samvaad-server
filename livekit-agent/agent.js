@@ -8,8 +8,7 @@ const { normalizeShortYesNoInPlace } = require("./userTranscriptNormalize");
  *
  * agentRef is a mutable { current: HospitalVoiceAgent | null } box so tools can
  * reach back to the agent session after create_appointment succeeds — forcing an
- * explicit generateReply that proactively speaks the booking status.  Without this,
- * the Sarvam-STT route's post-tool reply produces messageCount:0 (silent).
+ * explicit generateReply so the post-tool turn is not silent (Sarvam-STT route).
  */
 function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
   const defs = getRealtimeTools();
@@ -30,21 +29,16 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           { callerPhone: callerPhone || null, sessionPhoneRef },
         );
 
-        // After a successful booking, proactively speak the booking status.
-        // We use a short timeout so the LiveKit framework finishes processing
-        // the tool result before we kick off a new generateReply.
+        // After create_appointment succeeds, Realtime sometimes stays silent post-tool.
+        // Prompt section 9 already spoke WhatsApp + thanks before the tool — do not repeat it.
         if (name === "create_appointment" && result && result.ok) {
           const agent = agentRef && agentRef.current;
           if (agent) {
-            const msgHi = result.messageHindi || "";
-            const msgGu = result.messageGujarati || "";
             const instructions =
-              "The appointment is now booked. Speak ONE of the lines below " +
-              "(choose the caller's language — Hindi or Gujarati), then add " +
-              "the hang-up line. Do NOT change the wording, do NOT repeat the " +
-              "full booking summary again:\n" +
-              `Hindi: ${msgHi}\n` +
-              `Gujarati: ${msgGu}`;
+              "create_appointment succeeded. The caller already heard (before this tool) that WhatsApp confirmation will come after the appointment is created, with thanks. " +
+              "Do NOT repeat that. Say ONLY the hang-up line once in the caller's language (Hindi or Gujarati), verbatim intent:\n" +
+              "Hindi: अगर आपका कोई और सवाल नहीं है तो आप कॉल काट सकते हैं। कृपया।\n" +
+              "Gujarati: જો તમને બીજો કોઈ પ્રશ્ન ન હોય તો તમે કૉલ કાપી શકો છો. કૃપા કરીને.";
             setTimeout(() => {
               try {
                 agent.session.generateReply({ instructions });

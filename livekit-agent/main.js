@@ -15,6 +15,8 @@ const {
   extractSipCallerPhoneFromRoom,
 } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
+const { chatItemsToTranscript } = require("./postCallPipeline");
+const { enqueuePostCallJob } = require("../src/queues/postCallQueue");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -300,6 +302,55 @@ const agentDef = defineAgent({
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
       if (noInputRepromptMs > 0) {
         attachNoInputReprompt(session, { ms: noInputRepromptMs });
+      }
+
+      // ── Post-call appointment pipeline ────────────────────────────────────
+      // When the room disconnects, extract the in-memory transcript and enqueue
+      // a BullMQ job.  The worker (running in the Express process) translates
+      // the transcript to English, calls ChatGPT to extract appointment intent,
+      // and creates the appointment in MongoDB — all outside the live call so
+      // the voice agent never blocks waiting for DB writes.
+      // The flag prevents double-firing if multiple disconnect events arrive.
+      let _postCallEnqueued = false;
+      const _schedulePostCall = () => {
+        if (_postCallEnqueued) return;
+        _postCallEnqueued = true;
+        try {
+          const originalLanguageTranscript = chatItemsToTranscript(session.chatCtx);
+          if (originalLanguageTranscript.length === 0) {
+            console.log("[LiveKit Agent] Post-call: empty transcript — skipping job.");
+            return;
+          }
+          enqueuePostCallJob({
+            originalLanguageTranscript,
+            hospitalId: String(hospital._id),
+            hospitalName: hospital.name || "",
+            callerPhone: callerPhone || null,
+            roomName,
+          })
+            .then((jobId) => {
+              console.log(
+                `[LiveKit Agent] Post-call job enqueued — id: ${jobId}, turns: ${originalLanguageTranscript.length}`,
+              );
+            })
+            .catch((err) => {
+              console.error(
+                "[LiveKit Agent] Failed to enqueue post-call job:",
+                err && err.message ? err.message : err,
+              );
+            });
+        } catch (err) {
+          console.error(
+            "[LiveKit Agent] Post-call transcript extraction error:",
+            err && err.message ? err.message : err,
+          );
+        }
+      };
+
+      // Listen on both the room and session so we catch whichever fires first.
+      ctx.room.once("disconnected", _schedulePostCall);
+      if (session && typeof session.once === "function") {
+        session.once("close", _schedulePostCall);
       }
 
       const { PcmGainAudioOutput, getAgentOutputPcmGain } = require("./pcmGainAudioOutput");

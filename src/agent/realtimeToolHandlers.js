@@ -3,12 +3,10 @@
  * Returns the output object; caller sends it via conversation.item.create + response.create.
  */
 const mongoose = require("mongoose");
-const AppointmentModel = require("../models/appointment.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
 const {
   parseAppointmentDateTimeAsIST,
-  formatInstantAsISTIso,
 } = require("../utils/appointmentDateTimeIST");
 const { formatCalendarDateIST } = require("../utils/queryDateRange");
 const { findHolidayCoveringYmdIST } = require("../utils/doctorHoliday");
@@ -315,7 +313,6 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const appointmentDateTimeISO = String(
         args.appointmentDateTimeISO || args.appointmentDateTime || "",
       ).trim();
-      const type = String(args.type || "call").trim() || "call";
       if (
         !mongoose.isValidObjectId(doctorObjectId) ||
         !mongoose.isValidObjectId(patientObjectId)
@@ -342,14 +339,11 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         );
       }
 
-      // Tool contract requires English reason — skip the extra OpenAI call so
-      // final booking is fast (was the main source of latency).
-      const reasonDb = reason;
+      // ── Validate doctor and patient exist — do NOT write to DB during the call ──
+      // The actual appointment is created by the post-call BullMQ worker after the
+      // call ends, keeping the voice agent responsive (no DB writes block the caller).
       const startedAt = Date.now();
-      const dtWindowMs = 60 * 1000; // ±1 min tolerance for duplicate guard
-
-      // Fetch doctor, patient and check for a duplicate — all in parallel.
-      const [doctor, patient, existingAppt] = await Promise.all([
+      const [doctor, patient] = await Promise.all([
         DoctorModel.findOne({
           _id: doctorObjectId,
           hospital: hospitalObjectId,
@@ -358,16 +352,8 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           _id: patientObjectId,
           hospital: hospitalObjectId,
         }).lean(),
-        AppointmentModel.findOne({
-          hospital: hospitalObjectId,
-          patient: patientObjectId,
-          doctor: doctorObjectId,
-          appointmentDateTime: {
-            $gte: new Date(dt.getTime() - dtWindowMs),
-            $lte: new Date(dt.getTime() + dtWindowMs),
-          },
-        }).lean(),
       ]);
+
       if (!doctor) {
         return appointmentBilingualError(
           "Doctor not found for this hospital.",
@@ -419,88 +405,31 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const { hindi: whenHi, gujarati: whenGu } =
         formatAppointmentDateTimeForVoice(dt);
 
-      // Return existing appointment if this is a duplicate call (same slot).
-      if (existingAppt) {
-        console.log(
-          logTag,
-          "[create_appointment] DUPLICATE SKIPPED — returning existing",
-          JSON.stringify({
-            appointmentId: existingAppt.appointmentId,
-            durationMs: Date.now() - startedAt,
-          }),
-        );
-        return {
-          ok: true,
-          appointment: {
-            _id: String(existingAppt._id),
-            appointmentId: existingAppt.appointmentId,
-            hospital: String(existingAppt.hospital || ""),
-            patient: String(existingAppt.patient),
-            doctor: String(existingAppt.doctor),
-            reason: existingAppt.reason,
-            status: existingAppt.status,
-            type: existingAppt.type,
-            appointmentDateTime: formatInstantAsISTIso(
-              existingAppt.appointmentDateTime,
-            ),
-          },
-          message:
-            "Already booked. Speak messageHindi or messageGujarati once as booking status.",
-          messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${existingAppt.appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
-          messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${existingAppt.appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
-        };
-      }
-
-      const year = new Date().getFullYear();
-      const prefix = `A-${year}-`;
-      const last = await AppointmentModel.findOne({
-        appointmentId: new RegExp(`^${prefix}`),
-      })
-        .sort({ appointmentId: -1 })
-        .select("appointmentId")
-        .lean();
-      const nextNum = last
-        ? parseInt(String(last.appointmentId).slice(prefix.length), 10) + 1
-        : 1;
-      const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
-      const appointment = await AppointmentModel.create({
-        hospital: hospitalObjectId,
-        appointmentId,
-        patient: patientObjectId,
-        doctor: doctorObjectId,
-        reason: reasonDb,
-        status: "Upcoming",
-        type,
-        appointmentDateTime: dt,
-      });
       console.log(
         logTag,
-        "[create_appointment] BOOKED OK",
+        "[create_appointment] DETAILS NOTED (appointment will be created after call ends)",
         JSON.stringify({
-          appointmentId: appointment.appointmentId,
-          appointmentMongoId: String(appointment._id),
+          doctorObjectId,
+          patientObjectId,
+          appointmentDateTimeISO,
+          doctorName,
+          whenHi,
+          whenGu,
           durationMs: Date.now() - startedAt,
         }),
       );
+
+      // Return success immediately — the appointment will be created by the
+      // post-call worker once the call ends.  The caller hears a confirmation
+      // but no sequential DB write blocks the live voice path.
       return {
         ok: true,
-        appointment: {
-          _id: String(appointment._id),
-          appointmentId: appointment.appointmentId,
-          hospital: String(appointment.hospital || ""),
-          patient: String(appointment.patient),
-          doctor: String(appointment.doctor),
-          reason: appointment.reason,
-          status: appointment.status,
-          type: appointment.type,
-          appointmentDateTime: formatInstantAsISTIso(
-            appointment.appointmentDateTime,
-          ),
-        },
         message:
-          "Booked. Speak messageHindi or messageGujarati once as booking status (no second confirmation — they already confirmed).",
-        messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
-        messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
+          "Do NOT read messageHindi/messageGujarati aloud — section 9 already thanked and explained WhatsApp; use section 10 hang-up only.",
+        messageHindi:
+          "जैसे ही आपकी अपॉइंटमेंट बन जाएगी, मैं सुनिश्चित करूँगी कि आपको WhatsApp पर पुष्टि मिल जाए। धन्यवाद।",
+        messageGujarati:
+          "જેવી જ તમારી એપોઇન્ટમેન્ટ બનશે, હું ખાતરી કરીશ કે તમને WhatsApp પર પુષ્ટિ મળી જાય. આભાર.",
       };
     }
 

@@ -221,7 +221,46 @@ async function runPostCallPipeline({ session, hospital, callerPhone, roomName })
   }
 }
 
+/**
+ * Pipeline entry point used by the BullMQ post-call worker.
+ * Accepts a pre-serialised transcript (already extracted from session.chatCtx)
+ * so it can run in a separate worker process without access to the live session.
+ *
+ * @param {{
+ *   originalLanguageTranscript: Array<{role: string, text: string}>,
+ *   hospital: { _id: string|import('mongoose').Types.ObjectId, name: string },
+ *   callerPhone: string | null,
+ *   roomName: string,
+ * }} params
+ */
+async function runPostCallPipelineFromTranscript({
+  originalLanguageTranscript,
+  hospital,
+  callerPhone,
+  roomName,
+}) {
+  // Construct a fake session-like object so runPostCallPipeline can be reused.
+  // We provide a chatCtx.items array pre-filled with the transcript turns.
+  const fakeItems = (originalLanguageTranscript || []).map((t) => ({
+    type: 'message',
+    role: t.role,
+    textContent: t.text,
+  }));
+
+  const fakeSession = {
+    chatCtx: { items: fakeItems },
+  };
+
+  return runPostCallPipeline({
+    session: fakeSession,
+    hospital,
+    callerPhone,
+    roomName,
+  });
+}
+
 module.exports = {
   runPostCallPipeline,
+  runPostCallPipelineFromTranscript,
   chatItemsToTranscript,
 };
