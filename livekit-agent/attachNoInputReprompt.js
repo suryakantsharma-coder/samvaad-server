@@ -3,23 +3,23 @@
  * (Hindi / Gujarati per call language in instructions).
  */
 const { AgentSessionEventTypes } = require("@livekit/agents").voice;
-
-const NO_INPUT_INSTRUCTIONS = `URGENT_ONE_TURN — no user response was detected after your last question.
-
-Say exactly ONE short utterance in the language this call is using (Hindi OR Gujarati only — never both):
-- **Hindi:** "माफ़ कीजिए, मुझे कोई इनपुट साफ़ नहीं मिला। कृपया फिर से बोलिए।" Then repeat only your **immediate last question** in one short Hindi line.
-- **Gujarati:** "માફ કરજો, મને કોઈ ઇનપુટ સાફ મળ્યો નહીં। કૃપા કરીને ફરી કહો." Then repeat only your **immediate last question** in one short Gujarati line.
-
-Do NOT call tools. Pick only Hindi or Gujarati based on what the caller already chose for this call.`;
+const { getNoInputRepromptInstructions } = require("./preferredLanguage");
 
 /**
  * @param {import('@livekit/agents').voice.AgentSession} session
- * @param {{ ms?: number, logTag?: string }} [opts]
+ * @param {{
+ *   ms?: number,
+ *   logTag?: string,
+ *   getPreferredLanguage?: () => ('hi'|'gu'|null|undefined),
+ *   getNoInputTopic?: () => (string|null|undefined),
+ * }} [opts]
  * @returns {() => void} detach listeners and clear timer
  */
 function attachNoInputReprompt(session, opts = {}) {
   const ms = opts.ms ?? 4000;
   const logTag = opts.logTag ?? "[NoInputReprompt]";
+  const getPreferredLanguage = opts.getPreferredLanguage;
+  const getNoInputTopic = opts.getNoInputTopic;
   if (!ms || ms <= 0 || !session) {
     return () => {};
   }
@@ -46,9 +46,17 @@ function attachNoInputReprompt(session, opts = {}) {
       if (session.agentState !== "listening" || session.userState !== "listening")
         return;
       try {
+        const lang =
+          typeof getPreferredLanguage === "function"
+            ? getPreferredLanguage()
+            : null;
+        const missingTopic =
+          typeof getNoInputTopic === "function" ? getNoInputTopic() : null;
         session.generateReply({
           toolChoice: "none",
-          instructions: NO_INPUT_INSTRUCTIONS,
+          instructions: getNoInputRepromptInstructions(lang, {
+            missingTopic: missingTopic || null,
+          }),
         });
       } catch (e) {
         console.warn(logTag, e && e.message ? e.message : e);
@@ -100,4 +108,4 @@ function attachNoInputReprompt(session, opts = {}) {
   };
 }
 
-module.exports = { attachNoInputReprompt, NO_INPUT_INSTRUCTIONS };
+module.exports = { attachNoInputReprompt, getNoInputRepromptInstructions };

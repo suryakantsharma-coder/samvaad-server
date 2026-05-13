@@ -1,5 +1,8 @@
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+if (!process.env.TZ) {
+  process.env.TZ = "Asia/Kolkata";
+}
 
 const mongoose = require("mongoose");
 const { ServerOptions, cli, defineAgent, voice } = require("@livekit/agents");
@@ -15,6 +18,7 @@ const {
   extractSipCallerPhoneFromRoom,
 } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
+const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -284,6 +288,12 @@ const agentDef = defineAgent({
     // agent participant, so the caller can be in the room with no agent visible.
     await ctx.connect();
 
+    let session = null;
+    let detachNoInput = null;
+    let samvaadTts = null;
+    let hospitalAgent = null;
+    let sarvamStt = null;
+
     try {
       await logCallConnection(ctx, "job_received", {
         agentName: AGENT_NAME,
@@ -301,7 +311,6 @@ const agentDef = defineAgent({
 
       let hospital;
       let vad;
-      let sarvamStt;
       if (useSarvamStt) {
         const { VAD } = require("@livekit/agents-plugin-silero");
         const { SarvamSTT, useWebSocketStreaming } = require("./sarvamStt");
@@ -316,7 +325,11 @@ const agentDef = defineAgent({
         sarvamStt.on("error", (ev) => {
           console.error(
             "[Sarvam STT] stt error event:",
-            ev && ev.error != null ? ev.error : ev,
+            JSON.stringify({
+              roomName,
+              hospitalId,
+              error: ev && ev.error != null ? ev.error : ev,
+            }),
           );
         });
         sarvamStt.on("metrics_collected", (m) => {
@@ -378,13 +391,18 @@ const agentDef = defineAgent({
             },
           };
 
-      const samvaadTts =
+      const samvaadTtsInstance =
         useSamvaadLlmTts && useSarvamStt ? new SarvamTTSClass() : null;
+      samvaadTts = samvaadTtsInstance;
       if (samvaadTts) {
         samvaadTts.on("error", (ev) => {
           console.error(
             "[Sarvam TTS] error event:",
-            ev && ev.error != null ? ev.error : ev,
+            JSON.stringify({
+              roomName,
+              hospitalId,
+              error: ev && ev.error != null ? ev.error : ev,
+            }),
           );
         });
         console.log(
@@ -396,7 +414,7 @@ const agentDef = defineAgent({
 
       const lowLatency = process.env.LOW_LATENCY_AUDIO !== "0";
       const sarvamTurnHandling = useSarvamStt ? getSarvamTurnHandling() : void 0;
-      const session = useSamvaadLlmTts
+      session = useSamvaadLlmTts
         ? new voice.AgentSession({
             vad,
             stt: sarvamStt,
@@ -416,7 +434,7 @@ const agentDef = defineAgent({
               : {}),
           });
 
-      const hospitalAgent = new HospitalVoiceAgent({
+      hospitalAgent = new HospitalVoiceAgent({
         instructions,
         hospitalObjectId: hospital._id,
         callerPhone,
@@ -440,8 +458,35 @@ const agentDef = defineAgent({
 
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
       if (noInputRepromptMs > 0) {
-        attachNoInputReprompt(session, { ms: noInputRepromptMs });
+        detachNoInput = attachNoInputReprompt(session, {
+          ms: noInputRepromptMs,
+          getPreferredLanguage: () =>
+            hospitalAgent ? hospitalAgent.preferredLanguage : "hi",
+          getNoInputTopic: () =>
+            hospitalAgent
+              ? getNoInputMissingTopic(
+                  hospitalAgent.callBookingSlots,
+                  hospitalAgent.preferredLanguage,
+                )
+              : null,
+        });
       }
+
+      if (useSamvaadLlmTts && samvaadTts) {
+        session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+          if (!ev || !ev.isFinal) return;
+          hospitalAgent.updateLanguageFromTranscript(ev.transcript || "");
+          samvaadTts._targetLanguageCode =
+            hospitalAgent.preferredLanguage === "gu" ? "gu-IN" : "hi-IN";
+        });
+      }
+
+      session.once(voice.AgentSessionEventTypes.Close, () => {
+        if (detachNoInput) {
+          detachNoInput();
+          detachNoInput = null;
+        }
+      });
 
       const { PcmGainAudioOutput, getAgentOutputPcmGain } = require("./pcmGainAudioOutput");
       const outPcmGain = getAgentOutputPcmGain(Boolean(useSamvaadLlmTts));
@@ -490,7 +535,8 @@ const agentDef = defineAgent({
       });
 
       const handle = session.generateReply({
-        instructions: `Greeting in Hindi only: "नमस्ते, ${hospital.name} में आपका स्वागत है। मैं नेहा बोल रही हूँ, मैं आपकी कैसे मदद कर सकती हूँ?" Then in Hindi ask: "कृपया बताएं, क्या आप हिंदी में बात करेंगे या गुजराती में?" (Rest of the call then follows the instructions in the caller's language.)`,
+        instructions:
+          `You are Neha (female receptionist). Greeting in Hindi only: "नमस्ते, ${hospital.name} में आपका स्वागत है। मैं नेहा बोल रही हूँ—मैं आपकी कैसे मदद कर सकती हूँ?" Then in Hindi ask: "कृपया बताइए, आगे की बात हिंदी में रखें या गुजराती में?" After they choose, use only that language for every line (including if they mix a few English words); do not switch back to English for fillers or confirmations.`,
       });
       await handle.waitForPlayout();
 
@@ -500,12 +546,55 @@ const agentDef = defineAgent({
         "hospital:",
         hospital.name,
       );
+
+      await new Promise((resolve) => {
+        if (!session || session.closing) {
+          resolve();
+          return;
+        }
+        session.once(voice.AgentSessionEventTypes.Close, resolve);
+      });
     } catch (err) {
       console.error(
         "[LiveKit Agent] Entry error:",
         err && err.message ? err.message : err,
       );
       throw err;
+    } finally {
+      if (detachNoInput) {
+        detachNoInput();
+        detachNoInput = null;
+      }
+      if (session && typeof session.close === "function" && !session.closing) {
+        try {
+          await session.close();
+        } catch (closeErr) {
+          console.warn(
+            "[LiveKit Agent] session.close:",
+            closeErr && closeErr.message ? closeErr.message : closeErr,
+          );
+        }
+      }
+      if (sarvamStt && typeof sarvamStt.close === "function") {
+        try {
+          await sarvamStt.close();
+        } catch (sttCloseErr) {
+          console.warn(
+            "[LiveKit Agent] sarvamStt.close:",
+            sttCloseErr && sttCloseErr.message ? sttCloseErr.message : sttCloseErr,
+          );
+        }
+      }
+      if (samvaadTts && typeof samvaadTts.close === "function") {
+        try {
+          await samvaadTts.close();
+        } catch (ttsCloseErr) {
+          console.warn(
+            "[LiveKit Agent] sarvamTts.close:",
+            ttsCloseErr && ttsCloseErr.message ? ttsCloseErr.message : ttsCloseErr,
+          );
+        }
+      }
     }
   },
 });

@@ -85,7 +85,7 @@ function buildAppointmentConfirmationText(appointment, hospitalName) {
     `• Date & time: ${when}`,
     `• Reference no.: ${ref}`,
     "",
-    "Please arrive 10–15 minutes before your scheduled time. If you need to change or cancel this appointment, kindly contact the hospital as soon as possible.",
+    "Please arrive 10–15 minutes before your scheduled time. If you need to reschedule, reply here on WhatsApp. For urgent cancellations, contact the hospital.",
     "",
     "We look forward to seeing you.",
     "",
@@ -118,7 +118,7 @@ function buildTeleCallerAppointmentBookedText(appointment, hospitalName) {
   }
   lines.push(
     "",
-    "Please use the meeting link at the scheduled time if provided. To reschedule or cancel, contact the hospital.",
+    "Please use the meeting link at the scheduled time if provided. To reschedule, reply here on WhatsApp.",
     "",
     `— ${facility}`,
   );

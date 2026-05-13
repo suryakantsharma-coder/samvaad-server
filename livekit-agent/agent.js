@@ -1,15 +1,78 @@
 const { voice, llm } = require("@livekit/agents");
 const { getRealtimeTools } = require("../src/agent/realtimeTools");
 const { runHospitalTool } = require("../src/agent/realtimeToolHandlers");
-const { normalizeShortYesNoInPlace } = require("./userTranscriptNormalize");
+const {
+  normalizeShortYesNoInPlace,
+  getPlainTranscript,
+} = require("./userTranscriptNormalize");
+const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
+const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
+const {
+  inferCallerLanguage,
+  detectExplicitLanguageSwitch,
+  getEmptyInputRepromptInstructions,
+  HANG_UP_GU,
+  HANG_UP_HI,
+} = require("./preferredLanguage");
+const {
+  createCallBookingSlots,
+  updateSlotsFromToolArgs,
+  mergeToolArgsWithSlots,
+  maybeCaptureVisitReasonFromTranscript,
+} = require("./callBookingSlots");
+
+const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
+
+/**
+ * @param {HospitalVoiceAgent} agent
+ * @param {{ ok?: boolean, messageHindi?: string, messageGujarati?: string, appointmentUpdated?: boolean }} result
+ */
+async function speakCreateAppointmentResult(agent, result) {
+  if (!agent || !result || !agent.session) return;
+
+  const lang = agent.preferredLanguage === "gu" ? "gu" : "hi";
+  const primary =
+    lang === "gu"
+      ? result.messageGujarati || result.messageHindi
+      : result.messageHindi || result.messageGujarati;
+  if (!primary) return;
+
+  const hangUp = lang === "gu" ? HANG_UP_GU : HANG_UP_HI;
+  const instructions = result.ok
+    ? (result.appointmentUpdated
+        ? "The appointment was updated (ok: true). Speak EXACTLY the status line below in " +
+          (lang === "gu" ? "Gujarati" : "Hindi") +
+          ", then the hang-up line. Do NOT say the update failed. Do NOT read English. Do NOT change wording.\n" +
+          `Status: ${primary}\n` +
+          `Hang-up: ${hangUp}`
+        : "The appointment is booked (ok: true). Speak EXACTLY the booking status line below in " +
+          (lang === "gu" ? "Gujarati" : "Hindi") +
+          ", then the hang-up line. Do NOT say booking failed. Do NOT read English. Do NOT change wording.\n" +
+          `Booking status: ${primary}\n` +
+          `Hang-up: ${hangUp}`)
+    : "Booking failed (ok: false). Speak EXACTLY the line below in " +
+      (lang === "gu" ? "Gujarati" : "Hindi") +
+      ". Explain calmly what they can do next. Never read English.\n" +
+      `Failure line: ${primary}`;
+
+  try {
+    const handle = agent.session.generateReply({
+      toolChoice: "none",
+      instructions,
+    });
+    if (handle && typeof handle.waitForPlayout === "function") {
+      await handle.waitForPlayout();
+    }
+  } catch (err) {
+    console.error(
+      "[Agent] post-booking generateReply error:",
+      err && err.message ? err.message : err,
+    );
+  }
+}
 
 /**
  * Build LiveKit function tools from OpenAI-style definitions, backed by runHospitalTool.
- *
- * agentRef is a mutable { current: HospitalVoiceAgent | null } box so tools can
- * reach back to the agent session after create_appointment succeeds — forcing an
- * explicit generateReply that proactively speaks the booking status.  Without this,
- * the Sarvam-STT route's post-tool reply produces messageCount:0 (silent).
  */
 function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
   const defs = getRealtimeTools();
@@ -21,38 +84,56 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
       description: def.description || "",
       parameters: def.parameters,
       execute: async (args) => {
+        const agent = agentRef && agentRef.current;
+        const rawArgs = args && typeof args === "object" ? args : {};
+        const mergedArgs =
+          agent && SLOT_MERGE_TOOLS.has(name)
+            ? mergeToolArgsWithSlots(agent.callBookingSlots, rawArgs)
+            : rawArgs;
+
         const result = await runHospitalTool(
           hospitalObjectId,
           name,
-          args && typeof args === "object" ? args : {},
-          { callerPhone: callerPhone || null },
+          mergedArgs,
+          {
+            callerPhone: callerPhone || null,
+            callBookingSlots: agent ? agent.callBookingSlots : null,
+          },
         );
 
-        // After a successful booking, proactively speak the booking status.
-        // We use a short timeout so the LiveKit framework finishes processing
-        // the tool result before we kick off a new generateReply.
-        if (name === "create_appointment" && result && result.ok) {
-          const agent = agentRef && agentRef.current;
+        if (agent) {
+          if (
+            name === "create_patient" &&
+            result &&
+            result.ok &&
+            result.patient &&
+            result.patient._id
+          ) {
+            agent.callBookingSlots.patientObjectId = String(result.patient._id);
+          }
+          if (
+            (name === "list_doctors" || name === "search_doctors") &&
+            result &&
+            result.ok &&
+            Array.isArray(result.doctors) &&
+            result.doctors.length === 1 &&
+            result.doctors[0]._id
+          ) {
+            agent.callBookingSlots.doctorObjectId = String(
+              result.doctors[0]._id,
+            );
+          }
+          updateSlotsFromToolArgs(agent.callBookingSlots, mergedArgs);
+        }
+
+        if (name === "create_appointment" && result) {
+          if (agent && result.ok && result.appointment && result.appointment._id) {
+            agent.callBookingSlots.appointmentObjectId = String(
+              result.appointment._id,
+            );
+          }
           if (agent) {
-            const msgHi = result.messageHindi || "";
-            const msgGu = result.messageGujarati || "";
-            const instructions =
-              "The appointment is now booked. Speak ONE of the lines below " +
-              "(choose the caller's language — Hindi or Gujarati), then add " +
-              "the hang-up line. Do NOT change the wording, do NOT repeat the " +
-              "full booking summary again:\n" +
-              `Hindi: ${msgHi}\n` +
-              `Gujarati: ${msgGu}`;
-            setTimeout(() => {
-              try {
-                agent.session.generateReply({ instructions });
-              } catch (err) {
-                console.error(
-                  "[Agent] post-booking generateReply error:",
-                  err && err.message ? err.message : err,
-                );
-              }
-            }, 120);
+            await speakCreateAppointmentResult(agent, result);
           }
         }
 
@@ -71,7 +152,6 @@ class HospitalVoiceAgent extends voice.Agent {
     /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
     routeUserTextThroughRealtime = false,
   }) {
-    // agentRef is filled right after super() so tools can reach this.session.
     const agentRef = { current: null };
     super({
       instructions,
@@ -79,30 +159,79 @@ class HospitalVoiceAgent extends voice.Agent {
     });
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
+    /** @type {'hi' | 'gu'} */
+    this.preferredLanguage = "hi";
+    /** After first confident hi/gu detection (or explicit switch), STT heuristics must not flip language mid-call. */
+    this.preferredLanguageLocked = false;
+    this.callBookingSlots = createCallBookingSlots();
+  }
+
+  /**
+   * Sync preferred language from user text (Sarvam STT). Locked after first inference so English
+   * or mixed snippets do not override Hindi/Gujarati choice; use detectExplicitLanguageSwitch when locked.
+   * @param {string} text
+   */
+  updateLanguageFromTranscript(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return;
+    const next = this.preferredLanguageLocked
+      ? detectExplicitLanguageSwitch(raw)
+      : inferCallerLanguage(raw);
+    if (!next) return;
+    this.preferredLanguage = next;
+    if (!this.preferredLanguageLocked) this.preferredLanguageLocked = true;
   }
 
   /**
    * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
    */
   async onUserTurnCompleted(_chatCtx, newMessage) {
-    // Make "haa", "ha", "h" etc. unambiguous to the model (STT is often 2–3 letters).
+    const rawBefore = getPlainTranscript(newMessage);
     normalizeShortYesNoInPlace(newMessage);
-    if (!this._routeUserTextThroughRealtime) return;
-    const text = (newMessage && newMessage.textContent
-      ? String(newMessage.textContent).trim()
-      : "");
-    if (process.env.SARVAM_STT_DEBUG !== "0") {
-      const preview = text
-        ? `"${text.slice(0, 200)}${text.length > 200 ? "…" : ""}"`
-        : "(empty — agent will not reply)";
+    const textAfter = getPlainTranscript(newMessage);
+
+    if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
+      const preview = rawBefore
+        ? `"${rawBefore.slice(0, 200)}${rawBefore.length > 200 ? "…" : ""}"`
+        : "(empty — reprompting caller)";
       console.log("[Sarvam STT] onUserTurnCompleted user text:", preview);
     }
-    if (!text) {
+
+    this.updateLanguageFromTranscript(rawBefore || textAfter);
+
+    applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
+    maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
+
+    if (!this._routeUserTextThroughRealtime) return;
+
+    if (!rawBefore.trim()) {
+      try {
+        this.session.generateReply({
+          toolChoice: "none",
+          instructions: getEmptyInputRepromptInstructions(this.preferredLanguage),
+        });
+      } catch (err) {
+        console.warn(
+          "[Agent] empty STT reprompt error:",
+          err && err.message ? err.message : err,
+        );
+      }
       throw new voice.StopResponse();
     }
-    this.session.generateReply({ userMessage: newMessage });
+
+    const bookingIx = buildBookingTurnInstructions({
+      slots: this.callBookingSlots,
+      rawUser: rawBefore,
+      normalizedUser: textAfter,
+      preferredLanguage: this.preferredLanguage,
+    });
+
+    this.session.generateReply({
+      userMessage: newMessage,
+      instructions: bookingIx,
+    });
     throw new voice.StopResponse();
   }
 }
 
-module.exports = { HospitalVoiceAgent, buildHospitalTools };
+module.exports = { HospitalVoiceAgent, buildHospitalTools, speakCreateAppointmentResult };

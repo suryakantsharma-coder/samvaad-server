@@ -11,6 +11,7 @@ const { notifyAppointmentBookedById } = require("../../src/services/appointmentW
 const {
   parseAppointmentDateTimeAsIST,
 } = require("../../src/utils/appointmentDateTimeIST");
+const { istCalendarYear } = require("../../src/utils/queryDateRange");
 const {
   normalizePatientFieldsForStorage,
   normalizeReasonForStorage,
@@ -24,7 +25,7 @@ async function createPatient({
   phoneNumber,
   reason,
 }) {
-  const year = new Date().getFullYear();
+  const year = istCalendarYear();
   const prefix = `P-${year}-`;
   const last = await PatientModel.findOne({
     patientId: new RegExp(`^${prefix}`),
@@ -69,7 +70,7 @@ async function createAppointment({
   appointmentDateTimeISO,
   type = "call",
 }) {
-  const year = new Date().getFullYear();
+  const year = istCalendarYear();
   const prefix = `A-${year}-`;
   const last = await AppointmentModel.findOne({
     appointmentId: new RegExp(`^${prefix}`),

@@ -8,3 +8,5 @@ uploads/
 call_logs/
 call-transcripts/
 caller-numbers/
+.cursor/
+.history/

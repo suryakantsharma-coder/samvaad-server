@@ -49,6 +49,30 @@ function istTomorrowRange() {
   return { $gte: start, $lte: end };
 }
 
+/** @returns {string} YYYY-MM-DD for today in Asia/Kolkata */
+function istTodayYmd() {
+  return formatCalendarDateIST(new Date());
+}
+
+/** @returns {string} YYYY-MM-DD for the next IST calendar day after today */
+function istTomorrowYmd() {
+  const tomorrowStart = istTomorrowRange().$gte;
+  return formatCalendarDateIST(tomorrowStart);
+}
+
+/** @returns {string} YYYY-MM-DD for the IST calendar day two days after today */
+function istDayAfterTomorrowYmd() {
+  const tomorrowStart = istTomorrowRange().$gte;
+  const dayAfter = new Date(tomorrowStart.getTime() + 24 * 60 * 60 * 1000);
+  return formatCalendarDateIST(dayAfter);
+}
+
+/** @returns {number} Four-digit calendar year in Asia/Kolkata */
+function istCalendarYear() {
+  const y = Number.parseInt(istTodayYmd().slice(0, 4), 10);
+  return Number.isFinite(y) ? y : new Date().getFullYear();
+}
+
 /** @param {Record<string, unknown>} query @param {string[]} keys */
 function firstTrimmedQueryValue(query, keys) {
   if (!query || !keys || !keys.length) return null;
@@ -113,4 +137,8 @@ module.exports = {
   formatCalendarDateIST,
   istTodayRange,
   istTomorrowRange,
+  istTodayYmd,
+  istTomorrowYmd,
+  istDayAfterTomorrowYmd,
+  istCalendarYear,
 };

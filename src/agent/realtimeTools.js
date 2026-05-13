@@ -43,7 +43,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_patient",
       description:
-        "Create a new patient for the current hospital and return patientId + details including _id. The caller's phone number from the call is automatically used for phoneNumber when not provided. Use the returned _id when linking to an appointment via create_appointment. The agent asks **age and gender in one combined question** after the name. For age: always pass an **integer** (years) — the caller may say the age in Hindi or Gujarati; convert words like चौबीस→24, पचीस→25 to a number, never a string. For gender: use Male/Female/Other from that reply (or a short follow-up if they only answered one part).",
+        "Create a new patient for the current hospital and return **patientId** (human-readable, e.g. P-2026-000001) plus **patient._id** (MongoDB ObjectId string, 24 hex characters). **You MUST pass `patient._id` from this response as `patientObjectId` in `create_appointment`** — not patientId, not age, not a guess. The caller's phone number from the call is automatically used for phoneNumber when not provided. The agent asks **age and gender in one combined question** after the name. For age: always pass an **integer** (years) — the caller may say the age in Hindi or Gujarati; convert words like चौबीस→24, पचीस→25 to a number, never a string. For gender: use Male/Female/Other from that reply (or a short follow-up if they only answered one part). **reason is mandatory:** pass the visit reason in English from section 1 of this call (same value you will use in create_appointment), even if the caller said it earlier in Hindi or Gujarati — never omit reason.",
       parameters: {
         type: "object",
         properties: {
@@ -67,7 +67,7 @@ function getRealtimeTools() {
           reason: {
             type: "string",
             description:
-              "Symptom/illness in English. Preserve exact English disease names (e.g. piles, diabetes, BP) if the caller said them.",
+              "Required. Symptom/illness in English from the visit reason collected in this call (section 1). If the caller said it in Hindi or Gujarati earlier, convert to English here (e.g. दांत में दर्द → tooth pain). Use the same reason on create_appointment.",
           },
         },
         required: ["fullName", "age", "gender", "reason"],
@@ -104,7 +104,7 @@ function getRealtimeTools() {
       type: "function",
       name: "create_appointment",
       description:
-        "Create an appointment linking patient and doctor by their database _id. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. Before calling this tool, the assistant must say a short wait line in the caller's language, then call this function. On success the result includes messageHindi and messageGujarati — read once as booking status only (caller already confirmed); do not ask to confirm again. On failure: messageHindi, messageGujarati, code — always address the caller in their chosen language, never read raw English to them.",
+        "Create or update an appointment linking patient and doctor by their database **MongoDB _id** values only. **Order for a new patient:** (1) Call **create_patient** and wait for ok:true; (2) call **create_appointment** with **patientObjectId = that tool's `patient._id`** (24 hex), **never** before step 1 succeeds. For an existing patient, call **fetch_patient_by_patientId** or **fetch_patient_by_phone** first, then use returned `patient._id` as patientObjectId. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. **Same phone call — corrections:** If an appointment was **already booked successfully earlier in this same call** and the caller wants to change doctor, date, time, or reason, call this tool again with the **new** fields; the server will **update that same appointment** (same appointment number) instead of creating a second one. The voice session may inject existingAppointmentObjectId after the first success. Before calling this tool, the assistant must say a short wait line in the caller's locked language (Hindi or Gujarati; feminine tone as Neha), then call this function. On success (ok: true) the appointment is booked or updated — read messageHindi or messageGujarati once as booking status only; never tell the caller booking failed when ok is true. On failure: messageHindi, messageGujarati, code — always address the caller in their chosen language, never read raw English to them.",
       parameters: {
         type: "object",
         properties: {
@@ -116,7 +116,7 @@ function getRealtimeTools() {
           patientObjectId: {
             type: "string",
             description:
-              "The patient's _id from fetch_patient_by_patientId, fetch_patient_by_phone, or create_patient result (MongoDB ObjectId)",
+              "**Required.** MongoDB ObjectId string (24 hex characters) from **create_patient** response field `patient._id`, OR from **fetch_patient_by_patientId** / **fetch_patient_by_phone** result `patient._id`. **Never** use human patientId (P-2026-…), caller age, or placeholders like \"1\" — only the `_id` from a successful patient tool call.",
           },
           reason: {
             type: "string",
@@ -129,6 +129,11 @@ function getRealtimeTools() {
               "Appointment date+time as ISO with India offset +05:30 (IST wall clock), e.g. 2026-04-25T15:30:00+05:30. The caller may say date/time in Hindi or Gujarati (month names, आज/कल, साढ़े तीन, etc.) — convert to this format. Prefer +05:30; trailing Z is interpreted as IST wall time by the server, not UTC.",
           },
           type: { type: "string", default: "call" },
+          existingAppointmentObjectId: {
+            type: "string",
+            description:
+              "Optional. MongoDB _id of an appointment already booked in this same call, to update instead of creating a new appointment. The voice stack usually fills this automatically after the first successful booking; omit unless you must override.",
+          },
         },
         required: [
           "doctorObjectId",

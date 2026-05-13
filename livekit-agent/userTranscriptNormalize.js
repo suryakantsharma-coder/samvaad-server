@@ -87,4 +87,35 @@ function isShortNegation(c, rawForScript) {
   return false;
 }
 
-module.exports = { normalizeShortYesNoInPlace, getPlainTranscript };
+/**
+ * @param {string} rawBeforeNormalize
+ * @param {string} plainAfterNormalize
+ */
+function isAffirmativeTurn(rawBeforeNormalize, plainAfterNormalize) {
+  const after = String(plainAfterNormalize || "").trim();
+  if (/^Haan\./i.test(after)) return true;
+  const raw = String(rawBeforeNormalize || "").trim();
+  if (!raw) return false;
+  const noPunct = raw.replace(/[\s\.\,\!\?।…]+/g, "");
+  return isShortAffirmative(noPunct, raw);
+}
+
+/**
+ * @param {string} rawBeforeNormalize
+ * @param {string} plainAfterNormalize
+ */
+function isNegationTurn(rawBeforeNormalize, plainAfterNormalize) {
+  const after = String(plainAfterNormalize || "").trim();
+  if (/^Nahi\./i.test(after)) return true;
+  const raw = String(rawBeforeNormalize || "").trim();
+  if (!raw) return false;
+  const noPunct = raw.replace(/[\s\.\,\!\?।…]+/g, "");
+  return isShortNegation(noPunct, raw);
+}
+
+module.exports = {
+  normalizeShortYesNoInPlace,
+  getPlainTranscript,
+  isAffirmativeTurn,
+  isNegationTurn,
+};

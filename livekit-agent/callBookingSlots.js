@@ -1,0 +1,122 @@
+/**
+ * @typedef {{
+ *   reason?: string,
+ *   fullName?: string,
+ *   age?: number,
+ *   gender?: string,
+ *   firstVisit?: boolean,
+ *   doctorObjectId?: string,
+ *   patientObjectId?: string,
+ *   appointmentObjectId?: string,
+ *   appointmentDateTimeISO?: string,
+ *   pendingDateYmd?: string,
+ * }} CallBookingSlots
+ */
+
+const VISIT_REASON_HINT =
+  /(?:दर्द|बीमार|समस्या|तकलीफ|symptom|pain|fever|cold|cough|ache|infection|bp|diabetes|piles|dard|દર્દ|સમસ્યા|બીમાર)/i;
+
+const NON_REASON_HINT =
+  /^(?:हाँ|हा|ना|नहीं|yes|no|haa?|ji|ok|theek|thik|male|female|मेल|कल|आज|tomorrow|today|\d+\s*(?:साल|वर्ष|year|मेल)?)/i;
+
+/** 24 hex chars — Mongo ObjectId string form */
+function isMongoObjectIdString(s) {
+  return /^[a-fA-F0-9]{24}$/.test(String(s || "").trim());
+}
+
+/**
+ * @returns {CallBookingSlots}
+ */
+function createCallBookingSlots() {
+  return {};
+}
+
+/**
+ * @param {CallBookingSlots} slots
+ * @param {Record<string, unknown>} args
+ */
+function updateSlotsFromToolArgs(slots, args) {
+  if (!slots || !args || typeof args !== "object") return;
+  const reason = String(args.reason || "").trim();
+  if (reason) slots.reason = reason;
+  const fullName = String(args.fullName || "").trim();
+  if (fullName) slots.fullName = fullName;
+  const age = Number(args.age);
+  if (Number.isFinite(age) && age >= 0) slots.age = age;
+  const gender = String(args.gender || "").trim();
+  if (gender) slots.gender = gender;
+  const doctorObjectId = String(args.doctorObjectId || "").trim();
+  if (doctorObjectId && isMongoObjectIdString(doctorObjectId)) {
+    slots.doctorObjectId = doctorObjectId;
+  }
+  const patientObjectId = String(args.patientObjectId || "").trim();
+  if (patientObjectId && isMongoObjectIdString(patientObjectId)) {
+    slots.patientObjectId = patientObjectId;
+  }
+  const appointmentDateTimeISO = String(args.appointmentDateTimeISO || "").trim();
+  if (appointmentDateTimeISO) slots.appointmentDateTimeISO = appointmentDateTimeISO;
+}
+
+/**
+ * @param {CallBookingSlots} slots
+ * @param {Record<string, unknown>} args
+ * @returns {Record<string, unknown>}
+ */
+function mergeToolArgsWithSlots(slots, args) {
+  const merged = { ...(args && typeof args === "object" ? args : {}) };
+  if (!slots) return merged;
+  if (!String(merged.reason || "").trim() && slots.reason) {
+    merged.reason = slots.reason;
+  }
+  if (!String(merged.fullName || "").trim() && slots.fullName) {
+    merged.fullName = slots.fullName;
+  }
+  if (
+    (merged.age == null || merged.age === "" || Number.isNaN(Number(merged.age))) &&
+    slots.age != null
+  ) {
+    merged.age = slots.age;
+  }
+  if (!String(merged.gender || "").trim() && slots.gender) {
+    merged.gender = slots.gender;
+  }
+  if (!String(merged.doctorObjectId || "").trim() && slots.doctorObjectId) {
+    merged.doctorObjectId = slots.doctorObjectId;
+  }
+  if (!String(merged.patientObjectId || "").trim() && slots.patientObjectId) {
+    const pid = String(slots.patientObjectId).trim();
+    if (isMongoObjectIdString(pid)) merged.patientObjectId = pid;
+  }
+  if (!String(merged.appointmentDateTimeISO || "").trim() && slots.appointmentDateTimeISO) {
+    merged.appointmentDateTimeISO = slots.appointmentDateTimeISO;
+  }
+  /** Second+ create_appointment in the same call updates this row instead of creating another. */
+  if (
+    !String(merged.existingAppointmentObjectId || "").trim() &&
+    slots.appointmentObjectId
+  ) {
+    merged.existingAppointmentObjectId = slots.appointmentObjectId;
+  }
+  return merged;
+}
+
+/**
+ * Capture likely visit-reason phrases from caller STT (Hindi/Gujarati/English).
+ * @param {CallBookingSlots} slots
+ * @param {string} text
+ */
+function maybeCaptureVisitReasonFromTranscript(slots, text) {
+  if (!slots) return;
+  const t = String(text || "").trim();
+  if (t.length < 6 || NON_REASON_HINT.test(t)) return;
+  if (!VISIT_REASON_HINT.test(t)) return;
+  if (!slots.reason) slots.reason = t;
+}
+
+module.exports = {
+  createCallBookingSlots,
+  updateSlotsFromToolArgs,
+  mergeToolArgsWithSlots,
+  maybeCaptureVisitReasonFromTranscript,
+  isMongoObjectIdString,
+};

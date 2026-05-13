@@ -37,7 +37,27 @@ function formatInstantAsISTIso(d) {
   return `${datePart}T${timePart}+05:30`;
 }
 
+/**
+ * Normalize LLM/tool datetime strings to IST wall-clock ISO before booking.
+ * @param {string} raw
+ * @returns {{ iso: string, hadZSuffix: boolean }}
+ */
+function normalizeAppointmentDateTimeISOForBooking(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { iso: "", hadZSuffix: false };
+
+  const hadZSuffix = /Z$/i.test(s);
+  if (/[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) {
+    return { iso: s, hadZSuffix };
+  }
+
+  const withoutZ = s.replace(/Z$/i, "");
+  const withTime = withoutZ.includes("T") ? withoutZ : `${withoutZ}T00:00:00`;
+  return { iso: `${withTime}+05:30`, hadZSuffix };
+}
+
 module.exports = {
   parseAppointmentDateTimeAsIST,
   formatInstantAsISTIso,
+  normalizeAppointmentDateTimeISOForBooking,
 };

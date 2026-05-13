@@ -327,7 +327,7 @@ async function handleAppointmentMessage(ctx, text, phoneDisplay, hospitalId) {
       };
     }
     return {
-      reply: `Your appointment has been *confirmed* for *${st.dateLabel}* at *${st.timeLabel}*.\n\nThank you — we look forward to seeing you. To change or cancel, please contact the hospital.`,
+      reply: `Your appointment has been *confirmed* for *${st.dateLabel}* at *${st.timeLabel}*.\n\nThank you — we look forward to seeing you. If you need to reschedule later, message us here on WhatsApp.`,
       endFlow: true,
     };
   }

@@ -9,8 +9,12 @@ const PatientModel = require("../models/patient.model");
 const {
   parseAppointmentDateTimeAsIST,
   formatInstantAsISTIso,
+  normalizeAppointmentDateTimeISOForBooking,
 } = require("../utils/appointmentDateTimeIST");
-const { formatCalendarDateIST } = require("../utils/queryDateRange");
+const {
+  formatCalendarDateIST,
+  istCalendarYear,
+} = require("../utils/queryDateRange");
 const { findHolidayCoveringYmdIST } = require("../utils/doctorHoliday");
 const {
   parseDoctorAvailabilityWindow,
@@ -37,6 +41,89 @@ function appointmentBilingualError(messageEn, messageHindi, messageGujarati) {
     message: messageEn,
     messageHindi,
     messageGujarati,
+  };
+}
+
+function buildBookingSuccessVoiceMessages(
+  appointmentId,
+  doctorName,
+  whenHi,
+  whenGu,
+  opts = {},
+) {
+  if (opts.updated) {
+    return {
+      messageHindi: `ठीक है—मैंने आपकी अपॉइंटमेंट नंबर ${appointmentId} अपडेट कर दी है। डॉ. ${doctorName}, ${whenHi}। थोड़ी देर में WhatsApp पर अपडेट की जानकारी मिल जाएगी। कृपया समय पर पहुँचिए। अगर बाद में फिर से समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
+      messageGujarati: `બરાબર—મેં તમારી મુલાકાત નંબર ${appointmentId} અપડેટ કરી દીધી છે. ડૉ. ${doctorName}, ${whenGu}. થોડી વારમાં WhatsApp પર નવી વિગત મળી જશે. સમયસર પહોંચી જજો. અગર સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+    };
+  }
+  return {
+    messageHindi: `मैंने आपकी अपॉइंटमेंट बुक कर ली है। अपॉइंटमेंट नंबर: ${appointmentId}। डॉ. ${doctorName}, ${whenHi}। थोड़ी देर में WhatsApp पर पुष्टि आ जाएगी। कृपया समय पर पहुँचिए। अगर बाद में अपॉइंटमेंट का समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
+    messageGujarati: `મેં તમારી મુલાકાત બુક કરી દીધી છે. રેફરન્સ નંબર ${appointmentId}. ડૉ. ${doctorName}, ${whenGu}. થોડી વારમાં WhatsApp પર વિગત મળી જશે. સમયસર પહોંચી જજો. અગર મુલાકાતનો સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+  };
+}
+
+function isDuplicateKeyError(err) {
+  return Boolean(
+    err &&
+      (err.code === 11000 ||
+        err.code === "11000" ||
+        String(err.message || "").includes("E11000")),
+  );
+}
+
+async function findAppointmentInSlotWindow(
+  hospitalObjectId,
+  patientObjectId,
+  doctorObjectId,
+  dt,
+  dtWindowMs,
+) {
+  return AppointmentModel.findOne({
+    hospital: hospitalObjectId,
+    patient: patientObjectId,
+    doctor: doctorObjectId,
+    appointmentDateTime: {
+      $gte: new Date(dt.getTime() - dtWindowMs),
+      $lte: new Date(dt.getTime() + dtWindowMs),
+    },
+  }).lean();
+}
+
+function buildCreateAppointmentSuccessResult({
+  appointmentDoc,
+  doctorName,
+  whenHi,
+  whenGu,
+  messageEn,
+  appointmentUpdated = false,
+}) {
+  const voice = buildBookingSuccessVoiceMessages(
+    appointmentDoc.appointmentId,
+    doctorName,
+    whenHi,
+    whenGu,
+    { updated: appointmentUpdated },
+  );
+  return {
+    ok: true,
+    appointmentUpdated: Boolean(appointmentUpdated),
+    appointment: {
+      _id: String(appointmentDoc._id),
+      appointmentId: appointmentDoc.appointmentId,
+      hospital: String(appointmentDoc.hospital || ""),
+      patient: String(appointmentDoc.patient),
+      doctor: String(appointmentDoc.doctor),
+      reason: appointmentDoc.reason,
+      status: appointmentDoc.status,
+      type: appointmentDoc.type,
+      appointmentDateTime: formatInstantAsISTIso(
+        appointmentDoc.appointmentDateTime,
+      ),
+    },
+    message: messageEn,
+    messageHindi: voice.messageHindi,
+    messageGujarati: voice.messageGujarati,
   };
 }
 
@@ -206,6 +293,13 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         !phoneNumber ||
         !reason
       ) {
+        if (!reason) {
+          return appointmentBilingualError(
+            "Visit reason is required for create_patient.",
+            "अपॉइंटमेंट के लिए पहले यह ज़रूरी है कि किस समस्या या बीमारी के लिए डॉक्टर से मिलना है। कृपया वही एक बार फिर बता दीजिए।",
+            "અપોઇન્ટમેન્ટ માટે પહેલા એ જણાવવું જરૂરી છે કે શી તકલીફ માટે ડૉક્ટર પાસે આવવું છે. એ ફરી એક વાર સમજાવશો?",
+          );
+        }
         return {
           ok: false,
           message: phoneNumber
@@ -312,33 +406,51 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const doctorObjectId = String(args.doctorObjectId || "").trim();
       const patientObjectId = String(args.patientObjectId || "").trim();
       const reason = String(args.reason || "").trim();
-      const appointmentDateTimeISO = String(
+      const rawAppointmentDateTimeISO = String(
         args.appointmentDateTimeISO || args.appointmentDateTime || "",
       ).trim();
       const type = String(args.type || "call").trim() || "call";
-      if (
-        !mongoose.isValidObjectId(doctorObjectId) ||
-        !mongoose.isValidObjectId(patientObjectId)
-      ) {
+      if (!mongoose.isValidObjectId(doctorObjectId)) {
         return appointmentBilingualError(
-          "Invalid doctor or patient id.",
-          "माफ़ कीजिए—डॉक्टर या मरीज़ की मान्य जानकारी नहीं मिली। कृपया सही जानकारी के साथ दोबारा प्रयास करें।",
-          "માફ કરજો—ડૉક્ટર કે દર્દીની માહિતી માન્ય નથી. કૃપા કરીને યોગ્ય માહિતી સાથે ફરી પ્રયાસ કરો.",
+          "Invalid doctorObjectId.",
+          "माफ़ कीजिए—डॉक्टर की जानकारी सही नहीं है। कृपया list_doctors से सही डॉक्टर का MongoDB _id इस्तेमाल करें।",
+          "માફ કરશો—ડૉક્ટરની વિગત સાચી નથી. list_doctors માંથી સાચા ડૉક્ટરનો MongoDB _id વાપરો.",
         );
       }
+      if (!mongoose.isValidObjectId(patientObjectId)) {
+        return appointmentBilingualError(
+          "Call create_patient or fetch_patient_* first; patientObjectId must be the MongoDB _id from that tool (24 hex). Never use age, patientId P-…, or a short number.",
+          "अपॉइंटमेंट से पहले मरीज़ का रिकॉर्ड बनाना ज़रूरी है—पहले create_patient चलाइए (या fetch), फिर उसी जवाब में मिले patient._id को patientObjectId में डालकर create_appointment चलाइए। उम्र या छोटा नंबर patientObjectId नहीं हो सकता।",
+          "એપોઇન્ટમેન્ટ પહેલા દર્દીની નોંધ જરૂરી છે—પહેલા create_patient (અથવા fetch) ચલાવો, પછી જે patient._id મળે તે જ patientObjectId તરીકે create_appointment માં વાપરો. ઉંમર કે નાનો નંબર patientObjectId નથી બનતો.",
+        );
+      }
+
+      const normalizedDateTime = normalizeAppointmentDateTimeISOForBooking(
+        rawAppointmentDateTimeISO,
+      );
+      if (normalizedDateTime.hadZSuffix) {
+        console.warn(
+          logTag,
+          "[create_appointment] normalized trailing Z as IST wall time:",
+          rawAppointmentDateTimeISO,
+          "→",
+          normalizedDateTime.iso,
+        );
+      }
+      const appointmentDateTimeISO = normalizedDateTime.iso;
       const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
       if (Number.isNaN(dt.getTime())) {
         return appointmentBilingualError(
           "Invalid appointmentDateTimeISO.",
-          "माफ़ कीजिए—तारीख या समय सही ढंग से सेट नहीं है। कृपया सही अपॉइंटमेंट की तारीख और समय दोबारा बताएं।",
-          "માફ કરજો—તારીખ કે સમય યોગ્ય રીતે નથી. કૃપા કરીને એપોઇન્ટમેન્ટની સાચી તારીખ અને સમય ફરી જણાવો.",
+          "माफ़ कीजिए—तारीख या समय साफ़ नहीं लग रहा। कृपया अपॉइंटमेंट की तारीख और समय एक बार फिर बता दीजिए।",
+          "માફ કરશો—તારીખ કે સમય સાફ નથી લાગતો. મુલાકાતની સાચી તારીખ અને વખત ફરી જણાવશો?",
         );
       }
       if (!reason) {
         return appointmentBilingualError(
           "Reason is required.",
-          "अपॉइंटमेंट बुक करने के लिए पहले यह ज़रूरी है कि किस बीमारी या समस्या के लिए मुलाकात चाहिए—कृपया वह पहले बताएं।",
-          "એપોઇન્ટમેન્ટ માટે પહેલા કઈ સમસ્યા માટે મુલાકાત જોઇએ તે જણાવવું ફરજિયાત છે.",
+          "अपॉइंटमेंट बुक करने से पहले यह ज़रूरी है कि किस बीमारी या समस्या के लिए मुलाकात चाहिए—कृपया वह पहले बता दीजिए।",
+          "અપોઇન્ટમેન્ટ પહેલાં એ જણાવવું જરૂરી છે કે શા માટે ડૉક્ટર પાસે આવવું છે—એ પહેલા સમજાવશો?",
         );
       }
 
@@ -347,6 +459,171 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const reasonDb = reason;
       const startedAt = Date.now();
       const dtWindowMs = 60 * 1000; // ±1 min tolerance for duplicate guard
+
+      const existingAppointmentObjectId = String(
+        args.existingAppointmentObjectId || "",
+      ).trim();
+
+      if (mongoose.isValidObjectId(existingAppointmentObjectId)) {
+        const prev = await AppointmentModel.findOne({
+          _id: existingAppointmentObjectId,
+          hospital: hospitalObjectId,
+        }).lean();
+        if (!prev) {
+          return appointmentBilingualError(
+            "Appointment not found for update.",
+            "माफ़ कीजिए—अपडेट के लिए अपॉइंटमेंट नहीं मिली। कृपया दोबारा बुक करने की कोशिश करें।",
+            "માફ કરશો—અપડેટ માટે મુલકાત મળી નથી. ફરી બુક કરવાનો પ્રયાસ કરશો?",
+          );
+        }
+        if (String(prev.patient) !== patientObjectId) {
+          return appointmentBilingualError(
+            "Patient does not match appointment being updated.",
+            "माफ़ कीजिए—मरीज़ की जानकारी इस अपॉइंटमेंट से मेल नहीं खाती। कृपया सही विवरण के साथ फिर कोशिश करें।",
+            "માફ કરશો—દર્દીની વિગત આ મુલાકાત સાથે મેળ ખાતી નથી. સાચી વિગતથી ફરી પ્રયાસ કરશો?",
+          );
+        }
+
+        const [doctor, patient] = await Promise.all([
+          DoctorModel.findOne({
+            _id: doctorObjectId,
+            hospital: hospitalObjectId,
+          }).lean(),
+          PatientModel.findOne({
+            _id: patientObjectId,
+            hospital: hospitalObjectId,
+          }).lean(),
+        ]);
+
+        console.log(
+          logTag,
+          "[create_appointment] update existing",
+          JSON.stringify({
+            appointmentMongoId: existingAppointmentObjectId,
+            raw: rawAppointmentDateTimeISO,
+            normalized: appointmentDateTimeISO,
+            istYmd: formatCalendarDateIST(dt),
+          }),
+        );
+
+        if (!doctor) {
+          return appointmentBilingualError(
+            "Doctor not found for this hospital.",
+            "माफ़ कीजिए—यह डॉक्टर इस अस्पताल से जुड़ा नहीं लगता। कृपया सूची में से सही डॉक्टर चुन लीजिए।",
+            "માફ કરશો—આ ડૉક્ટર આ હોસ્પિટલ સાથે જોડાયેલા નથી લાગતા. યાદીમાંથી બીજા ડૉક્ટર પસંદ કરશો?",
+          );
+        }
+        if (!patient) {
+          return appointmentBilingualError(
+            "Patient not found for this hospital.",
+            "माफ़ कीजिए—मरीज़ का रिकॉर्ड नहीं मिला। कृपया सही विवरण से फिर से खोजें या नया पंजीकरण कराएं।",
+            "માફ કરશો—દર્દીનો રેકોર્ડ મળ્યો નથી. સાચી વિગતથી ફરી શોધશો કે નવી નોંધણી કરાવશો?",
+          );
+        }
+
+        const appointmentYmdUpdate = formatCalendarDateIST(dt);
+        const holidayBlockUpdate = findHolidayCoveringYmdIST(
+          doctor.holidays || [],
+          appointmentYmdUpdate,
+        );
+        if (holidayBlockUpdate) {
+          const msgs = holidayBlockMessages(
+            doctor.fullName,
+            holidayBlockUpdate.endLabel,
+          );
+          return {
+            ok: false,
+            code: "DOCTOR_ON_LEAVE",
+            messageHindi: msgs.messageHindi,
+            messageGujarati: msgs.messageGujarati,
+            message: msgs.messageEnglish,
+          };
+        }
+
+        const winUpdate = parseDoctorAvailabilityWindow(doctor.availability);
+        const hmUpdate = getHourMinuteIST(dt);
+        if (
+          !isTimeWithinDoctorAvailability(hmUpdate.h, hmUpdate.min, {
+            ranges: winUpdate.ranges,
+          })
+        ) {
+          const msgs = outsideHoursMessages(doctor.fullName, winUpdate.label);
+          return {
+            ok: false,
+            code: "OUTSIDE_DOCTOR_HOURS",
+            messageHindi: msgs.messageHindi,
+            messageGujarati: msgs.messageGujarati,
+            message: msgs.messageEnglish,
+          };
+        }
+
+        const dupOther = await AppointmentModel.findOne({
+          hospital: hospitalObjectId,
+          patient: patientObjectId,
+          doctor: doctorObjectId,
+          appointmentDateTime: {
+            $gte: new Date(dt.getTime() - dtWindowMs),
+            $lte: new Date(dt.getTime() + dtWindowMs),
+          },
+          _id: { $ne: existingAppointmentObjectId },
+        }).lean();
+
+        if (dupOther) {
+          return appointmentBilingualError(
+            "Another appointment already uses this slot.",
+            "माफ़ कीजिए—यह समय पहले से किसी और बुकिंग में है। कृपया दूसरा समय बताइए।",
+            "માફ કરશો—આ સમય પહેલેથી બીજી બુકિંગમાં છે. બીજો સમય જણાવશો?",
+          );
+        }
+
+        const updatedDoc = await AppointmentModel.findOneAndUpdate(
+          {
+            _id: existingAppointmentObjectId,
+            hospital: hospitalObjectId,
+          },
+          {
+            $set: {
+              doctor: doctorObjectId,
+              reason: reasonDb,
+              appointmentDateTime: dt,
+              type,
+            },
+          },
+          { new: true, runValidators: true },
+        ).lean();
+
+        if (!updatedDoc) {
+          return appointmentBilingualError(
+            "Could not update appointment.",
+            "माफ़ कीजिए—अपॉइंटमेंट अपडेट नहीं हो पाई। कृपया फिर कोशिश करें।",
+            "માફ કરશો—મુલાકાત અપડેટ થઈ શકી નહીં. ફરી પ્રયાસ કરશો?",
+          );
+        }
+
+        const doctorNameU = (doctor && doctor.fullName) || "";
+        const { hindi: whenHiU, gujarati: whenGuU } =
+          formatAppointmentDateTimeForVoice(dt);
+
+        console.log(
+          logTag,
+          "[create_appointment] UPDATED OK",
+          JSON.stringify({
+            appointmentId: updatedDoc.appointmentId,
+            appointmentMongoId: String(updatedDoc._id),
+            durationMs: Date.now() - startedAt,
+          }),
+        );
+
+        return buildCreateAppointmentSuccessResult({
+          appointmentDoc: updatedDoc,
+          doctorName: doctorNameU,
+          whenHi: whenHiU,
+          whenGu: whenGuU,
+          messageEn:
+            "Appointment updated. Speak messageHindi or messageGujarati once as status.",
+          appointmentUpdated: true,
+        });
+      }
 
       // Fetch doctor, patient and check for a duplicate — all in parallel.
       const [doctor, patient, existingAppt] = await Promise.all([
@@ -368,18 +645,27 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           },
         }).lean(),
       ]);
+      console.log(
+        logTag,
+        "[create_appointment] datetime",
+        JSON.stringify({
+          raw: rawAppointmentDateTimeISO,
+          normalized: appointmentDateTimeISO,
+          istYmd: formatCalendarDateIST(dt),
+        }),
+      );
       if (!doctor) {
         return appointmentBilingualError(
           "Doctor not found for this hospital.",
-          "माफ़ कीजिए—यह डॉक्टर इस अस्पताल के साथ मेल नहीं खाता। कृपया सूची में से सही डॉक्टर चुनें।",
-          "માફ કરજો—આ ડૉક્ટર આ હોસ્પિટલ સાથે મેળ ખાતા નથી. યાદીમાંથી સાચા ડૉક્ટર પસંદ કરો.",
+          "माफ़ कीजिए—यह डॉक्टर इस अस्पताल से जुड़ा नहीं लगता। कृपया सूची में से सही डॉक्टर चुन लीजिए।",
+          "માફ કરશો—આ ડૉક્ટર આ હોસ્પિટલ સાથે જોડાયેલા નથી લાગતા. યાદીમાંથી બીજા ડૉક્ટર પસંદ કરશો?",
         );
       }
       if (!patient) {
         return appointmentBilingualError(
           "Patient not found for this hospital.",
-          "माफ़ कीजिए—मरीज़ का रिकॉर्ड नहीं मिला। कृपया सही पहचान वाला मरीज़ पहले ढूंढ लें या नया पंजीकरण करें।",
-          "માફ કરજો—દર્દીનો રેકોર્ડ મળ્યો નથી. પહેલા યોગ્ય દર્દી શોધો કે નવી નોંધણી કરો.",
+          "माफ़ कीजिए—मरीज़ का रिकॉर्ड नहीं मिला। कृपया सही विवरण से फिर से खोजें या नया पंजीकरण कराएं।",
+          "માફ કરશો—દર્દીનો રેકોર્ડ મળ્યો નથી. સાચી વિગતથી ફરી શોધશો કે નવી નોંધણી કરાવશો?",
         );
       }
 
@@ -429,50 +715,71 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
             durationMs: Date.now() - startedAt,
           }),
         );
-        return {
-          ok: true,
-          appointment: {
-            _id: String(existingAppt._id),
-            appointmentId: existingAppt.appointmentId,
-            hospital: String(existingAppt.hospital || ""),
-            patient: String(existingAppt.patient),
-            doctor: String(existingAppt.doctor),
-            reason: existingAppt.reason,
-            status: existingAppt.status,
-            type: existingAppt.type,
-            appointmentDateTime: formatInstantAsISTIso(
-              existingAppt.appointmentDateTime,
-            ),
-          },
-          message:
+        return buildCreateAppointmentSuccessResult({
+          appointmentDoc: existingAppt,
+          doctorName,
+          whenHi,
+          whenGu,
+          messageEn:
             "Already booked. Speak messageHindi or messageGujarati once as booking status.",
-          messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${existingAppt.appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
-          messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${existingAppt.appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
-        };
+        });
       }
 
-      const year = new Date().getFullYear();
+      const year = istCalendarYear();
       const prefix = `A-${year}-`;
-      const last = await AppointmentModel.findOne({
-        appointmentId: new RegExp(`^${prefix}`),
-      })
-        .sort({ appointmentId: -1 })
-        .select("appointmentId")
-        .lean();
-      const nextNum = last
-        ? parseInt(String(last.appointmentId).slice(prefix.length), 10) + 1
-        : 1;
-      const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
-      const appointment = await AppointmentModel.create({
-        hospital: hospitalObjectId,
-        appointmentId,
-        patient: patientObjectId,
-        doctor: doctorObjectId,
-        reason: reasonDb,
-        status: "Upcoming",
-        type,
-        appointmentDateTime: dt,
-      });
+      let appointment = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const last = await AppointmentModel.findOne({
+          appointmentId: new RegExp(`^${prefix}`),
+        })
+          .sort({ appointmentId: -1 })
+          .select("appointmentId")
+          .lean();
+        const nextNum = last
+          ? parseInt(String(last.appointmentId).slice(prefix.length), 10) + 1
+          : 1;
+        const appointmentId = `${prefix}${String(nextNum).padStart(6, "0")}`;
+        try {
+          appointment = await AppointmentModel.create({
+            hospital: hospitalObjectId,
+            appointmentId,
+            patient: patientObjectId,
+            doctor: doctorObjectId,
+            reason: reasonDb,
+            status: "Upcoming",
+            type,
+            appointmentDateTime: dt,
+          });
+          break;
+        } catch (createErr) {
+          if (!isDuplicateKeyError(createErr)) {
+            throw createErr;
+          }
+          const dup = await findAppointmentInSlotWindow(
+            hospitalObjectId,
+            patientObjectId,
+            doctorObjectId,
+            dt,
+            dtWindowMs,
+          );
+          if (dup) {
+            appointment = dup;
+            break;
+          }
+          if (attempt >= 2) {
+            throw createErr;
+          }
+        }
+      }
+
+      if (!appointment) {
+        return appointmentBilingualError(
+          "Could not create appointment.",
+          "माफ़ कीजिए—अपॉइंटमेंट बुक नहीं हो पाई। कृपया एक बार फिर कोशिश करें या दूसरा समय बता दीजिए।",
+          "માફ કરશો—અપોઇન્ટમેન્ટ બુક થઈ શકી નહીં. એક વાર ફરી પ્રયાસ કરશો કે બીજો સમય જણાવશો?",
+        );
+      }
+
       console.log(
         logTag,
         "[create_appointment] BOOKED OK",
@@ -482,31 +789,26 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           durationMs: Date.now() - startedAt,
         }),
       );
-      return {
-        ok: true,
-        appointment: {
-          _id: String(appointment._id),
-          appointmentId: appointment.appointmentId,
-          hospital: String(appointment.hospital || ""),
-          patient: String(appointment.patient),
-          doctor: String(appointment.doctor),
-          reason: appointment.reason,
-          status: appointment.status,
-          type: appointment.type,
-          appointmentDateTime: formatInstantAsISTIso(
-            appointment.appointmentDateTime,
-          ),
-        },
-        message:
+      return buildCreateAppointmentSuccessResult({
+        appointmentDoc: appointment,
+        doctorName,
+        whenHi,
+        whenGu,
+        messageEn:
           "Booked. Speak messageHindi or messageGujarati once as booking status (no second confirmation — they already confirmed).",
-        messageHindi: `बहुत अच्छा—आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई। अपॉइंटमेंट नंबर: ${appointmentId}। Dr. ${doctorName} — ${whenHi}। कृपया अपने समय पर पहुंचें।`,
-        messageGujarati: `ખૂબ સારું—તમારી એપોઇન્ટમેન્ટ સફળતાપૂર્વક બુક થઈ. એપોઇન્ટમેન્ટ નંબર: ${appointmentId}. Dr. ${doctorName} — ${whenGu}. કૃપા કરીને સમય પર પહોંચજો.`,
-      };
+      });
     }
 
     return { ok: false, message: `Unknown tool: ${name}` };
   } catch (err) {
     console.error(logTag, "Tool execution error:", err.message);
+    if (name === "create_appointment") {
+      return appointmentBilingualError(
+        err.message || "Tool error",
+        "माफ़ कीजिए—अपॉइंटमेंट बुक नहीं हो पाई। कृपया एक बार फिर कोशिश करें या दूसरा समय बता दीजिए।",
+        "માફ કરશો—અપોઇન્ટમેન્ટ બુક થઈ શકી નહીં. એક વાર ફરી પ્રયાસ કરશો કે બીજો સમય જણાવશો?",
+      );
+    }
     return { ok: false, message: err.message || "Tool error" };
   }
 }
