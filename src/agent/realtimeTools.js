@@ -78,7 +78,7 @@ function getRealtimeTools() {
       type: "function",
       name: "list_doctors",
       description:
-        "List ALL doctors for the current hospital. Returns every doctor with _id, fullName, designation (e.g. Cardiologist, Dermatologist), availability, status. You MUST select the doctor whose medical specialty (designation) best matches the caller's visit reason or symptoms (e.g. heart issues -> cardiology, skin -> dermatology) — not an arbitrary name. Use that doctor's _id as doctorObjectId. Use their availability (hours/days) so the appointment time fits before final confirmation; adjust with the caller if needed.",
+        "List ALL doctors for the current hospital. Returns each doctor with _id, fullName, designation, availability (this field is their timetable / usual working hours as text — not live free-busy data), status. Pick designation from visit reason. Use doctor _id as doctorObjectId. When choosing time, align clock time with that timetable text only; there is no on-call slot inventory.",
       parameters: {
         type: "object",
         properties: {},
@@ -89,7 +89,7 @@ function getRealtimeTools() {
       type: "function",
       name: "search_doctors",
       description:
-        "Search doctors by name or designation within the current hospital (optional filter). Returns matching doctors with _id, fullName, designation, availability, status. To get the full list first, use list_doctors instead. Use the selected doctor's _id as doctorObjectId when calling create_appointment. Respect availability when proposing appointment time (see voice instructions section 6b).",
+        "Search doctors by name or designation. Returns matching rows with timetable text in availability (working hours label, not real-time slot gaps). Use selected _id for create_appointment. Match proposed clock time to that timetable only (voice section 6b). Prefer list_doctors for the full roster.",
       parameters: {
         type: "object",
         properties: {

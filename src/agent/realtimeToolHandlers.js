@@ -402,6 +402,8 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         };
       }
 
+      // Timetable-only: parsed hours from doctor.availability vs IST clock time.
+      // No collision check vs other appointments (WhatsApp/other flows may enforce that separately).
       const win = parseDoctorAvailabilityWindow(doctor.availability);
       const { h, min } = getHourMinuteIST(dt);
       if (!isTimeWithinDoctorAvailability(h, min, { ranges: win.ranges })) {
