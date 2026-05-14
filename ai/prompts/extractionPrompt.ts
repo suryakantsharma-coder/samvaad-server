@@ -57,6 +57,7 @@ Your job:
     - If you cannot confidently pick, set doctorObjectId = "" and doctorName = "".
   - Extract preferred date and time as free text: preferredDateText and preferredTimeText.
   - If you can confidently parse a specific appointment datetime from the conversation, convert it to an ISO string in **India (IST)** with offset +05:30 (e.g. 2026-02-12T17:30:00+05:30) and set appointmentDateTimeISO; otherwise set it to null.
+  - The clinic does **not** accept appointments on **Sundays** (IST calendar). If the final agreed date is a Sunday in IST, set action to **no_appointment** and explain in notes (e.g. caller must pick a non-Sunday date).
 
 Actions:
 - action = "create_appointment_for_existing_patient" when:

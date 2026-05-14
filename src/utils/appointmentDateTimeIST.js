@@ -37,7 +37,26 @@ function formatInstantAsISTIso(d) {
   return `${datePart}T${timePart}+05:30`;
 }
 
+/**
+ * Weekday name in English for the **India calendar day** of this instant (Asia/Kolkata).
+ * @param {Date} d
+ * @returns {string|null} e.g. "Sunday", "Monday"
+ */
+function getISTWeekdayLong(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    timeZone: "Asia/Kolkata",
+  }).format(d);
+}
+
+function isSundayIST(d) {
+  return getISTWeekdayLong(d) === "Sunday";
+}
+
 module.exports = {
   parseAppointmentDateTimeAsIST,
   formatInstantAsISTIso,
+  getISTWeekdayLong,
+  isSundayIST,
 };

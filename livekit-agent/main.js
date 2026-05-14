@@ -15,6 +15,7 @@ const {
   extractSipCallerPhoneFromRoom,
 } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
+const { runPostCallPipeline } = require("./postCallPipeline");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -345,7 +346,9 @@ const agentDef = defineAgent({
       const { phone: callerPhone, source: callerPhoneSource } =
         await resolveCallerPhone(ctx);
 
-      const instructions = await getHospitalInstructions(hospital, callerPhone);
+      const instructions = await getHospitalInstructions(hospital, callerPhone, {
+        deferBookingToPostCall: true,
+      });
 
       await logCallConnection(ctx, "hospital_and_caller_resolved", {
         roomName: roomName || "(unknown)",
@@ -421,6 +424,7 @@ const agentDef = defineAgent({
         hospitalObjectId: hospital._id,
         callerPhone,
         routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
+        includeBookingTools: false,
       });
 
       const inputOpts =
@@ -436,6 +440,23 @@ const agentDef = defineAgent({
         agent: hospitalAgent,
         room: ctx.room,
         inputOptions: inputOpts,
+      });
+
+      ctx.addShutdownCallback(async () => {
+        try {
+          await ensureMongoConnected();
+          await runPostCallPipeline({
+            session,
+            hospital,
+            callerPhone,
+            roomName,
+          });
+        } catch (err) {
+          console.error(
+            "[LiveKit Agent] Post-call pipeline error:",
+            err && err.message ? err.message : err,
+          );
+        }
       });
 
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);

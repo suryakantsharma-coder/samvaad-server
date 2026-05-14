@@ -37,12 +37,40 @@ CALL FLOW:
 6) At **final** confirmation only, say it clearly: patient name, reason, Dr., date, time, phone if relevant — so the log is correct. Use Hindi/Gujarati, not a survey list.
 `;
 
-async function getHospitalInstructions(hospital, callerPhone = null) {
+/** Appended when LiveKit defers DB booking until after the call (transcript extraction). */
+const POST_CALL_BOOKING_INSTRUCTIONS_APPEND = `
+
+────────────────────────
+POST-CALL BOOKING MODE (SYSTEM OVERRIDE)
+────────────────────────
+
+* Do **not** call the tools **create_patient** or **create_appointment** — those tools are not available on this line.
+* You **may** use **list_doctors**, **search_doctors**, **fetch_patient_by_phone**, **fetch_patient_by_patientId**, and **check_booking_calendar_date** (use this when you have a YYYY-MM-DD date — Sundays must be rejected live; see Sunday policy in section 5).
+* Follow the normal flow through **final read-back** and a clear **yes** from the caller (sections 1–8).
+* After they say **yes**: thank them in their language and say their appointment request will be **saved by the hospital system automatically when the call ends**. Do **not** say you are booking in the database now, do **not** ask them to hold for booking, and do **not** read an appointment number (one will be assigned after the call).
+* Ignore any earlier instructions that say to run **create_appointment** or **create_patient** during the call.
+`;
+
+function appendPostCallBookingInstructions(text, deferBookingToPostCall) {
+  if (!deferBookingToPostCall || !text) return text;
+  return text + POST_CALL_BOOKING_INSTRUCTIONS_APPEND;
+}
+
+async function getHospitalInstructions(
+  hospital,
+  callerPhone = null,
+  options = {},
+) {
+  const deferBookingToPostCall = Boolean(options.deferBookingToPostCall);
+
   if (!hospital) {
     console.warn(
       "[Agent] getHospitalInstructions: no hospital provided, using HOSPITAL_PROMPT",
     );
-    return HOSPITAL_PROMPT;
+    return appendPostCallBookingInstructions(
+      HOSPITAL_PROMPT,
+      deferBookingToPostCall,
+    );
   }
 
   const hospitalName = hospital.name || "unknown";
@@ -331,6 +359,8 @@ If name unknown yet, a neutral ask is still ok.
 
 **You MUST accept dates the caller says in Hindi or Gujarati** and convert them to \`appointmentDateTimeISO\` (see section 9). Do **not** insist on English-only dates.
 
+**Sunday policy (India / IST — रविवાર / રવિવાર):** The clinic does **not** book appointments on **Sundays**; doctors are **not** available. As soon as you have the visit **calendar date** as **YYYY-MM-DD** (from their words like "15 May" / "पंद्रह मई" and the year rules below), you **must** call the tool **check_booking_calendar_date** with that \`dateYmd\` **before** moving to section 6 (time) or final confirmation. If the tool returns **CLINIC_CLOSED_SUNDAY**, apologize warmly in the caller's language—use **messageHindi** or **messageGujarati** from the tool as your wording—and ask them to **please choose another date**. Do **not** treat that Sunday as acceptable.
+
 **Hindi — months (संख्या = month index for calendar math):** जनवरी=1, फरवरी=2, मार्च=3, अप्रैल=4, अप्रैल/एप्रिल STT variants, मई=5, जून=6, जुलाई=7, अगस्त=8, सितंबर/सितम्बर=9, अक्टूबर=10, नवंबर/नवम्बर=11, दिसंबर/दिसम्बर=12. **Day + month:** "पंद्रह अप्रैल" / "15 अप्रैल" / "१५ अप्रैल" → day 15, month April. **Year:** if they say "दो हज़ार छब्बीस" / "2026" / "२०२६", use it; if **no year**, assume **current IST year** unless that would be in the past (then use next year).
 
 **Hindi — common relative days:** आज=today; कल=tomorrow (future booking); परसों=day after tomorrow; अगला सोमवार/मंगल…=next Monday/Tuesday… (compute from **today’s weekday in IST**); इसी हफ्ते/अगले हफ्ते=this/next week (disambiguate if needed).
@@ -516,7 +546,10 @@ STRICT RULES
     console.log(
       `[Agent] getHospitalInstructions: built dynamic prompt for ${hospitalName} (${doctorListText ? "with doctors" : "no doctors list"})`,
     );
-    return dynamicPrompt;
+    return appendPostCallBookingInstructions(
+      dynamicPrompt,
+      deferBookingToPostCall,
+    );
   } catch (err) {
     console.error(
       `[Agent] getHospitalInstructions FAILED for ${hospitalName}:`,
@@ -525,7 +558,10 @@ STRICT RULES
     console.warn(
       "[Agent] getHospitalInstructions: using HOSPITAL_PROMPT fallback",
     );
-    return HOSPITAL_PROMPT;
+    return appendPostCallBookingInstructions(
+      HOSPITAL_PROMPT,
+      deferBookingToPostCall,
+    );
   }
 }
 

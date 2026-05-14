@@ -11,8 +11,15 @@ const { normalizeShortYesNoInPlace } = require("./userTranscriptNormalize");
  * explicit generateReply that proactively speaks the booking status.  Without this,
  * the Sarvam-STT route's post-tool reply produces messageCount:0 (silent).
  */
-function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
-  const defs = getRealtimeTools();
+function buildHospitalTools(
+  hospitalObjectId,
+  callerPhone,
+  agentRef,
+  toolOpts = {},
+) {
+  const defs = getRealtimeTools({
+    includeBookingTools: toolOpts.includeBookingTools !== false,
+  });
   const tools = {};
   for (const def of defs) {
     const name = def.name;
@@ -70,12 +77,16 @@ class HospitalVoiceAgent extends voice.Agent {
     callerPhone,
     /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
     routeUserTextThroughRealtime = false,
+    /** When false, create_patient / create_appointment tools are omitted (post-call pipeline books). */
+    includeBookingTools = true,
   }) {
     // agentRef is filled right after super() so tools can reach this.session.
     const agentRef = { current: null };
     super({
       instructions,
-      tools: buildHospitalTools(hospitalObjectId, callerPhone, agentRef),
+      tools: buildHospitalTools(hospitalObjectId, callerPhone, agentRef, {
+        includeBookingTools,
+      }),
     });
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;

@@ -15,11 +15,21 @@ const {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   parseAppointmentDateTimeAsIST,
+  isSundayIST,
 } = require("../../src/utils/appointmentDateTimeIST");
 const {
   normalizePatientFieldsForStorage,
   normalizeReasonForStorage,
 } = require("../../src/utils/storageEnglishNormalize");
+
+function appointmentIsoIsSundayIST(
+  appointmentDateTimeISO: string | null | undefined,
+): boolean {
+  if (!appointmentDateTimeISO) return false;
+  const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
+  if (Number.isNaN(dt.getTime())) return false;
+  return isSundayIST(dt);
+}
 
 interface CreateAppointmentArgs {
   hospitalId: string;
@@ -155,6 +165,14 @@ export async function processAppointmentExtraction(
       return;
     }
 
+    if (appointmentIsoIsSundayIST(result.appointmentDateTimeISO)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[processAppointmentExtraction] Sunday (IST) not bookable; skipping.",
+      );
+      return;
+    }
+
     const apptDoc = await createAppointment({
       hospitalId,
       patientObjectId: result.existingPatientObjectId,
@@ -200,6 +218,14 @@ export async function processAppointmentExtraction(
       result.newPatientGender === "Other"
         ? result.newPatientGender
         : "Other";
+
+    if (appointmentIsoIsSundayIST(result.appointmentDateTimeISO)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[processAppointmentExtraction] Sunday (IST) not bookable; skipping.",
+      );
+      return;
+    }
 
     const patient = await createPatient({
       hospitalId,

@@ -9,6 +9,7 @@ const PatientModel = require("../models/patient.model");
 const {
   parseAppointmentDateTimeAsIST,
   formatInstantAsISTIso,
+  isSundayIST,
 } = require("../utils/appointmentDateTimeIST");
 const { formatCalendarDateIST } = require("../utils/queryDateRange");
 const { findHolidayCoveringYmdIST } = require("../utils/doctorHoliday");
@@ -308,6 +309,51 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       return { ok: true, doctors: doctorsPayload };
     }
 
+    if (name === "check_booking_calendar_date") {
+      const raw = String(args.dateYmd || "").trim();
+      const dateYmd = raw.length >= 10 ? raw.slice(0, 10) : raw;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) {
+        return {
+          ok: false,
+          code: "INVALID_DATE_YMD",
+          message:
+            "Pass dateYmd as YYYY-MM-DD (India calendar), e.g. 2026-05-15.",
+        };
+      }
+      const probe = parseAppointmentDateTimeAsIST(`${dateYmd}T12:00:00`);
+      if (Number.isNaN(probe.getTime())) {
+        return {
+          ok: false,
+          code: "INVALID_DATE_YMD",
+          message: "That calendar date is not valid.",
+        };
+      }
+      const dayOfWeek = new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        timeZone: IST,
+      }).format(probe);
+      if (isSundayIST(probe)) {
+        return {
+          ok: false,
+          code: "CLINIC_CLOSED_SUNDAY",
+          dayOfWeek,
+          dateYmd,
+          messageHindi:
+            "माफ़ कीजिए, रविवार को क्लिनिक बंद रहती है और डॉक्टर उपलब्ध नहीं होते। कृपया कोई और तारीख चुनिए।",
+          messageGujarati:
+            "માફ કરશો, રવિવારે ક્લિનિક બંધ રહે છે અને ડૉક્ટર ઉપલબ્ધ નથી. કૃપા કરીને બીજી તારીખ પસંદ કરો.",
+          message:
+            "Sunday — clinic closed; doctors unavailable. Ask the caller to choose another date.",
+        };
+      }
+      return {
+        ok: true,
+        dateYmd,
+        dayOfWeek,
+        message: `${dateYmd} is ${dayOfWeek} (ok to proceed).`,
+      };
+    }
+
     if (name === "create_appointment") {
       const doctorObjectId = String(args.doctorObjectId || "").trim();
       const patientObjectId = String(args.patientObjectId || "").trim();
@@ -333,6 +379,18 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           "माफ़ कीजिए—तारीख या समय सही ढंग से सेट नहीं है। कृपया सही अपॉइंटमेंट की तारीख और समय दोबारा बताएं।",
           "માફ કરજો—તારીખ કે સમય યોગ્ય રીતે નથી. કૃપા કરીને એપોઇન્ટમેન્ટની સાચી તારીખ અને સમય ફરી જણાવો.",
         );
+      }
+      if (isSundayIST(dt)) {
+        return {
+          ok: false,
+          code: "CLINIC_CLOSED_SUNDAY",
+          messageHindi:
+            "माफ़ कीजिए, रविवार को क्लिनिक बंद रहती है और डॉक्टर उपलब्ध नहीं होते। कृपया कोई और तारीख चुनिए।",
+          messageGujarati:
+            "માફ કરશો, રવિવારે ક્લિનિક બંધ રહે છે અને ડૉક્ટર ઉપલબ્ધ નથી. કૃપા કરીને બીજી તારીખ પસંદ કરો.",
+          message:
+            "Cannot book on Sunday — doctors are not available. Ask for another date.",
+        };
       }
       if (!reason) {
         return appointmentBilingualError(
