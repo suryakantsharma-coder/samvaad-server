@@ -374,7 +374,14 @@ const agentDef = defineAgent({
             model: OPENAI_REALTIME_MODEL,
             voice: "sage",
             toolChoice: "auto",
-            turnDetection: null,
+            turnDetection: {
+              type: "server_vad",
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 500,
+              create_response: true,
+              interrupt_response: true,
+            },
             inputAudioTranscription: null,
           }
         : {
