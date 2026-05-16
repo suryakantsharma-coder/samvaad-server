@@ -10,8 +10,9 @@ const { getNoInputRepromptInstructions } = require("./preferredLanguage");
  * @param {{
  *   ms?: number,
  *   logTag?: string,
- *   getPreferredLanguage?: () => ('hi'|'gu'|null|undefined),
+ *   getPreferredLanguage?: () => ('hi'|'gu'|'en'|null|undefined),
  *   getNoInputTopic?: () => (string|null|undefined),
+ *   onReprompt?: (info: { lang: 'hi'|'gu'|'en', missingTopic: string|null }) => void,
  * }} [opts]
  * @returns {() => void} detach listeners and clear timer
  */
@@ -20,6 +21,7 @@ function attachNoInputReprompt(session, opts = {}) {
   const logTag = opts.logTag ?? "[NoInputReprompt]";
   const getPreferredLanguage = opts.getPreferredLanguage;
   const getNoInputTopic = opts.getNoInputTopic;
+  const onReprompt = opts.onReprompt;
   if (!ms || ms <= 0 || !session) {
     return () => {};
   }
@@ -52,6 +54,21 @@ function attachNoInputReprompt(session, opts = {}) {
             : null;
         const missingTopic =
           typeof getNoInputTopic === "function" ? getNoInputTopic() : null;
+        if (typeof onReprompt === "function") {
+          try {
+            onReprompt({
+              lang:
+                lang === "gu" ? "gu" : lang === "en" ? "en" : "hi",
+              missingTopic: missingTopic || null,
+            });
+          } catch (cbErr) {
+            console.warn(
+              logTag,
+              "onReprompt callback:",
+              cbErr && cbErr.message ? cbErr.message : cbErr,
+            );
+          }
+        }
         session.generateReply({
           toolChoice: "none",
           instructions: getNoInputRepromptInstructions(lang, {
@@ -65,7 +82,14 @@ function attachNoInputReprompt(session, opts = {}) {
   };
 
   const onAgentStateChanged = (ev) => {
-    if (ev && ev.newState === "listening" && session.userState === "listening") {
+    if (!ev) return;
+    /**
+     * Any state other than `listening` means the agent has work in flight —
+     * `thinking` or `speaking`. Clear the timer so the reprompt does NOT race
+     * an already-pending response (which would otherwise inject a sorry-line
+     * mid-turn, e.g. "माफ़ कीजिए," appearing inside a Gujarati answer).
+     */
+    if (ev.newState === "listening" && session.userState === "listening") {
       armIfBothListening();
     } else {
       clearTimer();
@@ -84,7 +108,18 @@ function attachNoInputReprompt(session, opts = {}) {
   };
 
   const onUserInputTranscribed = (ev) => {
-    if (ev && ev.isFinal) clearTimer();
+    /** Cancel the timer on any STT activity, not only final transcripts —
+     * we don't want to reprompt a caller who has started talking. */
+    if (ev) clearTimer();
+  };
+
+  /**
+   * A `SpeechCreated` event fires the moment a reply is queued, *before*
+   * `agentState` flips to `thinking`/`speaking`. Without this clearTimer the
+   * reprompt fires concurrently with the pending response.
+   */
+  const onSpeechCreated = () => {
+    clearTimer();
   };
 
   const onClose = () => {
@@ -94,6 +129,7 @@ function attachNoInputReprompt(session, opts = {}) {
   session.on(AgentSessionEventTypes.AgentStateChanged, onAgentStateChanged);
   session.on(AgentSessionEventTypes.UserStateChanged, onUserStateChanged);
   session.on(AgentSessionEventTypes.UserInputTranscribed, onUserInputTranscribed);
+  session.on(AgentSessionEventTypes.SpeechCreated, onSpeechCreated);
   session.once(AgentSessionEventTypes.Close, onClose);
 
   return () => {
@@ -104,6 +140,7 @@ function attachNoInputReprompt(session, opts = {}) {
       AgentSessionEventTypes.UserInputTranscribed,
       onUserInputTranscribed,
     );
+    session.off(AgentSessionEventTypes.SpeechCreated, onSpeechCreated);
     session.off(AgentSessionEventTypes.Close, onClose);
   };
 }

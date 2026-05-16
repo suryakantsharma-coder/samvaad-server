@@ -9,6 +9,8 @@ const { ServerOptions, cli, defineAgent, voice } = require("@livekit/agents");
 const openai = require("@livekit/agents-plugin-openai");
 const {
   BackgroundVoiceCancellation,
+  NoiseCancellation,
+  TelephonyBackgroundVoiceCancellation,
 } = require("@livekit/noise-cancellation-node");
 const { HospitalVoiceAgent } = require("./agent");
 const { ensureMongoConnected } = require("./dbConnect");
@@ -19,6 +21,7 @@ const {
 } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
+const { attachCallLogger } = require("./callLogger");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -52,6 +55,116 @@ function getSarvamTurnHandling() {
       minDelay: parseEnvMs("AGENT_ENDPOINTING_MIN_MS", 220),
     },
   };
+}
+
+/** Caller-side mic noise suppression before STT (LiveKit AudioFilter). */
+function envInputNoiseCancellationMode() {
+  return String(
+    process.env.LIVEKIT_INPUT_NOISE_CANCELLATION || "telephony",
+  )
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * @returns {ReturnType<typeof TelephonyBackgroundVoiceCancellation> | undefined}
+ */
+function getInputNoiseCancellationOptions() {
+  const mode = envInputNoiseCancellationMode();
+  if (
+    mode === "off" ||
+    mode === "0" ||
+    mode === "false" ||
+    mode === "none"
+  ) {
+    return undefined;
+  }
+  if (mode === "bvc" || mode === "background" || mode === "voice") {
+    return BackgroundVoiceCancellation();
+  }
+  if (mode === "nc" || mode === "standard" || mode === "noise") {
+    return NoiseCancellation();
+  }
+  /** telephony | sip | phone — model tuned for narrowband / phone audio */
+  if (
+    mode === "telephony" ||
+    mode === "sip" ||
+    mode === "phone" ||
+    mode === "bvct"
+  ) {
+    return TelephonyBackgroundVoiceCancellation();
+  }
+  return TelephonyBackgroundVoiceCancellation();
+}
+
+function inputNcForceWithLowLatency() {
+  const v = String(process.env.LIVEKIT_INPUT_NC_WITH_LOW_LATENCY || "").trim();
+  return v === "1" || v.toLowerCase() === "true";
+}
+
+function shouldSkipInputNcForLatency(useSamvaadLlmTts, lowLatency) {
+  return Boolean(
+    useSamvaadLlmTts && lowLatency && !inputNcForceWithLowLatency(),
+  );
+}
+
+/**
+ * For logs / observability (one line per job).
+ * @param {{ useSamvaadLlmTts: boolean, lowLatency: boolean }} p
+ */
+function getInputNoiseCancellationStatus(p) {
+  const mode = envInputNoiseCancellationMode();
+  if (
+    mode === "off" ||
+    mode === "0" ||
+    mode === "false" ||
+    mode === "none"
+  ) {
+    return {
+      active: false,
+      summary: "off (LIVEKIT_INPUT_NOISE_CANCELLATION)",
+    };
+  }
+  const skip = shouldSkipInputNcForLatency(
+    p.useSamvaadLlmTts,
+    p.lowLatency,
+  );
+  if (skip) {
+    return {
+      active: false,
+      summary:
+        "skipped: Samvaad low-latency path (set LOW_LATENCY_AUDIO=0 or LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1)",
+    };
+  }
+  const kind =
+    mode === "bvc" || mode === "background" || mode === "voice"
+      ? "BackgroundVoiceCancellation"
+      : mode === "nc" || mode === "standard" || mode === "noise"
+        ? "NoiseCancellation"
+        : "TelephonyBackgroundVoiceCancellation";
+  return { active: true, summary: `${kind} mode=${mode}` };
+}
+
+/**
+ * @param {{ useSamvaadLlmTts: boolean, lowLatency: boolean }} p
+ */
+function buildAgentSessionInputOptions(p) {
+  const { useSamvaadLlmTts, lowLatency } = p;
+  const ncOpts = getInputNoiseCancellationOptions();
+  const skipNcForSpeed = shouldSkipInputNcForLatency(
+    useSamvaadLlmTts,
+    lowLatency,
+  );
+  const effectiveNc = skipNcForSpeed ? undefined : ncOpts;
+
+  if (useSamvaadLlmTts && lowLatency) {
+    return {
+      textEnabled: true,
+      audioEnabled: true,
+      noiseCancellation: effectiveNc,
+    };
+  }
+  return { noiseCancellation: effectiveNc };
 }
 
 function buildOpenAiChatLlm() {
@@ -293,6 +406,7 @@ const agentDef = defineAgent({
     let samvaadTts = null;
     let hospitalAgent = null;
     let sarvamStt = null;
+    let callLogger = null;
 
     try {
       await logCallConnection(ctx, "job_received", {
@@ -415,7 +529,7 @@ const agentDef = defineAgent({
         console.log(
           "[LiveKit Agent] Voice pipeline: Sarvam STT →",
           OPENAI_LLM_MODEL,
-          "→ Sarvam TTS (WebSocket, linear16) | aecWarmup=0, optional NC off",
+          "→ Sarvam TTS (WebSocket, linear16) | aecWarmup=0 | caller NC: LIVEKIT_INPUT_NOISE_CANCELLATION (default telephony), LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1 to keep NC on low-latency path",
         );
       }
 
@@ -446,21 +560,39 @@ const agentDef = defineAgent({
         hospitalObjectId: hospital._id,
         callerPhone,
         routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
+        getCallLogger: () => callLogger,
       });
 
-      const inputOpts =
-        useSamvaadLlmTts && lowLatency
-          ? {
-              textEnabled: true,
-              audioEnabled: true,
-              noiseCancellation: void 0,
-            }
-          : { noiseCancellation: BackgroundVoiceCancellation() };
+      const inputOpts = buildAgentSessionInputOptions({
+        useSamvaadLlmTts: Boolean(useSamvaadLlmTts),
+        lowLatency,
+      });
+      console.log(
+        "[LiveKit Agent] Caller-side input noise cancellation:",
+        getInputNoiseCancellationStatus({
+          useSamvaadLlmTts: Boolean(useSamvaadLlmTts),
+          lowLatency,
+        }).summary,
+      );
 
       await session.start({
         agent: hospitalAgent,
         room: ctx.room,
         inputOptions: inputOpts,
+      });
+
+      callLogger = attachCallLogger({
+        session,
+        hospital,
+        callerPhone,
+        roomName,
+        voicePipeline: (() => {
+          if (!useSarvamStt) return "openai_realtime";
+          if (useSamvaadLlmTts) return "sarvam_stt → openai_chat → sarvam_tts";
+          return require("./sarvamStt").useWebSocketStreaming()
+            ? "sarvam_ws_stt → openai_realtime"
+            : "sarvam_rest_stt → openai_realtime";
+        })(),
       });
 
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
@@ -476,6 +608,15 @@ const agentDef = defineAgent({
                   hospitalAgent.preferredLanguage,
                 )
               : null,
+          onReprompt: (info) => {
+            if (callLogger) {
+              callLogger.log("reprompt", {
+                reason: "no_input",
+                lang: info && info.lang ? info.lang : null,
+                missingTopic: info && info.missingTopic ? info.missingTopic : null,
+              });
+            }
+          },
         });
       }
 
@@ -484,7 +625,52 @@ const agentDef = defineAgent({
           if (!ev || !ev.isFinal) return;
           hospitalAgent.updateLanguageFromTranscript(ev.transcript || "");
           samvaadTts._targetLanguageCode =
-            hospitalAgent.preferredLanguage === "gu" ? "gu-IN" : "hi-IN";
+            hospitalAgent.preferredLanguage === "en"
+              ? "en-IN"
+              : hospitalAgent.preferredLanguage === "gu"
+                ? "gu-IN"
+                : "hi-IN";
+        });
+      } else if (useSarvamStt) {
+        /**
+         * In the Sarvam-STT → OpenAI Realtime pipeline, `onUserTurnCompleted`
+         * does NOT fire because user text is injected directly into the
+         * Realtime model, not through LiveKit's chat-context path. Without
+         * this hook, `hospitalAgent.preferredLanguage` stays at "hi" forever,
+         * which causes no-input reprompts and post-booking status lines to
+         * speak Hindi in the middle of an English call. Mirror the language
+         * inference + STT-side slot capture here so the side-channels work.
+         */
+        session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+          if (!ev || !ev.isFinal) return;
+          const text = String(ev.transcript || "");
+          if (!text.trim()) return;
+          try {
+            hospitalAgent.updateLanguageFromTranscript(text);
+          } catch (e) {
+            console.warn(
+              "[LiveKit Agent] STT language sync failed:",
+              e && e.message ? e.message : e,
+            );
+          }
+          try {
+            const {
+              applyTranscriptToBookingSlots,
+            } = require("./bookingSlotCapture");
+            const {
+              maybeCaptureVisitReasonFromTranscript,
+            } = require("./callBookingSlots");
+            applyTranscriptToBookingSlots(hospitalAgent.callBookingSlots, text);
+            maybeCaptureVisitReasonFromTranscript(
+              hospitalAgent.callBookingSlots,
+              text,
+            );
+          } catch (e) {
+            console.warn(
+              "[LiveKit Agent] STT slot capture failed:",
+              e && e.message ? e.message : e,
+            );
+          }
         });
       }
 
@@ -528,24 +714,45 @@ const agentDef = defineAgent({
         inputProcessing: (() => {
           if (!useSarvamStt) return "default";
           if (useSamvaadLlmTts) {
-            return "no Realtime; aecWarmup=0; LOW_LATENCY_AUDIO=0 restores NC";
+            return (
+              "no Realtime; aecWarmup=0; NC: LOW_LATENCY_AUDIO=0, LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1, or LIVEKIT_INPUT_NOISE_CANCELLATION"
+            );
           }
           return require("./sarvamStt").useWebSocketStreaming()
             ? "Sarvam WebSocket (PCM) STT; Realtime commitAudio → clearAudio"
             : "Sarvam batch REST per utterance; Realtime commitAudio → clearAudio";
         })(),
-        noiseCancellation: useSamvaadLlmTts
-          ? lowLatency
-            ? "off (LOW_LATENCY default)"
-            : "BackgroundVoiceCancellation"
-          : "BackgroundVoiceCancellation",
+        noiseCancellation: getInputNoiseCancellationStatus({
+          useSamvaadLlmTts: Boolean(useSamvaadLlmTts),
+          lowLatency,
+        }).summary,
       });
 
-      const handle = session.generateReply({
-        instructions:
-          `You are Neha (female receptionist). Greeting in Hindi only: "नमस्ते, ${hospital.name} में आपका स्वागत है। मैं नेहा बोल रही हूँ—मैं आपकी कैसे मदद कर सकती हूँ?" Then in Hindi ask: "कृपया बताइए, आगे की बात हिंदी में रखें या गुजराती में?" After they choose, use only that language for every line (including if they mix a few English words); do not switch back to English for fillers or confirmations.`,
-      });
-      await handle.waitForPlayout();
+      if (callLogger) {
+        callLogger.log("generate_reply", {
+          purpose: "initial_greeting",
+          lang: "hi",
+        });
+      }
+      let handle;
+      try {
+        handle = session.generateReply({
+          instructions:
+            `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in English ("बातचीत हिंदी में रखें या English में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
+        });
+        await handle.waitForPlayout();
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.error("[LiveKit Agent] Greeting generateReply failed:", msg);
+        if (callLogger) {
+          callLogger.log("generate_reply_error", {
+            purpose: "initial_greeting",
+            errorMessage: msg,
+          });
+        }
+      }
+
+      if (callLogger) callLogger.log("greeting", { roomName, hospitalName: hospital.name });
 
       console.log(
         "[LiveKit Agent] Initial greeting sent for room:",
@@ -571,6 +778,17 @@ const agentDef = defineAgent({
       if (detachNoInput) {
         detachNoInput();
         detachNoInput = null;
+      }
+      if (callLogger) {
+        try {
+          callLogger.detach();
+        } catch (logDetachErr) {
+          console.warn(
+            "[LiveKit Agent] callLogger.detach:",
+            logDetachErr && logDetachErr.message ? logDetachErr.message : logDetachErr,
+          );
+        }
+        callLogger = null;
       }
       if (session && typeof session.close === "function" && !session.closing) {
         try {
@@ -636,7 +854,7 @@ if (useSarvamStt) {
   console.log(
     "[LiveKit Agent] USE_SAMVAAD_VOICE_LLM=1 → Sarvam STT + OpenAI chat (" +
       (process.env.OPENAI_LLM_MODEL || "gpt-4.1") +
-      ") + Sarvam TTS (WebSocket). LOW_LATENCY_AUDIO=0 keeps noise cancellation (default: fast path without NC).",
+      ") + Sarvam TTS (WebSocket). Caller NC: default telephony (LIVEKIT_INPUT_NOISE_CANCELLATION); LOW_LATENCY_AUDIO=0 or LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1 applies NC on this path.",
   );
   console.log(
     "[LiveKit Agent] TTS: bulbul — SARVAM_TTS_LOUDNESS (API 0.3–3, default 3), SARVAM_TTS_GAIN (PCM after decode, default 3, max 4; 1=off), bulbul:v3 may ignore API loudness; SARVAM_TTS_MODEL, SARVAM_TTS_SPEAKER, SARVAM_TTS_LANGUAGE, SARVAM_TTS_DEBUG=0",

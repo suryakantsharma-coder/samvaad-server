@@ -27,39 +27,90 @@ const {
 const {
   normalizePatientFieldsForStorage,
 } = require("../utils/storageEnglishNormalize");
+const {
+  validateBookingPoliciesAndSlot,
+  rejectIfSundayOrPast,
+  snapToHourBucketStartIST,
+  formatHourSlotLabelForVoice,
+  getHourBucketCapacity,
+  loadHourBucketCounts,
+  hourBucketStartMinIST,
+} = require("../utils/bookingSlotRules");
 const logTag = "[RealtimeTools]";
 
 const IST = "Asia/Kolkata";
 
 /**
- * Bilingual user-facing copy for the voice agent (Hindi + Gujarati).
+ * Bilingual user-facing copy for the voice agent (Hindi + Gujarati + English voice).
  * `message` stays English for logs / model fallback.
+ * @param {string} [messageEnglish] preferred line for English-only callers (defaults to messageEn)
  */
-function appointmentBilingualError(messageEn, messageHindi, messageGujarati) {
+function appointmentBilingualError(
+  messageEn,
+  messageHindi,
+  messageGujarati,
+  messageEnglish,
+) {
   return {
     ok: false,
     message: messageEn,
     messageHindi,
     messageGujarati,
+    messageEnglish:
+      messageEnglish != null && messageEnglish !== ""
+        ? messageEnglish
+        : messageEn,
   };
 }
 
+function bookingPolicyReject(v) {
+  return {
+    ok: false,
+    code: v.code,
+    message: v.messages.en,
+    messageHindi: v.messages.hi,
+    messageGujarati: v.messages.gu,
+    messageEnglish: v.messages.enVoice,
+  };
+}
+
+/**
+ * Slot-aware booking confirmation copy.
+ * `slotHi/slotGu/slotEn` are the one-hour slot range labels from
+ * `formatHourSlotLabelForVoice`. `othersPossible` becomes a soft note that
+ * other patients may also be in the same slot — true only when this isn't the
+ * only booking in that bucket.
+ */
 function buildBookingSuccessVoiceMessages(
   appointmentId,
   doctorName,
-  whenHi,
-  whenGu,
+  slotHi,
+  slotGu,
+  slotEn,
   opts = {},
 ) {
+  const othersPossible = Boolean(opts.othersPossible);
+  const sharedNoteHi = othersPossible
+    ? " इस स्लॉट में कुछ और मरीज़ भी हो सकते हैं, इसलिए कृपया थोड़ा पहले पहुँचिए।"
+    : "";
+  const sharedNoteGu = othersPossible
+    ? " આ સ્લોટમાં બીજા દર્દીઓ પણ હોઈ શકે છે, એટલે કૃપા કરી થોડા વહેલા પહોંચજો."
+    : "";
+  const sharedNoteEn = othersPossible
+    ? " A few other patients may also be in the same one-hour slot, so please try to arrive a little early."
+    : "";
+
   if (opts.updated) {
     return {
-      messageHindi: `ठीक है—मैंने आपकी अपॉइंटमेंट नंबर ${appointmentId} अपडेट कर दी है। डॉ. ${doctorName}, ${whenHi}। थोड़ी देर में WhatsApp पर अपडेट की जानकारी मिल जाएगी। कृपया समय पर पहुँचिए। अगर बाद में फिर से समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
-      messageGujarati: `બરાબર—મેં તમારી મુલાકાત નંબર ${appointmentId} અપડેટ કરી દીધી છે. ડૉ. ${doctorName}, ${whenGu}. થોડી વારમાં WhatsApp પર નવી વિગત મળી જશે. સમયસર પહોંચી જજો. અગર સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+      messageHindi: `ठीक है—मैंने आपकी अपॉइंटमेंट नंबर ${appointmentId} अपडेट कर दी है। डॉ. ${doctorName}, ${slotHi}।${sharedNoteHi} थोड़ी देर में WhatsApp पर अपडेट की जानकारी मिल जाएगी। अगर बाद में फिर से समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
+      messageGujarati: `બરાબર—મેં તમારી મુલાકાત નંબર ${appointmentId} અપડેટ કરી દીધી છે. ડૉ. ${doctorName}, ${slotGu}.${sharedNoteGu} થોડી વારમાં WhatsApp પર નવી વિગત મળી જશે. અગર સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+      messageEnglish: `Done — I've updated your appointment, reference number ${appointmentId}. Dr. ${doctorName}, ${slotEn}.${sharedNoteEn} You'll receive the updated details on WhatsApp shortly. To change the time later, message us on WhatsApp.`,
     };
   }
   return {
-    messageHindi: `मैंने आपकी अपॉइंटमेंट बुक कर ली है। अपॉइंटमेंट नंबर: ${appointmentId}। डॉ. ${doctorName}, ${whenHi}। थोड़ी देर में WhatsApp पर पुष्टि आ जाएगी। कृपया समय पर पहुँचिए। अगर बाद में अपॉइंटमेंट का समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
-    messageGujarati: `મેં તમારી મુલાકાત બુક કરી દીધી છે. રેફરન્સ નંબર ${appointmentId}. ડૉ. ${doctorName}, ${whenGu}. થોડી વારમાં WhatsApp પર વિગત મળી જશે. સમયસર પહોંચી જજો. અગર મુલાકાતનો સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+    messageHindi: `मैंने आपकी अपॉइंटमेंट बुक कर ली है। अपॉइंटमेंट नंबर: ${appointmentId}। डॉ. ${doctorName}, ${slotHi}।${sharedNoteHi} थोड़ी देर में WhatsApp पर पुष्टि आ जाएगी। अगर बाद में अपॉइंटमेंट का समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
+    messageGujarati: `મેં તમારી મુલાકાત બુક કરી દીધી છે. રેફરન્સ નંબર ${appointmentId}. ડૉ. ${doctorName}, ${slotGu}.${sharedNoteGu} થોડી વારમાં WhatsApp પર વિગત મળી જશે. અગર મુલાકાતનો સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
+    messageEnglish: `Your appointment is booked. Reference number ${appointmentId}. Dr. ${doctorName}, ${slotEn}.${sharedNoteEn} A confirmation will reach you on WhatsApp shortly. To reschedule later, contact us on WhatsApp.`,
   };
 }
 
@@ -90,20 +141,45 @@ async function findAppointmentInSlotWindow(
   }).lean();
 }
 
+/**
+ * How many non-cancelled patients are sitting in this doctor's hour-slot
+ * (including the just-booked appointment). Used to decide whether to warn
+ * the caller that other patients are in the same slot.
+ */
+async function countPatientsInHourSlot(
+  hospitalObjectId,
+  doctorObjectId,
+  dt,
+) {
+  const ymd = formatCalendarDateIST(dt);
+  const counts = await loadHourBucketCounts(
+    hospitalObjectId,
+    doctorObjectId,
+    ymd,
+    null,
+  );
+  return counts.get(hourBucketStartMinIST(dt)) || 0;
+}
+
 function buildCreateAppointmentSuccessResult({
   appointmentDoc,
   doctorName,
-  whenHi,
-  whenGu,
+  slotHi,
+  slotGu,
+  slotEn,
+  othersPossible,
+  slotPatientCount,
+  slotCapacity,
   messageEn,
   appointmentUpdated = false,
 }) {
   const voice = buildBookingSuccessVoiceMessages(
     appointmentDoc.appointmentId,
     doctorName,
-    whenHi,
-    whenGu,
-    { updated: appointmentUpdated },
+    slotHi,
+    slotGu,
+    slotEn,
+    { updated: appointmentUpdated, othersPossible },
   );
   return {
     ok: true,
@@ -120,36 +196,18 @@ function buildCreateAppointmentSuccessResult({
       appointmentDateTime: formatInstantAsISTIso(
         appointmentDoc.appointmentDateTime,
       ),
+      slot: {
+        labelEnglish: slotEn,
+        labelHindi: slotHi,
+        labelGujarati: slotGu,
+        patientCount: typeof slotPatientCount === "number" ? slotPatientCount : null,
+        capacity: typeof slotCapacity === "number" ? slotCapacity : null,
+      },
     },
     message: messageEn,
     messageHindi: voice.messageHindi,
     messageGujarati: voice.messageGujarati,
-  };
-}
-
-function formatAppointmentDateTimeForVoice(date) {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-    return { hindi: "", gujarati: "" };
-  }
-  return {
-    hindi: new Intl.DateTimeFormat("hi-IN", {
-      timeZone: IST,
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(date),
-    gujarati: new Intl.DateTimeFormat("gu-IN", {
-      timeZone: IST,
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(date),
+    messageEnglish: voice.messageEnglish,
   };
 }
 
@@ -170,6 +228,119 @@ function normalizeDigits10(raw) {
   const d = String(raw).replace(/\D/g, "");
   if (d.length >= 10) return d.slice(-10);
   return "";
+}
+
+/**
+ * Strip honorifics / language prefixes so a name from STT can match
+ * a stored DoctorModel.fullName (which is typically just "Yugen Lee" etc).
+ *
+ * Examples normalised:
+ *   "Dr. Yugen"    -> "yugen"
+ *   "डॉ युगेन"     -> "युगेन"
+ *   "ડૉ. યુગેન"    -> "યુગેન"
+ *   "doctor yugen" -> "yugen"
+ */
+function normaliseDoctorName(raw) {
+  return String(raw == null ? "" : raw)
+    .trim()
+    .replace(/^(?:dr\.?|doctor|डॉ\.?|डाँ\.?|डा\.?|ડૉ\.?|ડોકટર|ડોક્ટર)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Look up a doctor for the given hospital using a free-text name.
+ * Tries exact match first, then case-insensitive contains. Returns null on miss.
+ *
+ * Keeps the LLM out of a verbal "I'm checking _id…" recovery loop when it
+ * passed e.g. "Dr. Yugen" as doctorObjectId.
+ */
+async function resolveDoctorByName(hospitalObjectId, rawName) {
+  const cleaned = normaliseDoctorName(rawName);
+  if (!cleaned || cleaned.length < 2) return null;
+  try {
+    const exact = await DoctorModel.findOne({
+      hospital: hospitalObjectId,
+      fullName: new RegExp(`^${cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+    })
+      .select("_id fullName")
+      .lean();
+    if (exact && exact._id) return exact;
+    const contains = await DoctorModel.findOne({
+      hospital: hospitalObjectId,
+      fullName: new RegExp(cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+    })
+      .select("_id fullName")
+      .lean();
+    if (contains && contains._id) return contains;
+  } catch (err) {
+    console.warn(
+      logTag,
+      "resolveDoctorByName lookup failed:",
+      err && err.message ? err.message : err,
+    );
+  }
+  return null;
+}
+
+/**
+ * Same idea for patients — if patientObjectId looks like a name (or P-id),
+ * pull a record so create_appointment can succeed without a verbal recovery turn.
+ */
+async function resolvePatientFallback(
+  hospitalObjectId,
+  patientObjectIdRaw,
+  fullNameRaw,
+  callerPhone10,
+) {
+  const pid = String(patientObjectIdRaw || "").trim();
+  try {
+    if (/^P-\d{4}-\d{4,}$/i.test(pid)) {
+      const byPid = await PatientModel.findOne({
+        hospital: hospitalObjectId,
+        patientId: pid.toUpperCase(),
+      })
+        .select("_id fullName")
+        .lean();
+      if (byPid && byPid._id) return byPid;
+    }
+    const phone10 = String(callerPhone10 || "").replace(/\D/g, "").slice(-10);
+    if (phone10 && phone10.length === 10) {
+      const byPhone = await PatientModel.findOne({
+        hospital: hospitalObjectId,
+        $or: [
+          { phoneNumber: phone10 },
+          { phoneNumber: `0${phone10}` },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .select("_id fullName")
+        .lean();
+      if (byPhone && byPhone._id) return byPhone;
+    }
+    const cleanedName = String(fullNameRaw || "").trim();
+    if (cleanedName && cleanedName.length >= 2) {
+      const byName = await PatientModel.findOne({
+        hospital: hospitalObjectId,
+        fullName: new RegExp(
+          cleanedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+          "i",
+        ),
+      })
+        .sort({ createdAt: -1 })
+        .select("_id fullName")
+        .lean();
+      if (byName && byName._id) return byName;
+    }
+  } catch (err) {
+    console.warn(
+      logTag,
+      "resolvePatientFallback lookup failed:",
+      err && err.message ? err.message : err,
+    );
+  }
+  return null;
 }
 
 /** set_calling_phone ref first, then auto line / job metadata. */
@@ -403,26 +574,75 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
     }
 
     if (name === "create_appointment") {
-      const doctorObjectId = String(args.doctorObjectId || "").trim();
-      const patientObjectId = String(args.patientObjectId || "").trim();
+      let doctorObjectId = String(args.doctorObjectId || "").trim();
+      let patientObjectId = String(args.patientObjectId || "").trim();
       const reason = String(args.reason || "").trim();
       const rawAppointmentDateTimeISO = String(
         args.appointmentDateTimeISO || args.appointmentDateTime || "",
       ).trim();
       const type = String(args.type || "call").trim() || "call";
+
+      /**
+       * If the LLM passed a doctor *name* (e.g. "Dr. Yugen") instead of the
+       * Mongo ref, resolve it server-side. This avoids the verbal recovery
+       * turn where the model previously said "_id" / "MongoDB" out loud.
+       */
       if (!mongoose.isValidObjectId(doctorObjectId)) {
-        return appointmentBilingualError(
-          "Invalid doctorObjectId.",
-          "माफ़ कीजिए—डॉक्टर की जानकारी सही नहीं है। कृपया list_doctors से सही डॉक्टर का MongoDB _id इस्तेमाल करें।",
-          "માફ કરશો—ડૉક્ટરની વિગત સાચી નથી. list_doctors માંથી સાચા ડૉક્ટરનો MongoDB _id વાપરો.",
+        const resolvedDoc = await resolveDoctorByName(
+          hospitalObjectId,
+          args.doctorObjectId,
         );
+        if (resolvedDoc) {
+          console.log(
+            logTag,
+            "[create_appointment] resolved doctor by name:",
+            JSON.stringify({
+              from: String(args.doctorObjectId || ""),
+              to: String(resolvedDoc._id),
+              fullName: resolvedDoc.fullName,
+            }),
+          );
+          doctorObjectId = String(resolvedDoc._id);
+        } else {
+          return {
+            ok: false,
+            code: "INVALID_DOCTOR_REF",
+            message:
+              "Invalid doctorObjectId and could not resolve by name. Internally retry: silently call list_doctors, pick the doctor whose designation matches the visit reason, reuse that doctor's reference, then retry create_appointment. Do NOT say anything to the caller about IDs, tools, MongoDB, or internal process — just say a short wait line in the caller's language.",
+            messageHindi: "",
+            messageGujarati: "",
+          };
+        }
       }
+
       if (!mongoose.isValidObjectId(patientObjectId)) {
-        return appointmentBilingualError(
-          "Call create_patient or fetch_patient_* first; patientObjectId must be the MongoDB _id from that tool (24 hex). Never use age, patientId P-…, or a short number.",
-          "अपॉइंटमेंट से पहले मरीज़ का रिकॉर्ड बनाना ज़रूरी है—पहले create_patient चलाइए (या fetch), फिर उसी जवाब में मिले patient._id को patientObjectId में डालकर create_appointment चलाइए। उम्र या छोटा नंबर patientObjectId नहीं हो सकता।",
-          "એપોઇન્ટમેન્ટ પહેલા દર્દીની નોંધ જરૂરી છે—પહેલા create_patient (અથવા fetch) ચલાવો, પછી જે patient._id મળે તે જ patientObjectId તરીકે create_appointment માં વાપરો. ઉંમર કે નાનો નંબર patientObjectId નથી બનતો.",
+        const resolvedPatient = await resolvePatientFallback(
+          hospitalObjectId,
+          args.patientObjectId,
+          args.fullName,
+          options.callerPhone,
         );
+        if (resolvedPatient) {
+          console.log(
+            logTag,
+            "[create_appointment] resolved patient by fallback:",
+            JSON.stringify({
+              from: String(args.patientObjectId || ""),
+              to: String(resolvedPatient._id),
+              fullName: resolvedPatient.fullName,
+            }),
+          );
+          patientObjectId = String(resolvedPatient._id);
+        } else {
+          return {
+            ok: false,
+            code: "INVALID_PATIENT_REF",
+            message:
+              "Invalid patientObjectId and no fallback patient found by phone, patientId, or name. Internally retry: if this is a new patient, call create_patient first (fullName, age, gender, English reason, phone) and reuse the response patient reference; for an existing patient, call fetch_patient_by_patientId or fetch_patient_by_phone first. Never use age, the human patientId (P-…), or a short number. Do NOT mention IDs, tools, MongoDB, JSON, or any internal process to the caller.",
+            messageHindi: "",
+            messageGujarati: "",
+          };
+        }
       }
 
       const normalizedDateTime = normalizeAppointmentDateTimeISOForBooking(
@@ -438,14 +658,29 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         );
       }
       const appointmentDateTimeISO = normalizedDateTime.iso;
-      const dt = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
-      if (Number.isNaN(dt.getTime())) {
+      const dtRaw = parseAppointmentDateTimeAsIST(appointmentDateTimeISO);
+      if (Number.isNaN(dtRaw.getTime())) {
         return appointmentBilingualError(
           "Invalid appointmentDateTimeISO.",
           "माफ़ कीजिए—तारीख या समय साफ़ नहीं लग रहा। कृपया अपॉइंटमेंट की तारीख और समय एक बार फिर बता दीजिए।",
           "માફ કરશો—તારીખ કે સમય સાફ નથી લાગતો. મુલાકાતની સાચી તારીખ અને વખત ફરી જણાવશો?",
         );
       }
+
+      /**
+       * Booking is slot-based: each clock hour is one "slot" holding up to
+       * `getHourBucketCapacity()` patients. Snap the caller's exact minute to
+       * the start of that slot so 10:30, 10:45, 10:59 all land in the 10–11
+       * slot and the stored data, the count, and what the agent says aloud
+       * are consistent.
+       */
+      const dt = snapToHourBucketStartIST(dtRaw);
+
+      const quickReject = rejectIfSundayOrPast(dt);
+      if (quickReject) {
+        return bookingPolicyReject(quickReject);
+      }
+
       if (!reason) {
         return appointmentBilingualError(
           "Reason is required.",
@@ -557,6 +792,17 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           };
         }
 
+        const policyUpdate = await validateBookingPoliciesAndSlot({
+          hospitalObjectId,
+          doctorObjectId: String(doctorObjectId),
+          doctor,
+          dt,
+          excludeAppointmentMongoId: existingAppointmentObjectId,
+        });
+        if (policyUpdate) {
+          return bookingPolicyReject(policyUpdate);
+        }
+
         const dupOther = await AppointmentModel.findOne({
           hospital: hospitalObjectId,
           patient: patientObjectId,
@@ -601,8 +847,17 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         }
 
         const doctorNameU = (doctor && doctor.fullName) || "";
-        const { hindi: whenHiU, gujarati: whenGuU } =
-          formatAppointmentDateTimeForVoice(dt);
+        const {
+          hindi: slotHiU,
+          gujarati: slotGuU,
+          english: slotEnU,
+        } = formatHourSlotLabelForVoice(dt);
+        const slotCountU = await countPatientsInHourSlot(
+          hospitalObjectId,
+          String(doctorObjectId),
+          dt,
+        );
+        const slotCapacityU = getHourBucketCapacity();
 
         console.log(
           logTag,
@@ -610,6 +865,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           JSON.stringify({
             appointmentId: updatedDoc.appointmentId,
             appointmentMongoId: String(updatedDoc._id),
+            slot: slotEnU,
+            slotPatientCount: slotCountU,
+            slotCapacity: slotCapacityU,
             durationMs: Date.now() - startedAt,
           }),
         );
@@ -617,10 +875,14 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         return buildCreateAppointmentSuccessResult({
           appointmentDoc: updatedDoc,
           doctorName: doctorNameU,
-          whenHi: whenHiU,
-          whenGu: whenGuU,
+          slotHi: slotHiU,
+          slotGu: slotGuU,
+          slotEn: slotEnU,
+          othersPossible: slotCountU > 1,
+          slotPatientCount: slotCountU,
+          slotCapacity: slotCapacityU,
           messageEn:
-            "Appointment updated. Speak messageHindi or messageGujarati once as status.",
+            "Appointment updated. Speak messageHindi, messageGujarati, or messageEnglish once as status.",
           appointmentUpdated: true,
         });
       }
@@ -702,27 +964,54 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       }
 
       const doctorName = (doctor && doctor.fullName) || "";
-      const { hindi: whenHi, gujarati: whenGu } =
-        formatAppointmentDateTimeForVoice(dt);
+      const {
+        hindi: slotHi,
+        gujarati: slotGu,
+        english: slotEn,
+      } = formatHourSlotLabelForVoice(dt);
+      const slotCapacity = getHourBucketCapacity();
 
       // Return existing appointment if this is a duplicate call (same slot).
       if (existingAppt) {
+        const slotCountDup = await countPatientsInHourSlot(
+          hospitalObjectId,
+          String(doctorObjectId),
+          dt,
+        );
         console.log(
           logTag,
           "[create_appointment] DUPLICATE SKIPPED — returning existing",
           JSON.stringify({
             appointmentId: existingAppt.appointmentId,
+            slot: slotEn,
+            slotPatientCount: slotCountDup,
+            slotCapacity,
             durationMs: Date.now() - startedAt,
           }),
         );
         return buildCreateAppointmentSuccessResult({
           appointmentDoc: existingAppt,
           doctorName,
-          whenHi,
-          whenGu,
+          slotHi,
+          slotGu,
+          slotEn,
+          othersPossible: slotCountDup > 1,
+          slotPatientCount: slotCountDup,
+          slotCapacity,
           messageEn:
-            "Already booked. Speak messageHindi or messageGujarati once as booking status.",
+            "Already booked. Speak messageHindi, messageGujarati, or messageEnglish once as booking status.",
         });
+      }
+
+      const policyNew = await validateBookingPoliciesAndSlot({
+        hospitalObjectId,
+        doctorObjectId: String(doctorObjectId),
+        doctor,
+        dt,
+        excludeAppointmentMongoId: null,
+      });
+      if (policyNew) {
+        return bookingPolicyReject(policyNew);
       }
 
       const year = istCalendarYear();
@@ -780,22 +1069,34 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         );
       }
 
+      const slotCountNew = await countPatientsInHourSlot(
+        hospitalObjectId,
+        String(doctorObjectId),
+        dt,
+      );
       console.log(
         logTag,
         "[create_appointment] BOOKED OK",
         JSON.stringify({
           appointmentId: appointment.appointmentId,
           appointmentMongoId: String(appointment._id),
+          slot: slotEn,
+          slotPatientCount: slotCountNew,
+          slotCapacity,
           durationMs: Date.now() - startedAt,
         }),
       );
       return buildCreateAppointmentSuccessResult({
         appointmentDoc: appointment,
         doctorName,
-        whenHi,
-        whenGu,
+        slotHi,
+        slotGu,
+        slotEn,
+        othersPossible: slotCountNew > 1,
+        slotPatientCount: slotCountNew,
+        slotCapacity,
         messageEn:
-          "Booked. Speak messageHindi or messageGujarati once as booking status (no second confirmation — they already confirmed).",
+          "Booked. Speak messageHindi, messageGujarati, or messageEnglish once as booking status (no second confirmation — they already confirmed).",
       });
     }
 
