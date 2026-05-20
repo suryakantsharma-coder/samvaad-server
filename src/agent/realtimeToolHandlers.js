@@ -28,14 +28,16 @@ const {
   normalizePatientFieldsForStorage,
 } = require("../utils/storageEnglishNormalize");
 const {
-  validateBookingPoliciesAndSlot,
   rejectIfSundayOrPast,
   snapToHourBucketStartIST,
   formatHourSlotLabelForVoice,
-  getHourBucketCapacity,
   loadHourBucketCounts,
   hourBucketStartMinIST,
 } = require("../utils/bookingSlotRules");
+const {
+  resolveHourBucketCapacity,
+  validateDoctorBookingPoliciesAndSlot,
+} = require("./checkupDuration");
 const logTag = "[RealtimeTools]";
 
 const IST = "Asia/Kolkata";
@@ -527,7 +529,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
       const doctors = await DoctorModel.find({
         hospital: hospitalObjectId,
       })
-        .select("_id fullName doctorId designation availability status")
+        .select(
+          "_id fullName doctorId designation availability status averagePatientTime",
+        )
         .lean();
       const doctorsPayload = doctors.map((d) => ({
         _id: String(d._id),
@@ -536,6 +540,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         designation: d.designation,
         availability: d.availability,
         status: d.status,
+        averagePatientTime: d.averagePatientTime,
       }));
       return {
         ok: true,
@@ -559,7 +564,9 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         hospital: hospitalObjectId,
         $or: [{ fullName: regex }, { designation: regex }],
       })
-        .select("_id fullName doctorId designation availability status")
+        .select(
+          "_id fullName doctorId designation availability status averagePatientTime",
+        )
         .limit(limit)
         .lean();
       const doctorsPayload = doctors.map((d) => ({
@@ -569,6 +576,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         designation: d.designation,
         availability: d.availability,
         status: d.status,
+        averagePatientTime: d.averagePatientTime,
       }));
       return { ok: true, doctors: doctorsPayload };
     }
@@ -669,7 +677,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
 
       /**
        * Booking is slot-based: each clock hour is one "slot" holding up to
-       * `getHourBucketCapacity()` patients. Snap the caller's exact minute to
+       * doctor-specific hour-slot capacity. Snap the caller's exact minute to
        * the start of that slot so 10:30, 10:45, 10:59 all land in the 10–11
        * slot and the stored data, the count, and what the agent says aloud
        * are consistent.
@@ -792,7 +800,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           };
         }
 
-        const policyUpdate = await validateBookingPoliciesAndSlot({
+        const policyUpdate = await validateDoctorBookingPoliciesAndSlot({
           hospitalObjectId,
           doctorObjectId: String(doctorObjectId),
           doctor,
@@ -857,7 +865,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           String(doctorObjectId),
           dt,
         );
-        const slotCapacityU = getHourBucketCapacity();
+        const slotCapacityU = resolveHourBucketCapacity(doctor);
 
         console.log(
           logTag,
@@ -969,7 +977,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         gujarati: slotGu,
         english: slotEn,
       } = formatHourSlotLabelForVoice(dt);
-      const slotCapacity = getHourBucketCapacity();
+      const slotCapacity = resolveHourBucketCapacity(doctor);
 
       // Return existing appointment if this is a duplicate call (same slot).
       if (existingAppt) {
@@ -1003,7 +1011,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         });
       }
 
-      const policyNew = await validateBookingPoliciesAndSlot({
+      const policyNew = await validateDoctorBookingPoliciesAndSlot({
         hospitalObjectId,
         doctorObjectId: String(doctorObjectId),
         doctor,

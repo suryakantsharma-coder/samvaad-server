@@ -63,6 +63,17 @@ const doctorSchema = new mongoose.Schema(
       // Example: 55, 85, 95
     },
 
+    /** Average consultation length in minutes (whole number). */
+    averagePatientTime: {
+      type: Number,
+      required: true,
+      min: 1,
+      validate: {
+        validator: Number.isInteger,
+        message: "averagePatientTime must be a whole number",
+      },
+    },
+
     profileImage: {
       type: String,
       default: "",

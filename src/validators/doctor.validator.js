@@ -30,6 +30,12 @@ const createDoctor = [
     .isLength({ max: 100 })
     .withMessage('designation must be at most 100 characters')
     .escape(),
+  body('averagePatientTime')
+    .notEmpty()
+    .withMessage('averagePatientTime is required')
+    .isInt({ min: 1 })
+    .withMessage('averagePatientTime must be a whole number (minutes)')
+    .toInt(),
   body('availability')
     .optional()
     .trim()
@@ -115,6 +121,13 @@ const updateDoctor = [
     .isLength({ max: 100 })
     .withMessage('designation must be at most 100 characters')
     .escape(),
+  body('averagePatientTime')
+    .optional()
+    .notEmpty()
+    .withMessage('averagePatientTime cannot be empty')
+    .isInt({ min: 1 })
+    .withMessage('averagePatientTime must be a whole number (minutes)')
+    .toInt(),
   body('availability')
     .optional()
     .trim()

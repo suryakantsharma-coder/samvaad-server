@@ -13,9 +13,9 @@ const {
   formatCalendarDateIST,
 } = require("../utils/queryDateRange");
 const {
-  getAvgCheckupDurationMin,
-  getHourBucketCapacity,
-} = require("../utils/bookingSlotRules");
+  resolveAvgPatientTimeMinutes,
+  resolveHourBucketCapacity,
+} = require("./checkupDuration");
 
 const IST_TIME_ZONE = "Asia/Kolkata";
 const WEEKDAY_LABELS_EN = [
@@ -82,7 +82,7 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
   let doctorListText = "No doctors currently available.";
   try {
     const doctors = await DoctorModel.find({ hospital: hospital._id })
-      .select("fullName designation availability status")
+      .select("fullName designation availability status averagePatientTime")
       .lean();
 
     console.log(`[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`);
@@ -99,8 +99,11 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
           const items = list
             .map((d) => {
               const id = d._id ? String(d._id) : "";
+              const avgMin = resolveAvgPatientTimeMinutes(d);
+              const perSlot = resolveHourBucketCapacity(d);
               return (
                 `**doctorObjectId=\`${id}\`** · Dr. ${d.fullName} (${d.availability || "9 AM – 5 PM"})` +
+                ` · avg ${avgMin} min/patient · ${perSlot} patient${perSlot === 1 ? "" : "s"}/hour slot` +
                 (d.status && d.status !== "On Duty" ? ` — ${d.status}` : "")
               );
             })
@@ -121,8 +124,8 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
     weekday: "long",
   }).format(new Date());
   const upcomingWeekdays = buildUpcomingWeekdayReference();
-  const checkupMinutes = getAvgCheckupDurationMin();
-  const hourCapacity = getHourBucketCapacity();
+  const checkupMinutes = resolveAvgPatientTimeMinutes(null);
+  const hourCapacity = resolveHourBucketCapacity(null);
 
   return `
 You are **Neha**, a warm, professional, **female** AI receptionist for **${hospitalName}**.
@@ -191,9 +194,9 @@ SCHEDULING — system enforces this (you must follow + never argue)
 3. **Today = future time only** — if the resolved date is **today** (IST), the time must be **after now**; never book a time that already passed.
 
 **Step B — Slot capacity (the system enforces this on \`create_appointment\`):**
-4. **Booking is slot-based, not minute-based.** Each clock hour is **one slot** (e.g. **10–11**, **11–12**, **12–1**, **2–3**…). Each slot holds **${hourCapacity} patient${hourCapacity === 1 ? "" : "s"}** (avg ${checkupMinutes} min per patient — \`AVG_PATIENT_CHECKUP_DURATION\`). Any minute the caller names lands in that slot: **10:00 → 10–11**, **10:30 → 10–11**, **11:30 → 11–12**.
+4. **Booking is slot-based, not minute-based.** Each clock hour is **one slot** (e.g. **10–11**, **11–12**, **12–1**, **2–3**…). Each slot holds up to the **per-doctor** count shown in the doctor list above (avg minutes per patient; hospital default ~${checkupMinutes} min / ${hourCapacity} per slot if not listed). Any minute the caller names lands in that slot: **10:00 → 10–11**, **10:30 → 10–11**, **11:30 → 11–12**.
 5. **Speak in slot ranges, never exact minutes.** Ask, offer, read back, and confirm as **"10 से 11 बजे का स्लॉट" / "the 10–11 slot"** — do not say "10:30" or "11:30". When you suggest a time, suggest the **slot range**, not a clock minute.
-6. **Capacity-full behaviour.** If a slot already has **${hourCapacity}** bookings, the tool refuses with \`code: "HOUR_BUCKET_FULL"\` and returns the **next available slot** inside the doctor's hours (e.g. 11–12 full → suggest **12–1**, skipping a 1–2 PM break to **2–3**). Read the suggested slot once in the caller's language and ask **"क्या यह चलेगा?" / "Would that work?"** — do **not** loop.
+6. **Capacity-full behaviour.** If a slot is already full for **that doctor** (see their patients/hour in the list), the tool refuses with \`code: "HOUR_BUCKET_FULL"\` and returns the **next available slot** inside the doctor's hours (e.g. 11–12 full → suggest **12–1**, skipping a 1–2 PM break to **2–3**). Read the suggested slot once in the caller's language and ask **"क्या यह चलेगा?" / "Would that work?"** — do **not** loop.
 7. **Shared-slot disclaimer.** Tell the caller — calmly, in one short line in their language — that a few other patients may also be in the same slot, so they should aim to arrive a little early. Say this in the read-back, and again in the success line if more than one patient is in that slot (the tool returns this).
 
 When offering time, keep it **within the doctor's printed hours** only. Use **IST** datetimes with **+05:30** in tools.
