@@ -20,6 +20,11 @@ const createPatient = [
     .isInt({ min: 0 })
     .withMessage('age must be a non-negative integer')
     .toInt(),
+  body('weight')
+    .optional({ nullable: true, checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('weight must be a non-negative number')
+    .toFloat(),
   body('gender')
     .trim()
     .notEmpty()
@@ -51,6 +56,11 @@ const updatePatient = [
     .isInt({ min: 0 })
     .withMessage('age must be a non-negative integer')
     .toInt(),
+  body('weight')
+    .optional({ nullable: true, checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('weight must be a non-negative number')
+    .toFloat(),
   body('gender')
     .optional()
     .trim()

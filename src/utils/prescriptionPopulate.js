@@ -25,6 +25,8 @@ function enrichMedicinesWithDoctorHospital(prescription) {
   const hospital = prescription.hospital ?? null;
   return {
     ...prescription,
+    extraNotes:
+      typeof prescription.extraNotes === 'string' ? prescription.extraNotes : '',
     medicines: prescription.medicines.map((m) => ({
       ...m,
       doctor,

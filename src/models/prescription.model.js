@@ -74,6 +74,11 @@ const prescriptionSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    extraNotes: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     status: {
       type: String,
       enum: ['Draft', 'Completed', 'Cancelled'],

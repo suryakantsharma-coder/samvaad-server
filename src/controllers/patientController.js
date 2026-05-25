@@ -16,6 +16,18 @@ const APPOINTMENT_POPULATE = { path: 'doctor', select: 'fullName doctorId design
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
+const normalizePrescriptionResponse = (prescription) => ({
+  ...prescription,
+  extraNotes:
+    typeof prescription?.extraNotes === 'string' ? prescription.extraNotes : '',
+});
+
+const normalizeOptionalPatientFields = (body) => {
+  if (body.weight === '' || body.weight === null) {
+    delete body.weight;
+  }
+};
+
 /**
  * @route GET /api/patients
  * Query: filter=all|today|tomorrow; date range fromDate/toDate, startDate/endDate, or snake_case (YYYY-MM-DD = IST day);
@@ -306,10 +318,11 @@ const getOverview = async (req, res, next) => {
         .sort({ createdAt: -1 })
         .lean(),
     ]);
+    const prescriptionsWithExtraNotes = prescriptions.map(normalizePrescriptionResponse);
     res.json({
       success: true,
       ...getLinkedHospitalForResponse(req),
-      data: { patient, appointments, prescriptions },
+      data: { patient, appointments, prescriptions: prescriptionsWithExtraNotes },
     });
   } catch (err) {
     next(err);
@@ -375,6 +388,7 @@ const create = async (req, res, next) => {
     }
     const body = { ...req.body };
     delete body.hospital; // Never allow from request; always use req.user.hospital
+    normalizeOptionalPatientFields(body);
 
     const patientId = await generatePatientId();
     const patient = await Patient.create({ ...body, patientId, hospital: hospitalId });
@@ -394,6 +408,7 @@ const update = async (req, res, next) => {
     const body = { ...req.body };
     delete body.patientId; // Immutable; backend-generated
     delete body.hospital;
+    normalizeOptionalPatientFields(body);
 
     const filter = { _id: req.params.id };
     mergeHospitalFilter(req, filter);

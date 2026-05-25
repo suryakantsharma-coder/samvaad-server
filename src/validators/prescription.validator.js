@@ -43,6 +43,12 @@ const createPrescription = [
     .isLength({ max: 2000 })
     .withMessage('notes must be at most 2000 characters')
     .escape(),
+  body('extraNotes')
+    .optional()
+    .trim()
+    .isLength({ max: 2000 })
+    .withMessage('extraNotes must be at most 2000 characters')
+    .escape(),
   body('status')
     .optional()
     .trim()
@@ -73,6 +79,12 @@ const updatePrescription = [
     .optional()
     .trim()
     .isLength({ max: 2000 })
+    .escape(),
+  body('extraNotes')
+    .optional()
+    .trim()
+    .isLength({ max: 2000 })
+    .withMessage('extraNotes must be at most 2000 characters')
     .escape(),
   body('status')
     .optional()

@@ -250,6 +250,7 @@ const search = async (req, res, next) => {
       const regex = { $regex: q, $options: 'i' };
       const orClause = [
         { notes: regex },
+        { extraNotes: regex },
         { patientName: regex },
         { 'medicines.name': regex },
         { 'medicines.dosage': regex },
@@ -414,6 +415,7 @@ const create = async (req, res, next) => {
       hospital: hospitalId || undefined,
       medicines,
       notes: (req.body.notes || '').trim(),
+      extraNotes: (req.body.extraNotes || '').trim(),
       status: req.body.status || 'Draft',
     };
 
@@ -447,6 +449,7 @@ const update = async (req, res, next) => {
     const updateData = {};
     if (req.body.status !== undefined) updateData.status = req.body.status;
     if (req.body.notes !== undefined) updateData.notes = req.body.notes;
+    if (req.body.extraNotes !== undefined) updateData.extraNotes = req.body.extraNotes;
     if (req.body.patientName !== undefined) updateData.patientName = typeof req.body.patientName === 'string' ? req.body.patientName.trim() : '';
     if (req.body.appointmentDate !== undefined) {
       const d = new Date(req.body.appointmentDate);
