@@ -9,8 +9,49 @@ const env = require("./config/env");
 const authController = require("./controllers/authController");
 const app = express();
 
+const uploadCorsAllowedOrigins = env.UPLOADS_CORS_ORIGINS || [];
+
+const setUploadCorsHeaders = (req, res) => {
+  const origin = req.headers.origin;
+  if (origin && uploadCorsAllowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Type");
+};
+
+// Public static uploads CORS (for PDF logo/image fetch from browser)
+app.use("/uploads", (req, res, next) => {
+  setUploadCorsHeaders(req, res);
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 // Serve uploaded files (e.g. hospital logos) — same root as multer (see env.UPLOADS_ROOT)
-app.use("/uploads", express.static(env.UPLOADS_ROOT));
+app.use(
+  "/uploads",
+  express.static(env.UPLOADS_ROOT, {
+    setHeaders: (res, _filePath, stat) => {
+      // Ensure exposed headers are present on static 200 responses.
+      if (stat) {
+        res.setHeader("Content-Length", String(stat.size));
+      }
+      if (!res.getHeader("Access-Control-Allow-Methods")) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      }
+      if (!res.getHeader("Access-Control-Allow-Headers")) {
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      }
+      if (!res.getHeader("Access-Control-Expose-Headers")) {
+        res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Type");
+      }
+    },
+  }),
+);
 
 // allowed origins
 const allowedOrigins = [

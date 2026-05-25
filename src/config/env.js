@@ -25,6 +25,35 @@ function normalizeMailtrapToken(raw) {
   return s;
 }
 
+/** Parse comma-separated origins from env into a de-duplicated list. */
+function parseOriginList(raw) {
+  if (!raw) return [];
+  return Array.from(
+    new Set(
+      String(raw)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function deriveUploadsCorsOrigins() {
+  const envOrigins = parseOriginList(process.env.UPLOADS_CORS_ORIGINS);
+  if (envOrigins.length) return envOrigins;
+
+  const fallback = ["http://localhost:5173"];
+  const oauthReturnUrl = (process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || "").trim();
+  if (oauthReturnUrl) {
+    try {
+      fallback.push(new URL(oauthReturnUrl).origin);
+    } catch (_err) {
+      // Ignore invalid URL in env and keep other fallbacks.
+    }
+  }
+  return Array.from(new Set(fallback));
+}
+
 /**
  * Filesystem directory for public `/uploads/...` (logos, etc.). Uses repo `uploads/` by default
  * so paths do not depend on `process.cwd()`. Set `UPLOADS_ROOT` for Docker volumes.
@@ -37,6 +66,12 @@ const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: parseInt(process.env.PORT, 10) || 3000,
   UPLOADS_ROOT,
+  /**
+   * Comma-separated frontend origins allowed to fetch static uploads with CORS.
+   * Example:
+   * UPLOADS_CORS_ORIGINS=https://dashboard.samvaadai.com,https://staging.samvaadai.com,http://localhost:5173
+   */
+  UPLOADS_CORS_ORIGINS: deriveUploadsCorsOrigins(),
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_ACCESS_SECRET:
     process.env.JWT_ACCESS_SECRET ||
