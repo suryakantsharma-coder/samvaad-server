@@ -15,7 +15,7 @@ const router = express.Router();
 
 router.use(protect);
 router.use(requireHospitalLink);
-router.use(requireExactRoles(ROLES.ADMIN, ROLES.DOCTOR));
+router.use(requireExactRoles(ROLES.ADMIN, ROLES.DOCTOR, ROLES.HOSPITAL_ADMIN));
 
 router.get('/search', searchObservationQuery, validate, observationController.searchByPatientId);
 router.post('/', createObservation, validate, observationController.create);
