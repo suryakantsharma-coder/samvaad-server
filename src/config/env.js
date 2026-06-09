@@ -206,6 +206,11 @@ const env = {
    * Must match the sender domain allowed for your token (e.g. Mailtrap demo: `Mailtrap Test <hello@demomailtrap.co>`).
    */
   MAIL_FROM: (process.env.MAIL_FROM || "").trim(),
+  /** Exotel Calls API integration (Basic auth using API key + token). */
+  EXOTEL_REGION: (process.env.EXOTEL_REGION || "in").trim(),
+  EXOTEL_ACCOUNT_SID: (process.env.EXOTEL_ACCOUNT_SID || "").trim(),
+  EXOTEL_API_KEY: (process.env.EXOTEL_API_KEY || "").trim(),
+  EXOTEL_API_TOKEN: (process.env.EXOTEL_API_TOKEN || "").trim(),
 };
 
 module.exports = env;

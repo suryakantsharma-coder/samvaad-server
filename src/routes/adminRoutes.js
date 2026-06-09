@@ -5,15 +5,18 @@ const { protect } = require('../middleware/auth');
 const {
   requireAdmin,
   requireAdminOnly,
+  requireExactRoles,
   requireAdminOrSelfDoctorLink,
   requireHospitalLink,
 } = require('../middleware/roles');
 const { getHospitalFilter, getLinkedHospitalForResponse } = require('../utils/hospitalScope');
 const { validate } = require('../middleware/validate');
 const { validObjectId } = require('../validators/common');
+const { adminCallAnalyticsQuery } = require('../validators/callAnalytics.validator');
 const { body } = require('express-validator');
 const { ROLES } = require('../constants/roles');
 const adminUserController = require('../controllers/adminUserController');
+const adminCallAnalyticsController = require('../controllers/adminCallAnalytics.controller');
 
 const router = express.Router();
 
@@ -42,6 +45,13 @@ router.post(
 );
 
 router.use(requireAdmin);
+
+router.get(
+  '/call-analytics',
+  adminCallAnalyticsQuery,
+  validate,
+  adminCallAnalyticsController.getOwnHospitalAnalytics,
+);
 
 /** GET /api/admin/users — list all users (admin: optional ?hospitalId=; hospital_admin: scoped to linked hospital) */
 router.get('/users', async (req, res, next) => {

@@ -18,6 +18,8 @@ const hospitalSettingsRoutes = require('./hospitalSettingsRoutes');
 const dashboardRoutes = require('./dashboardRoutes');
 const payoutRoutes = require('./payoutRoutes');
 const observationRoutes = require('./observationRoutes');
+const exotelCallsRoutes = require('./exotelCallsRoutes');
+const superAdminCallAnalyticsRoutes = require('./superAdminCallAnalyticsRoutes');
 
 const router = express.Router();
 
@@ -40,6 +42,8 @@ router.use('/payments', paymentRoutes);
 router.use('/payouts', payoutRoutes);
 router.use('/razorpay', razorpayRoutes);
 router.use('/observations', observationRoutes);
+router.use('/exotel-calls', exotelCallsRoutes);
+router.use('/super-admin', superAdminCallAnalyticsRoutes);
 
 router.get('/health', (req, res) => {
   res.json({ success: true, app: 'samvaad', timestamp: new Date().toISOString() });

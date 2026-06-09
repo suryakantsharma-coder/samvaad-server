@@ -91,6 +91,14 @@ const hospitalSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /** Voice agent destination DID/mobile that maps to Exotel call.PhoneNumber. */
+    voiceAgentNumber: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+
     /** At least one public review link (Google, Practo, etc.). */
     reviewUrls: {
       type: [String],

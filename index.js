@@ -15,6 +15,10 @@ const {
   startHourlyPayoutCron,
   stopHourlyPayoutCron,
 } = require('./src/cron/hourlyPayout/hourlyPayoutCron');
+const {
+  startExotelMonthlySyncCron,
+  stopExotelMonthlySyncCron,
+} = require('./src/cron/exotel/exotelMonthlySyncCron');
 const { closeReminderQueue } = require('./src/queues/reminder.queue');
 const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
 
@@ -38,6 +42,11 @@ async function shutdown(signal) {
     stopHourlyPayoutCron();
   } catch (err) {
     console.error('[Samvaad] Hourly payout cron stop:', err.message);
+  }
+  try {
+    stopExotelMonthlySyncCron();
+  } catch (err) {
+    console.error('[Samvaad] Exotel monthly cron stop:', err.message);
   }
   try {
     await closeReminderQueue();
@@ -82,6 +91,8 @@ const start = async () => {
     await startDoctorHolidayWorker();
     console.log('[Samvaad] Starting hourly payout cron…');
     startHourlyPayoutCron();
+    console.log('[Samvaad] Starting Exotel monthly sync cron…');
+    startExotelMonthlySyncCron();
   });
 
   server.on('error', (err) => {
