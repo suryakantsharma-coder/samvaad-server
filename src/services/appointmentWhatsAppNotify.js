@@ -12,6 +12,10 @@ const {
   templateBodyNamedParameters,
   normalizeWhatsAppTo,
 } = require("./whatsappCloud");
+const {
+  TEMPLATE_KEYS,
+  getAssignedTemplateName,
+} = require("./whatsappTemplateAssignment.service");
 
 const APPOINTMENT_TZ = "Asia/Kolkata";
 
@@ -181,7 +185,12 @@ async function notifyAppointmentBooked(appointment) {
   const ref = appointment.appointmentId || "—";
   const dt = appointment.appointmentDateTime;
 
-  const templateName = env.APPOINTMENT_TEMPLATE_NAME;
+  const assignedTemplateName = await getAssignedTemplateName({
+    hospitalId,
+    phoneNumberId: creds.phone_number_id,
+    templateKey: TEMPLATE_KEYS.APPOINTMENT_CONFIRMATION,
+  });
+  const templateName = assignedTemplateName || env.APPOINTMENT_TEMPLATE_NAME;
 
   if (appointment.type === "tele-caller") {
     const textBody = buildTeleCallerAppointmentBookedText(appointment, hospitalName);

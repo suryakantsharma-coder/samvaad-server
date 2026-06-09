@@ -12,6 +12,10 @@ const {
   templateBodyNamedParameters,
   normalizeWhatsAppTo,
 } = require("./whatsappCloud");
+const {
+  TEMPLATE_KEYS,
+  getAssignedTemplateName,
+} = require("./whatsappTemplateAssignment.service");
 
 /** When / frequency: meal slots + intake; avoid repeating the same text as stored `frequency`. */
 function buildConsumptionSummary(medicine) {
@@ -187,7 +191,12 @@ async function notifyPrescriptionCreated(prescription) {
   }
 
   const link = buildPrescriptionPublicLink(prescription._id);
-  const templateName = env.PRESCRIPTION_TEMPLATE_NAME;
+  const assignedTemplateName = await getAssignedTemplateName({
+    hospitalId,
+    phoneNumberId: creds.phone_number_id,
+    templateKey: TEMPLATE_KEYS.POST_OPD_PRESCRIPTION,
+  });
+  const templateName = assignedTemplateName || env.PRESCRIPTION_TEMPLATE_NAME;
 
   if (templateName) {
     await sendWhatsAppTemplate({

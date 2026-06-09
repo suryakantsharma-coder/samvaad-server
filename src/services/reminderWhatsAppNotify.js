@@ -17,6 +17,10 @@ const {
   getResolvedHospitalMessagingSettings,
   logMessagingPermissionDenied,
 } = require("../utils/hospitalMessagingSettings");
+const {
+  TEMPLATE_KEYS,
+  getAssignedTemplateName,
+} = require("./whatsappTemplateAssignment.service");
 
 /**
  * @param {import('mongoose').Document|object} prescription
@@ -90,7 +94,12 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
     (typeof patient.fullName === "string" && patient.fullName.trim()) ||
     "Patient";
 
-  const templateName = env.MEDICINE_TEMPLATE_NAME;
+  const assignedTemplateName = await getAssignedTemplateName({
+    hospitalId,
+    phoneNumberId: creds.phone_number_id,
+    templateKey: TEMPLATE_KEYS.MEDICINE_REMINDER,
+  });
+  const templateName = assignedTemplateName || env.MEDICINE_TEMPLATE_NAME;
   const medsList = buildMedicineReminderTemplateMedicinesParam(slot, medicines || []);
 
   if (templateName) {
