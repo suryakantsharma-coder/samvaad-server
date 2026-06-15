@@ -65,6 +65,31 @@ function formatAppointmentTimeOnly(isoDate) {
   }
 }
 
+function formatHospitalAddress(hospital) {
+  if (!hospital || typeof hospital !== "object") return "—";
+  const parts = [hospital.address, hospital.city, hospital.state]
+    .map((s) => (s == null ? "" : String(s).trim()))
+    .filter(Boolean);
+  return parts.join(", ") || hospital.name || "—";
+}
+
+function formatAppointmentDateTimeCombined(isoDate) {
+  if (!isoDate) return "—";
+  try {
+    return new Date(isoDate).toLocaleString("en-IN", {
+      timeZone: APPOINTMENT_TZ,
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return String(isoDate);
+  }
+}
+
 function formatDoctorDisplayName(fullName) {
   const name = fullName?.trim() || "your specialist";
   if (/^dr\.?\s/i.test(name)) return name;
@@ -148,7 +173,7 @@ async function notifyAppointmentBooked(appointment) {
     WhatsApp.findOne({ hospitalId }).sort({ updatedAt: -1 }).lean(),
     appointment.hospital && typeof appointment.hospital === "object" && appointment.hospital.name
       ? Promise.resolve(appointment.hospital)
-      : Hospital.findById(hospitalId).select("name phoneCountryCode").lean(),
+      : Hospital.findById(hospitalId).select("name phoneCountryCode address city state").lean(),
     getResolvedHospitalMessagingSettings(hospitalId),
   ]);
 
@@ -182,7 +207,10 @@ async function notifyAppointmentBooked(appointment) {
   const hospitalName = hospital?.name || "Hospital";
   const patientName = appointment.patient?.fullName?.trim() || "Valued patient";
   const doctorDisplay = formatDoctorDisplayName(appointment.doctor?.fullName);
-  const ref = appointment.appointmentId || "—";
+  const ref =
+    appointment.patient?.patientId?.trim() ||
+    appointment.appointmentId ||
+    "—";
   const dt = appointment.appointmentDateTime;
 
   const assignedTemplateName = await getAssignedTemplateName({
@@ -214,10 +242,10 @@ async function notifyAppointmentBooked(appointment) {
       languageCode: env.APPOINTMENT_TEMPLATE_LANG,
       components: templateBodyNamedParameters({
         patient_name: patientName,
+        appointment_datetime: formatAppointmentDateTimeCombined(dt),
         doctor_name: doctorDisplay,
-        appointment_date: formatAppointmentDateOnly(dt),
-        appointment_time: formatAppointmentTimeOnly(dt),
-        reference_id: ref,
+        hospital_address: formatHospitalAddress(hospital),
+        patient_id: ref,
       }),
       defaultCountryDigits: ccDigits,
       apiVersion: creds.api_version || undefined,

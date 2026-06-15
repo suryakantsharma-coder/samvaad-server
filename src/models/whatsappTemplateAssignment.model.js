@@ -5,7 +5,11 @@ const templateKeysSchema = new mongoose.Schema(
     appointmentConfirmation: { type: String, trim: true, default: "" },
     postOpdPrescription: { type: String, trim: true, default: "" },
     medicineReminder: { type: String, trim: true, default: "" },
+    finalMedicineReminder: { type: String, trim: true, default: "" },
+    /** @deprecated use finalMedicineReminder */
+    medicationCourseCompleted: { type: String, trim: true, default: "" },
     dosageCompletion: { type: String, trim: true, default: "" },
+    /** @deprecated use medicationCourseCompleted */
     dosageFollowupNotYet: { type: String, trim: true, default: "" },
   },
   { _id: false }

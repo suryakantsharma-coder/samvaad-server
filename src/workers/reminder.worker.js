@@ -22,8 +22,13 @@ let workerConnection = null;
  */
 async function loadPrescriptionForReminders(prescriptionId) {
   return Prescription.findById(prescriptionId)
-    .populate('patient', 'fullName phoneNumber patientId hospital')
-    .populate('hospital', 'name phoneCountryCode');
+    .populate("patient", "fullName phoneNumber patientId hospital")
+    .populate("hospital", "name phoneCountryCode")
+    .populate({
+      path: "appointment",
+      select: "doctor",
+      populate: { path: "doctor", select: "fullName" },
+    });
 }
 
 function resolvePatientPhone(prescription) {

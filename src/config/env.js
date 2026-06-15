@@ -98,12 +98,38 @@ const env = {
     (process.env.APPOINTMENT_TEMPLATE_NAME || "").trim() ||
     (process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "").trim(),
   APPOINTMENT_TEMPLATE_LANG: process.env.APPOINTMENT_TEMPLATE_LANG || "en_US",
-  /** prescription_created_message — patient_name, doctor_name, link */
   PRESCRIPTION_TEMPLATE_NAME: (process.env.PRESCRIPTION_TEMPLATE_NAME || "").trim(),
   PRESCRIPTION_TEMPLATE_LANG: process.env.PRESCRIPTION_TEMPLATE_LANG || "en_US",
-  /** medicines_reminder_message — patient_name, medicines */
   MEDICINE_TEMPLATE_NAME: (process.env.MEDICINE_TEMPLATE_NAME || "").trim(),
   MEDICINE_TEMPLATE_LANG: process.env.MEDICINE_TEMPLATE_LANG || "en_US",
+  FINAL_MEDICINE_REMINDER_TEMPLATE_NAME: (
+    process.env.FINAL_MEDICINE_REMINDER_TEMPLATE_NAME ||
+    process.env.MEDICATION_COURSE_COMPLETED_TEMPLATE_NAME ||
+    process.env.DOSAGE_COMPLETION_TEMPLATE_NAME ||
+    ""
+  ).trim(),
+  FINAL_MEDICINE_REMINDER_TEMPLATE_LANG:
+    process.env.FINAL_MEDICINE_REMINDER_TEMPLATE_LANG ||
+    process.env.MEDICATION_COURSE_COMPLETED_TEMPLATE_LANG ||
+    process.env.DOSAGE_COMPLETION_TEMPLATE_LANG ||
+    "en_US",
+  /** @deprecated use FINAL_MEDICINE_REMINDER_TEMPLATE_NAME */
+  MEDICATION_COURSE_COMPLETED_TEMPLATE_NAME: (
+    process.env.MEDICATION_COURSE_COMPLETED_TEMPLATE_NAME || ""
+  ).trim(),
+  MEDICATION_COURSE_COMPLETED_TEMPLATE_LANG:
+    process.env.MEDICATION_COURSE_COMPLETED_TEMPLATE_LANG || "en_US",
+  /** @deprecated use FINAL_MEDICINE_REMINDER_TEMPLATE_NAME */
+  DOSAGE_COMPLETION_TEMPLATE_NAME: (
+    process.env.DOSAGE_COMPLETION_TEMPLATE_NAME || ""
+  ).trim(),
+  DOSAGE_COMPLETION_TEMPLATE_LANG: process.env.DOSAGE_COMPLETION_TEMPLATE_LANG || "en_US",
+  /** @deprecated merged into final_medicine_reminder */
+  DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME: (
+    process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME || ""
+  ).trim(),
+  DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG:
+    process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG || "en_US",
   /** Optional URL string for template param 2 (e.g. patient portal). Falls back to appointmentId. */
   WHATSAPP_APPOINTMENT_LINK_URL: process.env.WHATSAPP_APPOINTMENT_LINK_URL || "",
   WHATSAPP_PATIENT_PORTAL_URL: process.env.WHATSAPP_PATIENT_PORTAL_URL || "",

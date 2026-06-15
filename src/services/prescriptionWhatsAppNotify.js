@@ -208,7 +208,8 @@ async function notifyPrescriptionCreated(prescription) {
       components: templateBodyNamedParameters({
         patient_name: patientName,
         doctor_name: doctorName,
-        link,
+        prescription_link: link,
+        hospital_name: hospitalName,
       }),
       defaultCountryDigits: ccDigits,
       apiVersion: creds.api_version || undefined,

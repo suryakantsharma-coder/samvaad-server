@@ -101,7 +101,10 @@ const requireWhatsAppCredsAccess = (req, res, next) => {
     return next();
   }
   if (role === ROLES.HOSPITAL_ADMIN) {
-    const requested = req.params.hospitalId || req.query.hospitalId;
+    const requested =
+      req.params.hospitalId ||
+      req.query.hospitalId ||
+      req.body?.hospitalId;
     if (!req.user.hospital) {
       return res.status(403).json({
         success: false,

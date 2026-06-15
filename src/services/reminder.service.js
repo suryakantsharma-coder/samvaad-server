@@ -235,8 +235,21 @@ function buildMedicineReminderLine(med, slotLabelText) {
  * @param {{ name: string, dosage?: string, intake?: string }[]} medicines
  * @returns {string}
  */
+function buildMedicineReminderTemplateDetailsParam(slot, medicines) {
+  const label = slotLabel(slot);
+  return (Array.isArray(medicines) ? medicines : [])
+    .map((m) => {
+      const name = m.name && String(m.name).trim() ? String(m.name).trim() : "Medicine";
+      const dose = formatDosageForReminderLine(m.dosage);
+      const namePart = dose ? `${name} ${dose}` : name;
+      const whenFood = intakeWithFoodPhrase(m.intake);
+      return `${namePart} | ${whenFood} | ${label}`;
+    })
+    .join("\n");
+}
+
 /**
- * Body variable {{medicines}} for NAMED template (multiline list only).
+ * Body variable {{medicines}} for legacy NAMED template (multiline list only).
  * @param {'breakfast'|'lunch'|'dinner'} slot
  * @param {{ name: string, dosage?: string, intake?: string }[]} medicines
  * @returns {string}
@@ -275,16 +288,18 @@ function buildReminderMessage(patientName, slot, medicines) {
  * @param {string} patientName
  * @returns {string}
  */
-function buildFeedbackMessage(patientName) {
-  const name = patientName && String(patientName).trim() ? String(patientName).trim() : 'Patient';
+function buildFeedbackMessage(patientName, hospitalName) {
+  const name = patientName && String(patientName).trim() ? String(patientName).trim() : "Patient";
+  const facility = hospitalName && String(hospitalName).trim() ? String(hospitalName).trim() : "Hospital";
   return [
-    `Dear ${name},`,
-    '',
-    'Your medication reminder course has ended.',
-    'Please share quick feedback with your care team when convenient.',
-    '',
-    'Thank you for taking care of your health.',
-  ].join('\n');
+    `Hi ${name},`,
+    "",
+    "Your prescribed medication course has been completed.",
+    "",
+    "Please select your current recovery status using the options below.",
+    "",
+    `${facility} Care Team.`,
+  ].join("\n");
 }
 
 module.exports = {
@@ -301,6 +316,7 @@ module.exports = {
   intakeWithFoodPhrase,
   buildMedicineReminderLine,
   buildMedicineReminderTemplateMedicinesParam,
+  buildMedicineReminderTemplateDetailsParam,
   buildMedicineReminderWhatsAppBody,
   buildReminderMessage,
   buildFeedbackMessage,

@@ -10,7 +10,7 @@ const {
 } = require("./whatsappCloud");
 const {
   buildMedicineReminderWhatsAppBody,
-  buildMedicineReminderTemplateMedicinesParam,
+  buildMedicineReminderTemplateDetailsParam,
   buildFeedbackMessage,
 } = require("./reminder.service");
 const {
@@ -21,6 +21,24 @@ const {
   TEMPLATE_KEYS,
   getAssignedTemplateName,
 } = require("./whatsappTemplateAssignment.service");
+
+function formatDoctorDisplayName(fullName) {
+  const name = fullName?.trim() || "your doctor";
+  if (/^dr\.?\s/i.test(name)) return name;
+  return `Dr. ${name}`;
+}
+
+function resolvePrescriptionDoctorName(prescription) {
+  const appt = prescription.appointment;
+  if (appt && typeof appt === "object" && appt.doctor) {
+    const fullName =
+      typeof appt.doctor === "object" ? appt.doctor.fullName : String(appt.doctor);
+    if (fullName && String(fullName).trim()) {
+      return formatDoctorDisplayName(String(fullName));
+    }
+  }
+  return "your doctor";
+}
 
 /**
  * @param {import('mongoose').Document|object} prescription
@@ -100,7 +118,9 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
     templateKey: TEMPLATE_KEYS.MEDICINE_REMINDER,
   });
   const templateName = assignedTemplateName || env.MEDICINE_TEMPLATE_NAME;
-  const medsList = buildMedicineReminderTemplateMedicinesParam(slot, medicines || []);
+  const medicineDetails = buildMedicineReminderTemplateDetailsParam(slot, medicines || []);
+  const doctorName = resolvePrescriptionDoctorName(prescription);
+  const hospitalName = hospital?.name || "Hospital";
 
   if (templateName) {
     await sendWhatsAppTemplate({
@@ -111,7 +131,9 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
       languageCode: env.MEDICINE_TEMPLATE_LANG,
       components: templateBodyNamedParameters({
         patient_name: patientName,
-        medicines: medsList,
+        medicine_details: medicineDetails,
+        doctor_name: doctorName,
+        hospital_name: hospitalName,
       }),
       defaultCountryDigits: ccDigits,
       apiVersion: creds.api_version || undefined,
@@ -206,18 +228,46 @@ async function notifyPrescriptionReminderFeedback(prescription) {
     (typeof patient.fullName === "string" && patient.fullName.trim()) ||
     "Patient";
 
-  const textBody = buildFeedbackMessage(patientName);
-
-  await sendWhatsAppText({
+  const hospitalName = hospital?.name || "Hospital";
+  const assignedTemplateName = await getAssignedTemplateName({
+    hospitalId,
     phoneNumberId: creds.phone_number_id,
-    accessToken: creds.access_token,
-    to: patient.phoneNumber,
-    textBody,
-    defaultCountryDigits: ccDigits,
-    apiVersion: creds.api_version || undefined,
+    templateKey: TEMPLATE_KEYS.FINAL_MEDICINE_REMINDER,
   });
+  const templateName =
+    assignedTemplateName || env.FINAL_MEDICINE_REMINDER_TEMPLATE_NAME;
 
-  console.log("[WhatsApp] Reminder feedback sent", { prescriptionId: String(prescription._id) });
+  if (templateName) {
+    await sendWhatsAppTemplate({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: patient.phoneNumber,
+      templateName,
+      languageCode: env.FINAL_MEDICINE_REMINDER_TEMPLATE_LANG,
+      components: templateBodyNamedParameters({
+        patient_name: patientName,
+        hospital_name: hospitalName,
+      }),
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+  } else {
+    const textBody = buildFeedbackMessage(patientName, hospitalName);
+    await sendWhatsAppText({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: patient.phoneNumber,
+      textBody,
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+  }
+
+  console.log("[WhatsApp] Reminder feedback sent", {
+    prescriptionId: String(prescription._id),
+    template: Boolean(templateName),
+    templateName: templateName || null,
+  });
   return { sent: true };
 }
 
