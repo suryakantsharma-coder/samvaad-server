@@ -6,6 +6,71 @@ function toDigits(v) {
   return String(v || "").replace(/\D/g, "");
 }
 
+function pad2(v) {
+  return String(v).padStart(2, "0");
+}
+
+function getCurrentLocalYearMonth() {
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+}
+
+function getMonthRangeLocal(year, month) {
+  const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+  const end = new Date(year, month, 0, 23, 59, 59, 999);
+  return {
+    startDate: `${year}-${pad2(month)}-01`,
+    endDate: `${year}-${pad2(month)}-${pad2(end.getDate())}`,
+  };
+}
+
+/**
+ * Super admin: monthly buckets (year+month). Admin: optional custom range or month.
+ * When nothing is passed, defaults to the current calendar month (local TZ).
+ */
+function resolveAnalyticsDateRange({ startDate, endDate, year, month }) {
+  const hasYear = year != null && String(year).trim() !== "";
+  const hasMonth = month != null && String(month).trim() !== "";
+
+  if (hasYear || hasMonth) {
+    if (!hasYear || !hasMonth) {
+      return { error: "Both year and month are required for monthly analytics" };
+    }
+    const y = Number(year);
+    const m = Number(month);
+    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) {
+      return { error: "year/month invalid; month must be 1-12" };
+    }
+    const range = getMonthRangeLocal(y, m);
+    return {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      year: y,
+      month: m,
+      period: "month",
+    };
+  }
+
+  if (startDate || endDate) {
+    return {
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+      period: "range",
+    };
+  }
+
+  const current = getCurrentLocalYearMonth();
+  const range = getMonthRangeLocal(current.year, current.month);
+  return {
+    startDate: range.startDate,
+    endDate: range.endDate,
+    year: current.year,
+    month: current.month,
+    period: "month",
+    defaulted: true,
+  };
+}
+
 function parseDateBoundaries({ startDate, endDate }) {
   const out = {};
   if (startDate) {
@@ -199,6 +264,9 @@ async function getHospitalCallAnalyticsDetails({
 
 module.exports = {
   toDigits,
+  getCurrentLocalYearMonth,
+  getMonthRangeLocal,
+  resolveAnalyticsDateRange,
   getSuperAdminHospitalWiseAnalytics,
   getHospitalCallAnalyticsDetails,
 };

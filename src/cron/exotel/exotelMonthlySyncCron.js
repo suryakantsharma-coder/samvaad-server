@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const { syncExotelMonth, getCurrentUtcYearMonth } = require("../../services/exotelCalls.service");
+const { syncExotelMonth, getCurrentLocalYearMonth } = require("../../services/exotelCalls.service");
 
 let scheduledTask = null;
 
@@ -21,7 +21,7 @@ function startExotelMonthlySyncCron() {
     "10 0 1 * *",
     async () => {
       try {
-        const { year, month } = getCurrentUtcYearMonth();
+        const { year, month } = getCurrentLocalYearMonth();
         const out = await syncExotelMonth({ year, month });
         console.log("[ExotelCron] Monthly sync success", out);
       } catch (err) {

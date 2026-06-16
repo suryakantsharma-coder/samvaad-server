@@ -53,6 +53,11 @@ router.get(
   adminCallAnalyticsController.getOwnHospitalAnalytics,
 );
 
+router.get(
+  '/exotel-sync-status',
+  adminCallAnalyticsController.getExotelSyncStatus,
+);
+
 /** GET /api/admin/users — list all users (admin: optional ?hospitalId=; hospital_admin: scoped to linked hospital) */
 router.get('/users', async (req, res, next) => {
   try {

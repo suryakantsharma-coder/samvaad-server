@@ -159,12 +159,15 @@ curl --location --request DELETE 'http://localhost:3000/api/exotel-calls/sample_
 
 Optional query params:
 
+- `year` + `month` (recommended for monthly view, e.g. `year=2026&month=6`)
 - `startDate` (ISO date, e.g. `2026-06-01`)
 - `endDate` (ISO date, e.g. `2026-06-30`)
 - `hospitalId` (Mongo id)
 
+If no dates or month are sent, the API defaults to the **current calendar month** (server TZ).
+
 ```bash
-curl --location 'http://localhost:3000/api/super-admin/call-analytics?startDate=2026-06-01&endDate=2026-06-30' \
+curl --location 'http://localhost:3000/api/super-admin/call-analytics?year=2026&month=6' \
 --header 'Authorization: Bearer <JWT_SUPER_ADMIN>'
 ```
 
@@ -195,13 +198,14 @@ Sample response shape:
 
 Supports:
 
+- `year` + `month` (monthly view)
 - `page`
 - `limit`
 - `startDate`
 - `endDate`
 
 ```bash
-curl --location 'http://localhost:3000/api/super-admin/call-analytics/<HOSPITAL_ID>?page=1&limit=20&startDate=2026-06-01&endDate=2026-06-30' \
+curl --location 'http://localhost:3000/api/super-admin/call-analytics/<HOSPITAL_ID>?year=2026&month=6&page=1&limit=20' \
 --header 'Authorization: Bearer <JWT_SUPER_ADMIN>'
 ```
 
@@ -215,13 +219,25 @@ curl --location 'http://localhost:3000/api/super-admin/call-analytics/<HOSPITAL_
 
 Supports:
 
+- `year` + `month` (defaults to current month if omitted)
 - `page`
 - `limit`
 - `startDate`
 - `endDate`
 
+Call data is refreshed automatically every **24 hours** on the server (daily Exotel sync cron). The response includes `meta.exotelSync` with last sync time.
+
 ```bash
-curl --location 'http://localhost:3000/api/admin/call-analytics?page=1&limit=20&startDate=2026-06-01&endDate=2026-06-30' \
+curl --location 'http://localhost:3000/api/admin/call-analytics?year=2026&month=6&page=1&limit=20' \
+--header 'Authorization: Bearer <JWT_ADMIN_OR_HOSPITAL_ADMIN>'
+```
+
+### 4.2 Exotel sync status (admin)
+
+`GET /api/admin/exotel-sync-status`
+
+```bash
+curl --location 'http://localhost:3000/api/admin/exotel-sync-status' \
 --header 'Authorization: Bearer <JWT_ADMIN_OR_HOSPITAL_ADMIN>'
 ```
 
@@ -270,7 +286,23 @@ Optional:
 
 ```env
 EXOTEL_MONTHLY_SYNC_CRON_DISABLED=1
+EXOTEL_DAILY_SYNC_CRON_DISABLED=1
+# Optional override (default: 0 2 * * * = every day at 02:00 server TZ)
+EXOTEL_DAILY_SYNC_CRON_SCHEDULE=0 2 * * *
 ```
+
+---
+
+## Automatic Exotel sync (server cron)
+
+| Cron | Schedule | Purpose |
+|------|----------|---------|
+| **Daily** | `0 2 * * *` (02:00, `TZ`/Asia/Kolkata) | Keeps **current month** call data fresh for **admin / hospital_admin** dashboards |
+| **Monthly** | `10 0 1 * *` (1st of month, 00:10) | Full **monthly** reconciliation for **super_admin** reporting |
+
+Disable with `EXOTEL_DAILY_SYNC_CRON_DISABLED=1` or `EXOTEL_MONTHLY_SYNC_CRON_DISABLED=1`.
+
+Admin last sync info: `GET /api/admin/exotel-sync-status`
 
 ---
 

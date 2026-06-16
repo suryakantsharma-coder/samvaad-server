@@ -168,10 +168,17 @@ function getCurrentUtcYearMonth() {
   return { year: now.getUTCFullYear(), month: now.getUTCMonth() + 1 };
 }
 
+/** Calendar month in server local TZ (Asia/Kolkata when TZ is set in index.js). */
+function getCurrentLocalYearMonth() {
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+}
+
 module.exports = {
   toMonthKey,
   monthStartUtc,
   monthEndUtc,
   getCurrentUtcYearMonth,
+  getCurrentLocalYearMonth,
   syncExotelMonth,
 };

@@ -16,8 +16,20 @@ const optionalDateRangeQuery = [
     .escape(),
 ];
 
+const optionalMonthQuery = [
+  query("year")
+    .optional({ values: "falsy" })
+    .isInt({ min: 2000, max: 2100 })
+    .withMessage("year must be valid"),
+  query("month")
+    .optional({ values: "falsy" })
+    .isInt({ min: 1, max: 12 })
+    .withMessage("month must be between 1 and 12"),
+];
+
 const superAdminCallAnalyticsListQuery = [
   ...optionalDateRangeQuery,
+  ...optionalMonthQuery,
   query("hospitalId")
     .optional({ values: "falsy" })
     .isMongoId()
@@ -27,11 +39,13 @@ const superAdminCallAnalyticsListQuery = [
 const superAdminCallAnalyticsDetailsQuery = [
   validObjectId("hospitalId"),
   ...optionalDateRangeQuery,
+  ...optionalMonthQuery,
   ...paginationQuery,
 ];
 
 const adminCallAnalyticsQuery = [
   ...optionalDateRangeQuery,
+  ...optionalMonthQuery,
   ...paginationQuery,
 ];
 
