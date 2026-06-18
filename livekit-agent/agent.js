@@ -6,12 +6,15 @@ const {
   getPlainTranscript,
 } = require("./userTranscriptNormalize");
 const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
-const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
+const { applyTranscriptToBookingSlots, isEmergencyHangUpRequest } = require("./bookingSlotCapture");
+const { scheduleAutoEndCall } = require("./endPhoneCall");
 const {
   inferHospitalCallerLanguage,
   detectExplicitHospitalLanguageSwitch,
   getEmptyInputRepromptInstructions,
-  getThankYouLine,
+  HANG_UP_GU,
+  HANG_UP_HI,
+  HANG_UP_EN,
 } = require("./preferredLanguage");
 const {
   createCallBookingSlots,
@@ -20,10 +23,6 @@ const {
   maybeCaptureVisitReasonFromTranscript,
   isMongoObjectIdString,
 } = require("./callBookingSlots");
-const {
-  isAutoEndAfterBookingEnabled,
-  scheduleAutoEndAfterBookingConfirmed,
-} = require("./endPhoneCall");
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
 
@@ -59,9 +58,8 @@ async function speakCreateAppointmentResult(agent, result) {
 
   if (!primary) return;
 
-  const hospitalName =
-    agent._hospital && agent._hospital.name ? String(agent._hospital.name) : "";
-  const thankYou = getThankYouLine(lang, hospitalName);
+  const hangUp =
+    lang === "gu" ? HANG_UP_GU : lang === "en" ? HANG_UP_EN : HANG_UP_HI;
   const langLabel =
     lang === "gu" ? "Gujarati" : lang === "en" ? "English" : "Hindi";
 
@@ -69,15 +67,15 @@ async function speakCreateAppointmentResult(agent, result) {
     ? (result.appointmentUpdated
         ? "The appointment was updated (ok: true). Speak EXACTLY the status line below in " +
           langLabel +
-          ", then the thank-you closing line. Do NOT say the update failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
+          ", then the hang-up line. Do NOT say the update failed. Do NOT read internal English instructions. Do NOT change wording.\n" +
           `Status: ${primary}\n` +
-          `Thank-you: ${thankYou}`
+          `Hang-up: ${hangUp}`
         : "The appointment is booked (ok: true). Speak EXACTLY the booking status line below in " +
           langLabel +
-          ", then the thank-you closing line. Do NOT say booking failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
+          ", then the hang-up line. Do NOT say booking failed. Do NOT read internal English instructions. Do NOT change wording.\n" +
           `Booking status: ${primary}\n` +
-          `Thank-you: ${thankYou}\n` +
-          "Speak the thank-you line as your FINAL sentence — do NOT ask if they need anything else afterward. Do NOT offer further help after the thank-you.")
+          `Hang-up: ${hangUp}\n` +
+          "That status line is the ONLY full booking recap for this call — if the caller says hello / thank you later, give only one short warm line in the SAME language; never repeat the entire booking block unless they explicitly ask for the number again.")
     : "Booking failed (ok: false). Speak EXACTLY the line below in " +
       langLabel +
       ". Explain calmly what they can do next. Do not read raw technical English.\n" +
@@ -149,127 +147,117 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           });
         }
 
-        const isAppointmentBook = name === "create_appointment";
-        if (agent && isAppointmentBook) {
-          agent.appointmentBookingInFlight = true;
-        }
-
+        let result;
         try {
-          let result;
-          try {
-            result = await runHospitalTool(
-              hospitalObjectId,
-              name,
-              mergedArgs,
-              {
-                callerPhone: callerPhone || null,
-                callBookingSlots: agent ? agent.callBookingSlots : null,
-              },
-            );
-          } catch (toolErr) {
-            const msg = toolErr && toolErr.message ? toolErr.message : String(toolErr);
-            console.error(`[Agent] tool ${name} threw:`, msg);
-            if (logger) {
-              logger.log("tool_end", {
-                name,
-                ok: false,
-                durationMs: Date.now() - toolStart,
-                code: "TOOL_THREW",
-                errorMessage: msg,
-              });
-            }
-            return { ok: false, code: "TOOL_THREW", message: msg };
-          }
-
+          result = await runHospitalTool(
+            hospitalObjectId,
+            name,
+            mergedArgs,
+            {
+              callerPhone: callerPhone || null,
+              callBookingSlots: agent ? agent.callBookingSlots : null,
+            },
+          );
+        } catch (toolErr) {
+          const msg = toolErr && toolErr.message ? toolErr.message : String(toolErr);
+          console.error(`[Agent] tool ${name} threw:`, msg);
           if (logger) {
             logger.log("tool_end", {
               name,
-              ok: Boolean(result && result.ok),
+              ok: false,
               durationMs: Date.now() - toolStart,
-              code: result && result.code ? String(result.code) : null,
-              errorMessage:
-                result && !result.ok && result.message ? String(result.message) : null,
-              hasMessageHindi: Boolean(result && result.messageHindi),
-              hasMessageGujarati: Boolean(result && result.messageGujarati),
-              appointmentId:
-                result && result.appointment ? result.appointment.appointmentId : null,
+              code: "TOOL_THREW",
+              errorMessage: msg,
             });
           }
+          /** Surface as a structured failure so the model recovers naturally. */
+          return { ok: false, code: "TOOL_THREW", message: msg };
+        }
 
-          if (agent) {
-            if (
-              name === "create_patient" &&
-              result &&
-              result.ok &&
-              result.patient &&
-              result.patient._id
-            ) {
-              agent.callBookingSlots.patientObjectId = String(result.patient._id);
-            }
-            if (
-              (name === "list_doctors" || name === "search_doctors") &&
-              result &&
-              result.ok &&
-              Array.isArray(result.doctors) &&
-              result.doctors.length === 1 &&
-              result.doctors[0]._id
-            ) {
-              agent.callBookingSlots.doctorObjectId = String(
-                result.doctors[0]._id,
-              );
-            }
-            updateSlotsFromToolArgs(agent.callBookingSlots, mergedArgs);
+        if (logger) {
+          logger.log("tool_end", {
+            name,
+            ok: Boolean(result && result.ok),
+            durationMs: Date.now() - toolStart,
+            code: result && result.code ? String(result.code) : null,
+            errorMessage:
+              result && !result.ok && result.message ? String(result.message) : null,
+            hasMessageHindi: Boolean(result && result.messageHindi),
+            hasMessageGujarati: Boolean(result && result.messageGujarati),
+            appointmentId:
+              result && result.appointment ? result.appointment.appointmentId : null,
+          });
+        }
 
-            if (
-              name === "create_appointment" &&
-              result &&
-              !result.ok &&
-              result.code === "INVALID_DOCTOR_REF"
-            ) {
-              if (agent.callBookingSlots) {
-                delete agent.callBookingSlots.doctorObjectId;
-              }
-            }
+        if (agent) {
+          if (
+            name === "create_patient" &&
+            result &&
+            result.ok &&
+            result.patient &&
+            result.patient._id
+          ) {
+            agent.callBookingSlots.patientObjectId = String(result.patient._id);
+          }
+          if (
+            (name === "list_doctors" || name === "search_doctors") &&
+            result &&
+            result.ok &&
+            Array.isArray(result.doctors) &&
+            result.doctors.length === 1 &&
+            result.doctors[0]._id
+          ) {
+            agent.callBookingSlots.doctorObjectId = String(
+              result.doctors[0]._id,
+            );
+          }
+          updateSlotsFromToolArgs(agent.callBookingSlots, mergedArgs);
 
-            if (
-              name === "create_appointment" &&
-              result &&
-              result.ok &&
-              result.appointment &&
-              result.appointment.doctor &&
-              isMongoObjectIdString(String(result.appointment.doctor))
-            ) {
-              agent.callBookingSlots.doctorObjectId = String(
-                result.appointment.doctor,
-              );
+          /**
+           * If create_appointment failed because the chosen doctor reference was wrong,
+           * DROP any stale slot doctor id — otherwise mergeToolArgsWithSlots silently
+           * re-attaches Yugen on the NEXT call when the model omits doctorObjectId
+           * (common after narration). Without this fix the agent can verbally pivot to
+           * "Dr Asha Patel" yet still POST book with stale Dr Yugen's id from slots.
+           */
+          if (
+            name === "create_appointment" &&
+            result &&
+            !result.ok &&
+            result.code === "INVALID_DOCTOR_REF"
+          ) {
+            if (agent.callBookingSlots) {
+              delete agent.callBookingSlots.doctorObjectId;
             }
           }
 
-          if (name === "create_appointment" && result) {
-            if (agent && result.ok && result.appointment && result.appointment._id) {
-              agent.callBookingSlots.appointmentObjectId = String(
-                result.appointment._id,
-              );
-            }
-            if (agent) {
-              await speakCreateAppointmentResult(agent, result);
-              if (
-                result.ok &&
-                isAutoEndAfterBookingEnabled() &&
-                !agent.autoEndCallStarted
-              ) {
-                agent.autoEndCallStarted = true;
-                scheduleAutoEndAfterBookingConfirmed({ agent });
-              }
-            }
-          }
-
-          return result;
-        } finally {
-          if (agent && isAppointmentBook) {
-            agent.appointmentBookingInFlight = false;
+          if (
+            name === "create_appointment" &&
+            result &&
+            result.ok &&
+            result.appointment &&
+            result.appointment.doctor &&
+            isMongoObjectIdString(String(result.appointment.doctor))
+          ) {
+            /** Sync slot doctor reference to whoever was actually booked. */
+            agent.callBookingSlots.doctorObjectId = String(
+              result.appointment.doctor,
+            );
           }
         }
+
+        if (name === "create_appointment" && result) {
+          if (agent && result.ok && result.appointment && result.appointment._id) {
+            agent.callBookingSlots.appointmentObjectId = String(
+              result.appointment._id,
+            );
+          }
+          if (agent) {
+            await speakCreateAppointmentResult(agent, result);
+          }
+        }
+
+        return result;
       },
     });
   }
@@ -294,28 +282,11 @@ class HospitalVoiceAgent extends voice.Agent {
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
     this._getCallLogger = typeof getCallLogger === "function" ? getCallLogger : null;
-    /** @type {'hi' | 'en'} */
+    /** @type {'hi' | 'gu'} */
     this.preferredLanguage = "hi";
-    /** After first confident hi/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
+    /** After first confident hi/gu detection (or explicit switch), STT heuristics must not flip language mid-call. */
     this.preferredLanguageLocked = false;
     this.callBookingSlots = createCallBookingSlots();
-    this.appointmentBookingInFlight = false;
-    this.postBookingClosingInFlight = false;
-    this.autoEndCallStarted = false;
-    /** @type {string|null} */
-    this._callRoomName = null;
-    /** @type {null | { name?: string }} */
-    this._hospital = null;
-  }
-
-  shouldSuppressNoInputReprompt() {
-    const slots = this.callBookingSlots || {};
-    return (
-      this.appointmentBookingInFlight ||
-      this.postBookingClosingInFlight ||
-      this.autoEndCallStarted ||
-      Boolean(slots.appointmentObjectId)
-    );
   }
 
   /** Returns the per-call logger if main.js wired one up; null otherwise. */
@@ -329,8 +300,8 @@ class HospitalVoiceAgent extends voice.Agent {
   }
 
   /**
-   * Sync preferred language from user text (Sarvam STT). Locked after first inference so English
-   * or mixed snippets do not override the chosen language; use detectExplicitHospitalLanguageSwitch when locked.
+   * Sync preferred language from user text (Sarvam STT). Locked after first inference so mixed
+   * snippets do not override the chosen language; use detectExplicitHospitalLanguageSwitch when locked.
    * @param {string} text
    */
   updateLanguageFromTranscript(text) {
@@ -361,6 +332,7 @@ class HospitalVoiceAgent extends voice.Agent {
   _slotsSummaryForLog() {
     const s = this.callBookingSlots || {};
     return [
+      s.caseType ? `case:${s.caseType}` : null,
       s.fullName ? "name" : null,
       s.age != null ? "age" : null,
       s.gender ? "gender" : null,
@@ -454,6 +426,12 @@ class HospitalVoiceAgent extends voice.Agent {
       throw new voice.StopResponse();
     }
 
+    const slots = this.callBookingSlots;
+    const emergencyHangUp =
+      slots.caseType === "emergency" &&
+      slots.emergencyPhase === "await_choice" &&
+      (isEmergencyHangUpRequest(rawBefore) || isEmergencyHangUpRequest(textAfter));
+
     let bookingIx;
     try {
       bookingIx = buildBookingTurnInstructions({
@@ -461,6 +439,7 @@ class HospitalVoiceAgent extends voice.Agent {
         rawUser: rawBefore,
         normalizedUser: textAfter,
         preferredLanguage: this.preferredLanguage,
+        preferredLanguageLocked: this.preferredLanguageLocked,
       });
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
@@ -472,11 +451,9 @@ class HospitalVoiceAgent extends voice.Agent {
         });
       }
       bookingIx =
-        this.preferredLanguage === "en"
-          ? "Reply in English only as Neha, the female receptionist."
-          : this.preferredLanguage === "gu"
-            ? "Reply in Gujarati only as Neha, the female receptionist."
-            : "Reply in Hindi only as Neha, the female receptionist.";
+        this.preferredLanguage === "gu"
+          ? "Reply in Gujarati only as Neha, the female receptionist. Never offer English — Hindi and Gujarati only."
+          : "Reply in Hindi only as Neha, the female receptionist. Never offer English — Hindi and Gujarati only.";
     }
 
     if (logger) {
@@ -491,10 +468,32 @@ class HospitalVoiceAgent extends voice.Agent {
     }
 
     try {
-      this.session.generateReply({
+      const handle = this.session.generateReply({
         userMessage: newMessage,
         instructions: bookingIx,
       });
+      if (slots.caseType === "emergency" && !slots.emergencyPhase) {
+        slots.emergencyPhase = "await_choice";
+      }
+      if (emergencyHangUp) {
+        slots.emergencyPhase = "done";
+        if (handle && typeof handle.waitForPlayout === "function") {
+          handle
+            .waitForPlayout()
+            .then(() => {
+              scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
+            })
+            .catch((playoutErr) => {
+              console.warn(
+                "[Agent] emergency goodbye playout wait failed:",
+                playoutErr && playoutErr.message ? playoutErr.message : playoutErr,
+              );
+              scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
+            });
+        } else {
+          scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
+        }
+      }
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
       console.error("[Agent] generateReply (user_turn) failed:", msg);

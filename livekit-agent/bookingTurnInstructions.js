@@ -1,17 +1,20 @@
 const { isAffirmativeTurn } = require("./userTranscriptNormalize");
 const { isMongoObjectIdString } = require("./callBookingSlots");
+const {
+  isEmergencyRepeatRequest,
+  isEmergencyHangUpRequest,
+} = require("./bookingSlotCapture");
 
 /**
  * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} slots
  * @returns {'name'|'age_gender'|'reason'|null}
  */
 function getFirstMissingPatientField(slots) {
-  if (!slots) return "name";
-  if (!String(slots.fullName || "").trim()) return "name";
-  if (slots.age == null || !Number.isFinite(Number(slots.age)))
-    return "age_gender";
-  if (!String(slots.gender || "").trim()) return "age_gender";
+  if (!slots) return "reason";
   if (!String(slots.reason || "").trim()) return "reason";
+  if (!String(slots.fullName || "").trim()) return "name";
+  if (slots.age == null || !Number.isFinite(Number(slots.age))) return "age_gender";
+  if (!String(slots.gender || "").trim()) return "age_gender";
   return null;
 }
 
@@ -19,9 +22,22 @@ function getFirstMissingPatientField(slots) {
  * Short label for no-input reprompt (Hindi / English / Gujarati).
  * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} slots
  * @param {'hi'|'gu'|'en'} lang
+ * @param {boolean} [languageLocked]
  * @returns {string|null}
  */
-function getNoInputMissingTopic(slots, lang) {
+function getNoInputMissingTopic(slots, lang, languageLocked = false) {
+  if (
+    languageLocked &&
+    slots?.caseType === "emergency" &&
+    slots.emergencyPhase === "await_choice"
+  ) {
+    if (lang === "gu") return "નંબર ફરી અથવા કૉલ કાપવી";
+    return "नंबर दोबारा या कॉल काटना";
+  }
+  if (languageLocked && !slots?.caseType) {
+    if (lang === "gu") return "ઇમરજન્સી કે સામાન્ય અપોઇન્ટમેન્ટ";
+    return "इमरजेंसी या सामान्य अपॉइंटमेंट";
+  }
   const p = getFirstMissingPatientField(slots);
   if (p === "name") {
     if (lang === "gu") return "નામ";
@@ -66,6 +82,11 @@ function getNoInputMissingTopic(slots, lang) {
  */
 function formatSlotSnapshot(slots) {
   const parts = [];
+  if (slots.caseType === "emergency") parts.push("case-type=emergency");
+  else if (slots.caseType === "normal") parts.push("case-type=normal");
+  if (slots.emergencyPhase === "await_choice")
+    parts.push("emergency-awaiting-repeat-or-hangup");
+  if (slots.emergencyPhase === "done") parts.push("emergency-guidance-complete");
   if (slots.fullName) parts.push(`patient-name=${slots.fullName}`);
   if (slots.age != null && Number.isFinite(Number(slots.age)))
     parts.push(`patient-age=${slots.age}`);
@@ -78,7 +99,8 @@ function formatSlotSnapshot(slots) {
     parts.push(`pending-date-ist=${slots.pendingDateYmd}`);
   if (slots.appointmentDateTimeISO)
     parts.push(`appointment-datetime-ist=${slots.appointmentDateTimeISO}`);
-  if (slots.doctorObjectId) parts.push(`doctor-ref=${slots.doctorObjectId}`);
+  if (slots.doctorObjectId)
+    parts.push(`doctor-ref=${slots.doctorObjectId}`);
   if (isMongoObjectIdString(slots.patientObjectId))
     parts.push(`patient-ref=${slots.patientObjectId}`);
   else
@@ -87,7 +109,9 @@ function formatSlotSnapshot(slots) {
     );
   if (slots.appointmentObjectId)
     parts.push(`appointment-ref=${slots.appointmentObjectId}`);
-  return parts.length ? parts.join("; ") : "(nothing captured yet)";
+  return parts.length
+    ? parts.join("; ")
+    : "(nothing captured yet)";
 }
 
 /**
@@ -97,10 +121,17 @@ function formatSlotSnapshot(slots) {
  *   rawUser: string,
  *   normalizedUser: string,
  *   preferredLanguage: 'hi'|'gu'|'en',
+ *   preferredLanguageLocked?: boolean,
  * }} p
  */
 function buildBookingTurnInstructions(p) {
-  const { slots, rawUser, normalizedUser, preferredLanguage } = p;
+  const {
+    slots,
+    rawUser,
+    normalizedUser,
+    preferredLanguage,
+    preferredLanguageLocked = false,
+  } = p;
   const lang =
     preferredLanguage === "gu"
       ? "Gujarati"
@@ -110,7 +141,8 @@ function buildBookingTurnInstructions(p) {
   const snapshot = formatSlotSnapshot(slots);
   const missingPatient = getFirstMissingPatientField(slots);
   const hasPatient =
-    !missingPatient && String(slots.reason || "").trim().length > 0;
+    !missingPatient &&
+    String(slots.reason || "").trim().length > 0;
   const hasIso = String(slots.appointmentDateTimeISO || "").trim().length > 0;
   const hasDoctor = String(slots.doctorObjectId || "").trim().length > 0;
   const hasPatientOid = isMongoObjectIdString(slots.patientObjectId);
@@ -118,7 +150,35 @@ function buildBookingTurnInstructions(p) {
   const affirm = isAffirmativeTurn(rawUser, normalizedUser);
 
   let action;
-  if (missingPatient) {
+  if (!preferredLanguageLocked) {
+    action =
+      "Internal-next-turn: caller has not clearly chosen Hindi or Gujarati yet — ask once more in one short line (Hindi + Gujarati option only). NEVER offer English. Do NOT ask about emergency, symptoms, name, or booking yet.";
+  } else if (!slots.caseType) {
+    action =
+      `Internal-next-turn: hospital greeting and language choice are done — ask ONLY whether this is an emergency case or a normal appointment, in one short ${lang} question. Do NOT ask for symptoms, disease, name, or booking details yet.`;
+  } else if (slots.caseType === "emergency") {
+    if (slots.emergencyPhase === "done") {
+      action =
+        `Internal-next-turn: emergency guidance is complete. If the caller speaks again, one very short ${lang} line only — they may disconnect. Do NOT book.`;
+    } else if (slots.emergencyPhase === "await_choice") {
+      if (isEmergencyHangUpRequest(rawUser) || isEmergencyHangUpRequest(normalizedUser)) {
+        action =
+          `Internal-next-turn: caller wants to end the call. In one short warm ${lang} line thank them and say they can disconnect now. Do NOT book.`;
+      } else if (
+        isEmergencyRepeatRequest(rawUser) ||
+        isEmergencyRepeatRequest(normalizedUser)
+      ) {
+        action =
+          `Internal-next-turn: caller asked to hear the emergency number again. Repeat the hospital emergency number from HOSPITAL context once clearly in ${lang}, then ask again: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book.`;
+      } else {
+        action =
+          `Internal-next-turn: after giving the emergency number, the caller's reply was unclear. Repeat the emergency number once in ${lang}, then ask again: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book.`;
+      }
+    } else {
+      action =
+        `Internal-next-turn: caller said EMERGENCY. In one calm ${lang} reply: (1) tell them to go to the emergency department immediately or call the hospital emergency number from your HOSPITAL context; (2) then ask: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book a routine outpatient appointment. Stay feminine.`;
+    }
+  } else if (missingPatient) {
     action = `Internal-next-turn: ask for ONLY the first missing patient field (${missingPatient}) in one short ${lang} question. Do NOT read back the full booking block. Acknowledge briefly if needed.`;
   } else if (!hasIso) {
     action = `Internal-next-turn: ask for ONLY date and clock time (one short ${lang} question) unless the caller already fixed it this turn. Use the captured pending date if the caller only repeated the time.`;
@@ -148,9 +208,9 @@ function buildBookingTurnInstructions(p) {
       lang +
       " (no English variable names, tool names, MongoDB/ID/JSON terms, or status words like ok/true/false/null — see the hard-banned list in the main system prompt).",
     preferredLanguage === "hi"
-      ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers (Great, Understood, Okay, Sure, Please, Thank you) and no English questions; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names (Hardik, Sarvodaya) are allowed as names only."
-      : preferredLanguage === "en"
-        ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
+      ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers and no Gujarati sentences; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names are allowed as names only."
+      : preferredLanguage === "gu"
+        ? "LANGUAGE_LOCK: Caller chose Gujarati for this call. Speak only Gujarati — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
         : "",
     isMongoObjectIdString(slots?.doctorObjectId)
       ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."

@@ -136,6 +136,65 @@ function maybeCaptureAgeGenderFromTranscript(slots, text) {
  * @param {import("./callBookingSlots").CallBookingSlots} slots
  * @param {string} text
  */
+function maybeCaptureCaseTypeFromTranscript(slots, text) {
+  if (!slots || slots.caseType) return;
+  const t = String(text || "").trim();
+  if (!t || t.length < 3) return;
+  if (
+    /^(?:english|hindi|gujarati|inglish|angrezi|हिंदी|हिन्दी|गुजराती|ગુજરાતી|इंग्लिश|अंग्रेजी)\b/i.test(
+      t,
+    )
+  ) {
+    return;
+  }
+  if (
+    /\b(?:emergency|urgent)\b/i.test(t) ||
+    /इमरजेंसी|आपातकाल|आपात|एमर्जेंसी/i.test(t)
+  ) {
+    slots.caseType = "emergency";
+    return;
+  }
+  if (
+    /\b(?:normal|regular|routine)\b/i.test(t) ||
+    /सामान्य|नॉर्मल|साधारण/i.test(t)
+  ) {
+    slots.caseType = "normal";
+  }
+}
+
+/**
+ * @param {string} text
+ */
+function isEmergencyRepeatRequest(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return (
+    /\b(?:repeat|again|once\s+more)\b/i.test(t) ||
+    /दोबारा|फिर\s*से|एक\s*बार\s*और|दुबारा|रिपीट/i.test(t)
+  );
+}
+
+/**
+ * @param {string} text
+ */
+function isEmergencyHangUpRequest(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return (
+    /\b(?:hang\s*up|disconnect|cut\s+(?:the\s+)?call|end\s+(?:the\s+)?call|bye|goodbye|thanks?|thank\s+you)\b/i.test(
+      t,
+    ) ||
+    /कॉल\s*काट|काट\s*द|काट\s*सक|डिस्कनेक्ट|धन्यवाद|बाय|नहीं\s*चाहिए|ठीक\s*है|theek|thik/i.test(
+      t,
+    ) ||
+    /^(?:no|nahi|na|ना|नहीं)\.?$/i.test(t)
+  );
+}
+
+/**
+ * @param {import("./callBookingSlots").CallBookingSlots} slots
+ * @param {string} text
+ */
 function maybeCaptureFirstVisitFromTranscript(slots, text) {
   if (!slots || slots.firstVisit !== undefined) return;
   const t = String(text || "").trim();
@@ -190,6 +249,7 @@ function applyTranscriptToBookingSlots(slots, rawUserText) {
   if (!slots) return;
   const raw = String(rawUserText || "").trim();
   if (!raw) return;
+  maybeCaptureCaseTypeFromTranscript(slots, raw);
   maybeCaptureNameFromTranscript(slots, raw);
   maybeCaptureAgeGenderFromTranscript(slots, raw);
   maybeCaptureFirstVisitFromTranscript(slots, raw);
@@ -199,6 +259,9 @@ function applyTranscriptToBookingSlots(slots, rawUserText) {
 
 module.exports = {
   applyTranscriptToBookingSlots,
+  maybeCaptureCaseTypeFromTranscript,
+  isEmergencyRepeatRequest,
+  isEmergencyHangUpRequest,
   maybeCaptureNameFromTranscript,
   maybeCaptureAgeGenderFromTranscript,
   maybeCaptureFirstVisitFromTranscript,

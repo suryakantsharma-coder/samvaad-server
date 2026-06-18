@@ -21,6 +21,7 @@ const {
 } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
+const { getHospitalLanguageGreetingInstructions } = require("./preferredLanguage");
 const { attachCallLogger } = require("./callLogger");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
@@ -562,7 +563,6 @@ const agentDef = defineAgent({
         routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
         getCallLogger: () => callLogger,
       });
-      hospitalAgent._hospital = { name: hospital.name };
       hospitalAgent._callRoomName = roomName;
 
       const inputOpts = buildAgentSessionInputOptions({
@@ -608,12 +608,9 @@ const agentDef = defineAgent({
               ? getNoInputMissingTopic(
                   hospitalAgent.callBookingSlots,
                   hospitalAgent.preferredLanguage,
+                  hospitalAgent.preferredLanguageLocked,
                 )
               : null,
-          shouldSuppressReprompt: () =>
-            hospitalAgent
-              ? hospitalAgent.shouldSuppressNoInputReprompt()
-              : false,
           onReprompt: (info) => {
             if (callLogger) {
               callLogger.log("reprompt", {
@@ -631,11 +628,7 @@ const agentDef = defineAgent({
           if (!ev || !ev.isFinal) return;
           hospitalAgent.updateLanguageFromTranscript(ev.transcript || "");
           samvaadTts._targetLanguageCode =
-            hospitalAgent.preferredLanguage === "en"
-              ? "en-IN"
-              : hospitalAgent.preferredLanguage === "gu"
-                ? "gu-IN"
-                : "hi-IN";
+            hospitalAgent.preferredLanguage === "gu" ? "gu-IN" : "hi-IN";
         });
       } else if (useSarvamStt) {
         /**
@@ -644,7 +637,7 @@ const agentDef = defineAgent({
          * Realtime model, not through LiveKit's chat-context path. Without
          * this hook, `hospitalAgent.preferredLanguage` stays at "hi" forever,
          * which causes no-input reprompts and post-booking status lines to
-         * speak Hindi in the middle of an English call. Mirror the language
+         * speak Hindi in the middle of a Gujarati call. Mirror the language
          * inference + STT-side slot capture here so the side-channels work.
          */
         session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
@@ -743,8 +736,7 @@ const agentDef = defineAgent({
       let handle;
       try {
         handle = session.generateReply({
-          instructions:
-            `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in English ("बातचीत हिंदी में रखें या English में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
+          instructions: getHospitalLanguageGreetingInstructions(hospital.name),
         });
         await handle.waitForPlayout();
       } catch (err) {

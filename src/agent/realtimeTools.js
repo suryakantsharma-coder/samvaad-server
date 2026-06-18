@@ -116,7 +116,7 @@ function getRealtimeTools() {
           patientObjectId: {
             type: "string",
             description:
-              '**Required.** MongoDB ObjectId string (24 hex characters) from **create_patient** response field `patient._id`, OR from **fetch_patient_by_patientId** / **fetch_patient_by_phone** result `patient._id`. **Never** use human patientId (P-2026-…), caller age, or placeholders like "1" — only the `_id` from a successful patient tool call.',
+              "**Required.** MongoDB ObjectId string (24 hex characters) from **create_patient** response field `patient._id`, OR from **fetch_patient_by_patientId** / **fetch_patient_by_phone** result `patient._id`. **Never** use human patientId (P-2026-…), caller age, or placeholders like \"1\" — only the `_id` from a successful patient tool call.",
           },
           reason: {
             type: "string",

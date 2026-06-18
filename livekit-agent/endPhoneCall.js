@@ -179,13 +179,13 @@ async function autoEndCallAfterBooking(opts = {}) {
 }
 
 /**
- * Schedule hangup after the create_appointment tool returns to LiveKit Realtime
- * (so tool_response speech can finish before the SIP line drops).
+ * Schedule hangup after agent closing speech (booking confirmation or emergency goodbye).
  * @param {{
- *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
+ *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _callRoomName?: string | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
+ *   purpose?: string,
  * }} p
  */
-function scheduleAutoEndAfterBookingConfirmed(p) {
+function scheduleAutoEndCall(p) {
   const agent = p && p.agent;
   if (!agent || !isAutoEndAfterBookingEnabled()) return;
 
@@ -198,9 +198,10 @@ function scheduleAutoEndAfterBookingConfirmed(p) {
   const session = agent.session || null;
   const logger =
     typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
+  const purpose = (p && p.purpose) || "auto_end";
 
   agent.postBookingClosingInFlight = true;
-  console.log(LOG_TAG, "scheduling auto hangup after booking for room:", roomName || "(missing)");
+  console.log(LOG_TAG, `scheduling auto hangup (${purpose}) for room:`, roomName || "(missing)");
 
   setImmediate(() => {
     autoEndCallAfterBooking({ roomName, session, logger })
@@ -208,13 +209,24 @@ function scheduleAutoEndAfterBookingConfirmed(p) {
         const msg = err && err.message ? err.message : String(err);
         console.error(LOG_TAG, "deferred auto end failed:", msg);
         if (logger && typeof logger.log === "function") {
-          logger.log("auto_end_error", { errorMessage: msg, roomName });
+          logger.log("auto_end_error", { errorMessage: msg, roomName, purpose });
         }
       })
       .finally(() => {
         agent.postBookingClosingInFlight = false;
       });
   });
+}
+
+/**
+ * Schedule hangup after the create_appointment tool returns to LiveKit Realtime
+ * (so tool_response speech can finish before the SIP line drops).
+ * @param {{
+ *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
+ * }} p
+ */
+function scheduleAutoEndAfterBookingConfirmed(p) {
+  scheduleAutoEndCall({ agent: p && p.agent, purpose: "post_booking" });
 }
 
 module.exports = {
@@ -226,5 +238,6 @@ module.exports = {
   waitForAgentSpeechIdle,
   waitForStableAgentIdle,
   autoEndCallAfterBooking,
+  scheduleAutoEndCall,
   scheduleAutoEndAfterBookingConfirmed,
 };

@@ -13,8 +13,37 @@ const EXPLICIT_HI_RE = /\b(hindi|hindii|hinglish)\b/i;
 const EXPLICIT_EN_RE =
   /\b(english|inglish|inglis|angrezi)\b/i;
 
+const HANG_UP_HI = "आप कॉल काट सकते हैं। धन्यवाद।";
+const HANG_UP_EN = "You can disconnect the call now. Thank you.";
+const HANG_UP_GU = "તમે કૉલ કાપી શકો છો. આભાર.";
+
 /**
- * Reply right after "Hindi or English?" that does NOT choose a language — must not lock English.
+ * Exact opening greeting — Hindi or Gujarati only.
+ * @param {string} hospitalName
+ */
+function getHospitalLanguageGreetingInstructions(hospitalName) {
+  const name = String(hospitalName || "").trim() || "the hospital";
+  return (
+    "You are Neha (female receptionist). Say ONLY this Hindi greeting — do not add or change words. " +
+    "NEVER mention English or अंग्रेजी. The only language choices are Hindi or Gujarati.\n" +
+    `Script: "नमस्ते, ${name} में आपका स्वागत है। मैं नेहा बोल रही हूँ। कृपया बताइए, बातचीत हिंदी में रखें या ગુજરાતીમાં?"\n` +
+    "After they clearly choose Hindi or Gujarati, use only that language for the rest of the call until they ask to switch."
+  );
+}
+
+/**
+ * Reprompt when language choice is unclear (Hindi or Gujarati only).
+ * @param {'hi'|'gu'} lang
+ */
+function getHospitalLanguageRepromptLine(lang) {
+  if (lang === "gu") {
+    return "કૃપા કરીને સ્પષ્ટ કહો — હિંદી કે ગુજરાતીમાં?";
+  }
+  return "कृपया साफ़ बताइए — हिंदी में रखें या ગુજરાતીમાં?";
+}
+
+/**
+ * Reply right after "Hindi or Gujarati?" that does NOT choose a language — must not lock yet.
  * STT often returns "Okay" / "Yes" / "Haan" when the user only acknowledges the greeting.
  * @param {string} text
  */
@@ -93,25 +122,25 @@ function looksLikeEnglishPrimary(s) {
 }
 
 /**
- * Hospital receptionist: Hindi vs English only (no Gujarati lock from STT).
+ * Hospital receptionist: Hindi vs Gujarati only.
  * @param {string} text
- * @returns {'hi'|'en'|null}
+ * @returns {'hi'|'gu'|null}
  */
 function inferHospitalCallerLanguage(text) {
   const s = String(text || "").trim();
   if (!s) return null;
   if (isBareLanguageChoiceNonAnswer(s)) return null;
-  if (EXPLICIT_EN_RE.test(s)) return "en";
-  if (/इंग्लिश|इंग्रेजी|अंग्रेज़ी|अंग्रेजी/.test(s)) return "en";
-  if (looksLikeEnglishPrimary(s)) return "en";
-  if (/हिंदी|हिन्दी/.test(s) || EXPLICIT_HI_RE.test(s)) return "hi";
-  if (isShortDevanagariNoise(s)) return null;
-  if (HINDI_SCRIPT_RE.test(s) || HINDI_HINT_RE.test(s)) return "hi";
-  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return null;
-  if (/\b(hindi|english)\b/i.test(s)) {
-    if (/\benglish\b/i.test(s) && !/\bhindi\b/i.test(s)) return "en";
-    if (/\bhindi\b/i.test(s) && !/\benglish\b/i.test(s)) return "hi";
+  if (/ગુજરાતી/.test(s) || EXPLICIT_GU_RE.test(s) || /गुजराती|गુજરાતી/i.test(s)) {
+    return "gu";
   }
+  if (/हिंदी|हिन्दी/.test(s) || EXPLICIT_HI_RE.test(s)) return "hi";
+  if (/\b(hindi|gujarati)\b/i.test(s)) {
+    if (/\bgujarati\b/i.test(s) && !/\bhindi\b/i.test(s)) return "gu";
+    if (/\bhindi\b/i.test(s) && !/\bgujarati\b/i.test(s)) return "hi";
+  }
+  if (isShortDevanagariNoise(s)) return null;
+  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return "gu";
+  if (HINDI_SCRIPT_RE.test(s) || HINDI_HINT_RE.test(s)) return "hi";
   return null;
 }
 
@@ -140,27 +169,12 @@ function detectExplicitLanguageSwitch(text) {
 }
 
 /**
- * Explicit Hindi ↔ English when hospital language is locked.
+ * Explicit Hindi ↔ Gujarati when hospital language is locked.
  * @param {string} text
- * @returns {'hi'|'en'|null}
+ * @returns {'hi'|'gu'|null}
  */
 function detectExplicitHospitalLanguageSwitch(text) {
-  const s = String(text || "").trim();
-  if (!s || s.length > 160) return null;
-  const toEn =
-    EXPLICIT_EN_RE.test(s) ||
-    /(अब|कृपया|प्लीज़|please)?\s*(इंग्लिश|अंग्रेज़ी|अंग्रेजी)\s*(में)?/i.test(s) ||
-    /\b(speak|switch\s+to|in)\s+english\b/i.test(s) ||
-    /\benglish\s*(please|maam|madam)?\b/i.test(s);
-  const toHi =
-    /(अब|कृपया)?\s*(हिंदी|हिन्दी)\s*(में)?/i.test(s) ||
-    /(हिंदी|हिन्दी)\s*(में)?\s*(रख|रखे|रखना|बोल|बात)/i.test(s) ||
-    /\bhindi\s+(mein|main)\b/i.test(s) ||
-    /\b(speak|switch\s+to)\s+hindi\b/i.test(s) ||
-    /\bhindi\s*(please|maam|madam)?\b/i.test(s);
-  if (toEn && !toHi) return "en";
-  if (toHi && !toEn) return "hi";
-  return null;
+  return detectExplicitLanguageSwitch(text);
 }
 
 /**
@@ -249,4 +263,9 @@ module.exports = {
   getEmptyInputRepromptInstructions,
   getNoInputRepromptInstructions,
   getThankYouLine,
+  getHospitalLanguageGreetingInstructions,
+  getHospitalLanguageRepromptLine,
+  HANG_UP_HI,
+  HANG_UP_EN,
+  HANG_UP_GU,
 };

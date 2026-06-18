@@ -149,13 +149,18 @@ function extractItemText(item) {
  * }}
  */
 function attachCallLogger(opts) {
-  const { session, hospital, callerPhone, roomName, voicePipeline, logTag } =
-    opts;
+  const {
+    session,
+    hospital,
+    callerPhone,
+    roomName,
+    voicePipeline,
+    logTag,
+  } = opts;
 
   const callerKey = normalizeCallerKey(callerPhone);
   const startIso = isoNow();
-  const tag =
-    logTag || `[CallLog ${sanitizeForFilename(roomName).slice(0, 24)}]`;
+  const tag = logTag || `[CallLog ${sanitizeForFilename(roomName).slice(0, 24)}]`;
 
   let filePath = null;
   let stream = null;
@@ -170,17 +175,18 @@ function attachCallLogger(opts) {
   let lastUserMessageAt = 0;
 
   try {
-    const dir = path.join(CALLER_NUMBERS_ROOT, callerKey, "conversations");
+    const dir = path.join(
+      CALLER_NUMBERS_ROOT,
+      callerKey,
+      "conversations",
+    );
     fs.mkdirSync(dir, { recursive: true });
-    const filename = `${startIso.replace(/[:.]/g, "-")}__${sanitizeForFilename(roomName)}.jsonl`;
+    const filename =
+      `${startIso.replace(/[:.]/g, "-")}__${sanitizeForFilename(roomName)}.jsonl`;
     filePath = path.join(dir, filename);
     stream = fs.createWriteStream(filePath, { flags: "a" });
     stream.on("error", (err) => {
-      console.warn(
-        tag,
-        "stream error:",
-        err && err.message ? err.message : err,
-      );
+      console.warn(tag, "stream error:", err && err.message ? err.message : err);
     });
   } catch (err) {
     console.warn(
@@ -196,7 +202,11 @@ function attachCallLogger(opts) {
     try {
       stream.write(`${JSON.stringify(obj)}\n`);
     } catch (err) {
-      console.warn(tag, "write fail:", err && err.message ? err.message : err);
+      console.warn(
+        tag,
+        "write fail:",
+        err && err.message ? err.message : err,
+      );
     }
   };
 
@@ -247,10 +257,7 @@ function attachCallLogger(opts) {
         }
         break;
       case "tool_start":
-        console.log(
-          tag,
-          `TOOL ${entry.name} start args=${truncate(JSON.stringify(entry.args || {}), 220)}`,
-        );
+        console.log(tag, `TOOL ${entry.name} start args=${truncate(JSON.stringify(entry.args || {}), 220)}`);
         break;
       case "tool_end":
         console.log(
@@ -259,10 +266,7 @@ function attachCallLogger(opts) {
         );
         break;
       case "reprompt":
-        console.log(
-          tag,
-          `REPROMPT (${entry.reason}) lang=${entry.lang}${entry.missingTopic ? " topic=" + entry.missingTopic : ""}`,
-        );
+        console.log(tag, `REPROMPT (${entry.reason}) lang=${entry.lang}${entry.missingTopic ? " topic=" + entry.missingTopic : ""}`);
         break;
       case "generate_reply":
         console.log(
@@ -295,18 +299,6 @@ function attachCallLogger(opts) {
         break;
       case "greeting":
         console.log(tag, "Initial greeting sent");
-        break;
-      case "emergency_transfer_start":
-        console.log(
-          tag,
-          `Emergency transfer start → ${entry.emergencyNumber || "?"} via=${entry.transferMethod || "?"}`,
-        );
-        break;
-      case "emergency_transfer_end":
-        console.log(
-          tag,
-          `Emergency transfer ${entry.ok ? "ok" : "failed"} via=${entry.transferMethod || "?"} ${entry.error || ""}`.trim(),
-        );
         break;
       case "session_start":
         console.log(
@@ -439,12 +431,7 @@ function attachCallLogger(opts) {
     if (!ev) return;
     const err = ev.error;
     log("session_error", {
-      source:
-        typeof ev.source === "string"
-          ? ev.source
-          : ev.source && ev.source.constructor
-            ? ev.source.constructor.name
-            : "unknown",
+      source: typeof ev.source === "string" ? ev.source : (ev.source && ev.source.constructor ? ev.source.constructor.name : "unknown"),
       errorMessage:
         err && err.message
           ? String(err.message)
@@ -470,14 +457,8 @@ function attachCallLogger(opts) {
   };
 
   try {
-    session.on(
-      AgentSessionEventTypes.UserInputTranscribed,
-      onUserInputTranscribed,
-    );
-    session.on(
-      AgentSessionEventTypes.ConversationItemAdded,
-      onConversationItemAdded,
-    );
+    session.on(AgentSessionEventTypes.UserInputTranscribed, onUserInputTranscribed);
+    session.on(AgentSessionEventTypes.ConversationItemAdded, onConversationItemAdded);
     session.on(AgentSessionEventTypes.AgentStateChanged, onAgentStateChanged);
     session.on(AgentSessionEventTypes.UserStateChanged, onUserStateChanged);
     session.on(AgentSessionEventTypes.SpeechCreated, onSpeechCreated);
@@ -495,18 +476,9 @@ function attachCallLogger(opts) {
     if (detached) return;
     detached = true;
     try {
-      session.off(
-        AgentSessionEventTypes.UserInputTranscribed,
-        onUserInputTranscribed,
-      );
-      session.off(
-        AgentSessionEventTypes.ConversationItemAdded,
-        onConversationItemAdded,
-      );
-      session.off(
-        AgentSessionEventTypes.AgentStateChanged,
-        onAgentStateChanged,
-      );
+      session.off(AgentSessionEventTypes.UserInputTranscribed, onUserInputTranscribed);
+      session.off(AgentSessionEventTypes.ConversationItemAdded, onConversationItemAdded);
+      session.off(AgentSessionEventTypes.AgentStateChanged, onAgentStateChanged);
       session.off(AgentSessionEventTypes.UserStateChanged, onUserStateChanged);
       session.off(AgentSessionEventTypes.SpeechCreated, onSpeechCreated);
       session.off(AgentSessionEventTypes.Error, onError);
