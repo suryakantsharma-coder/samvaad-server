@@ -13,6 +13,7 @@ const { getNoInputRepromptInstructions } = require("./preferredLanguage");
  *   getPreferredLanguage?: () => ('hi'|'gu'|'en'|null|undefined),
  *   getNoInputTopic?: () => (string|null|undefined),
  *   onReprompt?: (info: { lang: 'hi'|'gu'|'en', missingTopic: string|null }) => void,
+ *   shouldSuppressReprompt?: () => boolean,
  * }} [opts]
  * @returns {() => void} detach listeners and clear timer
  */
@@ -22,6 +23,7 @@ function attachNoInputReprompt(session, opts = {}) {
   const getPreferredLanguage = opts.getPreferredLanguage;
   const getNoInputTopic = opts.getNoInputTopic;
   const onReprompt = opts.onReprompt;
+  const shouldSuppressReprompt = opts.shouldSuppressReprompt;
   if (!ms || ms <= 0 || !session) {
     return () => {};
   }
@@ -36,15 +38,31 @@ function attachNoInputReprompt(session, opts = {}) {
     }
   };
 
+  const isRepromptSuppressed = () => {
+    if (typeof shouldSuppressReprompt !== "function") return false;
+    try {
+      return Boolean(shouldSuppressReprompt());
+    } catch (e) {
+      console.warn(
+        logTag,
+        "shouldSuppressReprompt:",
+        e && e.message ? e.message : e,
+      );
+      return false;
+    }
+  };
+
   const armIfBothListening = () => {
     clearTimer();
     if (session.closing) return;
+    if (isRepromptSuppressed()) return;
     if (session.agentState !== "listening" || session.userState !== "listening")
       return;
     const gen = ++armGeneration;
     timer = setTimeout(() => {
       if (gen !== armGeneration) return;
       if (session.closing) return;
+      if (isRepromptSuppressed()) return;
       if (session.agentState !== "listening" || session.userState !== "listening")
         return;
       try {

@@ -224,12 +224,21 @@ function getNoInputRepromptInstructions(lang, opts = {}) {
   );
 }
 
-const HANG_UP_HI =
-  "अगर और कुछ पूछना हो तो बताइएगा; वरना आप कॉल काट सकते हैं। धन्यवाद।";
-const HANG_UP_GU =
-  "જો હજી કંઈ પૂછવું હોય તો કહેજો; નહીંતર તમે ફોન મૂકી શકો છો. આભાર.";
-const HANG_UP_EN =
-  "If you need anything else, just say so; otherwise you may hang up. Thank you.";
+/**
+ * Post-booking closing line — thank the caller; never ask them to hang up.
+ * @param {'hi'|'gu'|'en'} lang
+ * @param {string | null | undefined} hospitalName
+ */
+function getThankYouLine(lang, hospitalName) {
+  const name = String(hospitalName || "").trim() || "the hospital";
+  if (lang === "en") {
+    return `Thank you for calling ${name}.`;
+  }
+  if (lang === "gu") {
+    return `${name} ને કૉલ કરવા બદલ આભાર.`;
+  }
+  return `${name} को कॉल करने के लिए धन्यवाद।`;
+}
 
 module.exports = {
   detectPreferredLanguage,
@@ -239,7 +248,5 @@ module.exports = {
   detectExplicitHospitalLanguageSwitch,
   getEmptyInputRepromptInstructions,
   getNoInputRepromptInstructions,
-  HANG_UP_HI,
-  HANG_UP_GU,
-  HANG_UP_EN,
+  getThankYouLine,
 };

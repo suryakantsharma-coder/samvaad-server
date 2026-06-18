@@ -50,7 +50,9 @@ function buildUpcomingWeekdayReference() {
     const targetDow = (todayDow + i) % 7;
     if (targetDow === 0) continue; // skip Sunday
     const dateUtc = new Date(todayStartUtc.getTime() + i * 24 * 60 * 60 * 1000);
-    rows.push(`${WEEKDAY_LABELS_EN[targetDow]} = ${formatCalendarDateIST(dateUtc)}`);
+    rows.push(
+      `${WEEKDAY_LABELS_EN[targetDow]} = ${formatCalendarDateIST(dateUtc)}`,
+    );
   }
   return rows.join(", ");
 }
@@ -64,7 +66,9 @@ No hospital context was provided. Greet briefly in Hindi and English: say you ca
 // ─── Main builder ─────────────────────────────────────────────────────────────
 async function getHospitalInstructions(hospital, callerPhone = null) {
   if (!hospital) {
-    console.warn("[Agent] getHospitalInstructions: no hospital provided — using fallback.");
+    console.warn(
+      "[Agent] getHospitalInstructions: no hospital provided — using fallback.",
+    );
     return HOSPITAL_PROMPT;
   }
 
@@ -85,7 +89,9 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
       .select("fullName designation availability status averagePatientTime")
       .lean();
 
-    console.log(`[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`);
+    console.log(
+      `[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`,
+    );
 
     if (doctors && doctors.length > 0) {
       const byDept = {};
@@ -113,7 +119,10 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
         .join("\n");
     }
   } catch (err) {
-    console.error(`[Agent] DoctorModel.find failed for ${hospitalName}:`, err.message);
+    console.error(
+      `[Agent] DoctorModel.find failed for ${hospitalName}:`,
+      err.message,
+    );
   }
 
   const todayYmd = istTodayYmd();
@@ -155,9 +164,11 @@ Match the caller's complaint to the right specialty (cough/throat → ENT or Gen
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CALLER PHONE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${callerNum
+${
+  callerNum
     ? `Stored: **${callerNum}** — used in tools. Do NOT ask; do NOT read digits aloud.`
-    : `No number on file — leave phone blank in tools. Do NOT ask.`}
+    : `No number on file — leave phone blank in tools. Do NOT ask.`
+}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANGUAGE — Hindi OR English only
@@ -267,12 +278,13 @@ SIMPLE BOOKING FLOW
 
 10. **Success**
    The tool returns **messageHindi** / **messageEnglish** (and Gujarati for legacy). Speak the line that matches the **locked** language, then closing:
-   HI: "अगर और कुछ हो तो बताइएगा; वरना कॉल काट सकते हैं। धन्यवाद।"
-   EN: "If you need anything else, I'm here; otherwise you can hang up. Thank you."
-   Feminine in Hindi ("मैंने बुक कर दी है"). Do not repeat the full booking unless they ask.
+   HI: "${hospitalName} को कॉल करने के लिए धन्यवाद।"
+   EN: "Thank you for calling ${hospitalName}."
+   GU: "${hospitalName} ને કૉલ કરવા બદલ આભાર."
+   Never tell the caller to hang up or cut the call — only thank them for calling. Feminine in Hindi ("मैंने बुक कर दी है"). Do not repeat the full booking unless they ask.
 
 11. **After booking — small talk**
-   Random hello/thanks → one short line in the **locked** language only — no full recap.
+   After the thank-you closing line, do NOT ask if they need more help — the call ends automatically. If they speak before disconnect, one short warm line only.
 
 12. **Failure**
    Speak **messageHindi** or **messageEnglish** matching their language (from the tool). If only English **message** exists, paraphrase calmly — never read raw errors. Stay brief.

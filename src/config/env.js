@@ -43,7 +43,9 @@ function deriveUploadsCorsOrigins() {
   if (envOrigins.length) return envOrigins;
 
   const fallback = ["http://localhost:5173"];
-  const oauthReturnUrl = (process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || "").trim();
+  const oauthReturnUrl = (
+    process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || ""
+  ).trim();
   if (oauthReturnUrl) {
     try {
       fallback.push(new URL(oauthReturnUrl).origin);
@@ -91,14 +93,18 @@ const env = {
     process.env.WEBHOOK_TOKEN ||
     "",
   /** If set, appointment bookings send this approved template (3 body vars: patient name, link/ID, hospital name). */
-  WHATSAPP_APPOINTMENT_TEMPLATE_NAME: process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "",
-  WHATSAPP_APPOINTMENT_TEMPLATE_LANG: process.env.WHATSAPP_APPOINTMENT_TEMPLATE_LANG || "en",
+  WHATSAPP_APPOINTMENT_TEMPLATE_NAME:
+    process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "",
+  WHATSAPP_APPOINTMENT_TEMPLATE_LANG:
+    process.env.WHATSAPP_APPOINTMENT_TEMPLATE_LANG || "en",
   /** Meta utility templates (NAMED body). Fallback: legacy WHATSAPP_APPOINTMENT_TEMPLATE_NAME for appointment. */
   APPOINTMENT_TEMPLATE_NAME:
     (process.env.APPOINTMENT_TEMPLATE_NAME || "").trim() ||
     (process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "").trim(),
   APPOINTMENT_TEMPLATE_LANG: process.env.APPOINTMENT_TEMPLATE_LANG || "en_US",
-  PRESCRIPTION_TEMPLATE_NAME: (process.env.PRESCRIPTION_TEMPLATE_NAME || "").trim(),
+  PRESCRIPTION_TEMPLATE_NAME: (
+    process.env.PRESCRIPTION_TEMPLATE_NAME || ""
+  ).trim(),
   PRESCRIPTION_TEMPLATE_LANG: process.env.PRESCRIPTION_TEMPLATE_LANG || "en_US",
   MEDICINE_TEMPLATE_NAME: (process.env.MEDICINE_TEMPLATE_NAME || "").trim(),
   MEDICINE_TEMPLATE_LANG: process.env.MEDICINE_TEMPLATE_LANG || "en_US",
@@ -123,7 +129,8 @@ const env = {
   DOSAGE_COMPLETION_TEMPLATE_NAME: (
     process.env.DOSAGE_COMPLETION_TEMPLATE_NAME || ""
   ).trim(),
-  DOSAGE_COMPLETION_TEMPLATE_LANG: process.env.DOSAGE_COMPLETION_TEMPLATE_LANG || "en_US",
+  DOSAGE_COMPLETION_TEMPLATE_LANG:
+    process.env.DOSAGE_COMPLETION_TEMPLATE_LANG || "en_US",
   /** @deprecated merged into final_medicine_reminder */
   DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME: (
     process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME || ""
@@ -131,33 +138,42 @@ const env = {
   DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG:
     process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG || "en_US",
   /** Optional URL string for template param 2 (e.g. patient portal). Falls back to appointmentId. */
-  WHATSAPP_APPOINTMENT_LINK_URL: process.env.WHATSAPP_APPOINTMENT_LINK_URL || "",
+  WHATSAPP_APPOINTMENT_LINK_URL:
+    process.env.WHATSAPP_APPOINTMENT_LINK_URL || "",
   WHATSAPP_PATIENT_PORTAL_URL: process.env.WHATSAPP_PATIENT_PORTAL_URL || "",
   /**
    * WhatsApp chat: prescription links = `${WHATSAPP_PRESCRIPTION_URL_BASE}/${mongoPrescriptionId}`.
    * No trailing slash. Example: https://portal.example.com/prescriptions
    */
-  WHATSAPP_PRESCRIPTION_URL_BASE: (process.env.WHATSAPP_PRESCRIPTION_URL_BASE || "").trim().replace(
-    /\/$/,
-    ""
-  ),
+  WHATSAPP_PRESCRIPTION_URL_BASE: (
+    process.env.WHATSAPP_PRESCRIPTION_URL_BASE || ""
+  )
+    .trim()
+    .replace(/\/$/, ""),
   /**
    * Optional: template with `{id}` placeholder instead of URL_BASE + /id.
    * Example: https://your-app.com/patient/prescriptions/{id}
    */
-  WHATSAPP_PRESCRIPTION_LINK_TEMPLATE:
-    (process.env.WHATSAPP_PRESCRIPTION_LINK_TEMPLATE || "").trim(),
+  WHATSAPP_PRESCRIPTION_LINK_TEMPLATE: (
+    process.env.WHATSAPP_PRESCRIPTION_LINK_TEMPLATE || ""
+  ).trim(),
   /** @deprecated use WHATSAPP_PRESCRIPTION_URL_BASE; same behaviour (base + /id) */
-  WHATSAPP_PRESCRIPTION_VIEW_BASE_URL: (process.env.WHATSAPP_PRESCRIPTION_VIEW_BASE_URL || "")
+  WHATSAPP_PRESCRIPTION_VIEW_BASE_URL: (
+    process.env.WHATSAPP_PRESCRIPTION_VIEW_BASE_URL || ""
+  )
     .trim()
     .replace(/\/$/, ""),
   /**
    * Optional: reply via Meta Cloud when no `WhatsApp` Mongo row exists for the webhook `phone_number_id`.
    * Set with WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID for DB scope (patients/doctors).
    */
-  WHATSAPP_CLOUD_ACCESS_TOKEN: (process.env.WHATSAPP_CLOUD_ACCESS_TOKEN || "").trim(),
+  WHATSAPP_CLOUD_ACCESS_TOKEN: (
+    process.env.WHATSAPP_CLOUD_ACCESS_TOKEN || ""
+  ).trim(),
   /** If empty, the webhook's phone_number_id is used. If set, must match the webhook value. */
-  WHATSAPP_CLOUD_PHONE_NUMBER_ID: (process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID || "").trim(),
+  WHATSAPP_CLOUD_PHONE_NUMBER_ID: (
+    process.env.WHATSAPP_CLOUD_PHONE_NUMBER_ID || ""
+  ).trim(),
   WHATSAPP_CLOUD_API_VERSION: process.env.WHATSAPP_CLOUD_API_VERSION || "v21.0",
   /** Redis for BullMQ (medicine reminders). If set, overrides REDIS_HOST/PORT/PASSWORD. */
   REDIS_URL: (process.env.REDIS_URL || "").trim(),
@@ -170,7 +186,9 @@ const env = {
    * When "1" or "true": hourly payout cron aggregates the **current** calendar month (local server time).
    * Default (unset): **previous** calendar month. Use only for testing; leave unset in production.
    */
-  PAYOUT_CRON_USE_CURRENT_MONTH: (process.env.PAYOUT_CRON_USE_CURRENT_MONTH || "").trim(),
+  PAYOUT_CRON_USE_CURRENT_MONTH: (
+    process.env.PAYOUT_CRON_USE_CURRENT_MONTH || ""
+  ).trim(),
   /**
    * When "1" or "true": breakfast/lunch/dinner fire at ~2 / 25 / 48 min after each compact "day",
    * and each follow-up day is 1 hour apart (good for local testing). Leave unset in production.
@@ -180,7 +198,9 @@ const env = {
    * WhatsAPI (self-hosted) outbound — when all three are set, the chat agent sends replies via WhatsAPI
    * instead of Meta Cloud Graph. @see https://whatsapi-docs.vercel.app/docs/sending-messages
    */
-  WHATSAPI_BASE_URL: (process.env.WHATSAPI_BASE_URL || "").trim().replace(/\/$/, ""),
+  WHATSAPI_BASE_URL: (process.env.WHATSAPI_BASE_URL || "")
+    .trim()
+    .replace(/\/$/, ""),
   WHATSAPI_TOKEN: (process.env.WHATSAPI_TOKEN || "").trim(),
   WHATSAPI_INSTANCE_KEY: (process.env.WHATSAPI_INSTANCE_KEY || "").trim(),
   /** "bearer" (default) → Authorization: Bearer <WHATSAPI_TOKEN>. "token" → Authorization: <WHATSAPI_TOKEN> raw. */
@@ -189,7 +209,9 @@ const env = {
    * When using WhatsAPI for send, if no Meta WhatsApp row exists for this webhook phone_number_id,
    * use this Mongo hospital id for patient/doctor/prescription context.
    */
-  WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID: (process.env.WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID || "").trim(),
+  WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID: (
+    process.env.WHATSAPP_CHAT_DEFAULT_HOSPITAL_ID || ""
+  ).trim(),
   /** Follow-up chat: base URL for tele-caller (Mongo patient ObjectId is appended as last path segment). */
   TELECALLER_BOOKING_LINK: (process.env.TELECALLER_BOOKING_LINK || "").trim(),
   /** Razorpay: REST API (orders, payments) and client-side payment signature verification. */
@@ -208,9 +230,13 @@ const env = {
   GOOGLE_CLIENT_SECRET: (process.env.GOOGLE_CLIENT_SECRET || "").trim(),
   GOOGLE_REDIRECT_URI: (process.env.GOOGLE_REDIRECT_URI || "").trim(),
   /** HMAC secret for OAuth `state` (hospital binding). Falls back to JWT_ACCESS_SECRET if unset. */
-  GOOGLE_OAUTH_STATE_SECRET: (process.env.GOOGLE_OAUTH_STATE_SECRET || "").trim(),
+  GOOGLE_OAUTH_STATE_SECRET: (
+    process.env.GOOGLE_OAUTH_STATE_SECRET || ""
+  ).trim(),
   /** After Google consent, browser redirect: e.g. https://dashboard.example.com/settings/integrations */
-  FRONTEND_GOOGLE_OAUTH_RETURN_URL: (process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || "")
+  FRONTEND_GOOGLE_OAUTH_RETURN_URL: (
+    process.env.FRONTEND_GOOGLE_OAUTH_RETURN_URL || ""
+  )
     .trim()
     .replace(/\/$/, ""),
   /** Public base URL of this API (no trailing slash). Used in password-reset emails, e.g. http://localhost:3000 */
@@ -218,7 +244,8 @@ const env = {
   /** Web app URL for welcome-after-register emails (no trailing slash), e.g. https://dashboard.samvaadai.com */
   DASHBOARD_URL: (process.env.DASHBOARD_URL || "").trim().replace(/\/$/, ""),
   /** Secret for short-lived password-reset JWTs (defaults to access secret for local dev only). */
-  JWT_PASSWORD_RESET_SECRET: (process.env.JWT_PASSWORD_RESET_SECRET || "").trim() || null,
+  JWT_PASSWORD_RESET_SECRET:
+    (process.env.JWT_PASSWORD_RESET_SECRET || "").trim() || null,
   /**
    * Mailtrap Sending API — POST https://send.api.mailtrap.io/api/send
    * Token: https://mailtrap.io/api-tokens (same value as curl `Authorization: Bearer <token>`)
@@ -237,6 +264,8 @@ const env = {
   EXOTEL_ACCOUNT_SID: (process.env.EXOTEL_ACCOUNT_SID || "").trim(),
   EXOTEL_API_KEY: (process.env.EXOTEL_API_KEY || "").trim(),
   EXOTEL_API_TOKEN: (process.env.EXOTEL_API_TOKEN || "").trim(),
+  /** ExoPhone used as CallerId for Exotel Connect emergency fallback. */
+  EXOTEL_CALLER_ID: (process.env.EXOTEL_CALLER_ID || process.env.EXOTEL_EXOPHONE || "").trim(),
 };
 
 module.exports = env;

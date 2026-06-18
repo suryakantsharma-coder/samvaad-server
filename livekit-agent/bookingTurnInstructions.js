@@ -8,7 +8,8 @@ const { isMongoObjectIdString } = require("./callBookingSlots");
 function getFirstMissingPatientField(slots) {
   if (!slots) return "name";
   if (!String(slots.fullName || "").trim()) return "name";
-  if (slots.age == null || !Number.isFinite(Number(slots.age))) return "age_gender";
+  if (slots.age == null || !Number.isFinite(Number(slots.age)))
+    return "age_gender";
   if (!String(slots.gender || "").trim()) return "age_gender";
   if (!String(slots.reason || "").trim()) return "reason";
   return null;
@@ -77,8 +78,7 @@ function formatSlotSnapshot(slots) {
     parts.push(`pending-date-ist=${slots.pendingDateYmd}`);
   if (slots.appointmentDateTimeISO)
     parts.push(`appointment-datetime-ist=${slots.appointmentDateTimeISO}`);
-  if (slots.doctorObjectId)
-    parts.push(`doctor-ref=${slots.doctorObjectId}`);
+  if (slots.doctorObjectId) parts.push(`doctor-ref=${slots.doctorObjectId}`);
   if (isMongoObjectIdString(slots.patientObjectId))
     parts.push(`patient-ref=${slots.patientObjectId}`);
   else
@@ -87,9 +87,7 @@ function formatSlotSnapshot(slots) {
     );
   if (slots.appointmentObjectId)
     parts.push(`appointment-ref=${slots.appointmentObjectId}`);
-  return parts.length
-    ? parts.join("; ")
-    : "(nothing captured yet)";
+  return parts.length ? parts.join("; ") : "(nothing captured yet)";
 }
 
 /**
@@ -112,8 +110,7 @@ function buildBookingTurnInstructions(p) {
   const snapshot = formatSlotSnapshot(slots);
   const missingPatient = getFirstMissingPatientField(slots);
   const hasPatient =
-    !missingPatient &&
-    String(slots.reason || "").trim().length > 0;
+    !missingPatient && String(slots.reason || "").trim().length > 0;
   const hasIso = String(slots.appointmentDateTimeISO || "").trim().length > 0;
   const hasDoctor = String(slots.doctorObjectId || "").trim().length > 0;
   const hasPatientOid = isMongoObjectIdString(slots.patientObjectId);

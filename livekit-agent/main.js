@@ -562,6 +562,8 @@ const agentDef = defineAgent({
         routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
         getCallLogger: () => callLogger,
       });
+      hospitalAgent._hospital = { name: hospital.name };
+      hospitalAgent._callRoomName = roomName;
 
       const inputOpts = buildAgentSessionInputOptions({
         useSamvaadLlmTts: Boolean(useSamvaadLlmTts),
@@ -608,6 +610,10 @@ const agentDef = defineAgent({
                   hospitalAgent.preferredLanguage,
                 )
               : null,
+          shouldSuppressReprompt: () =>
+            hospitalAgent
+              ? hospitalAgent.shouldSuppressNoInputReprompt()
+              : false,
           onReprompt: (info) => {
             if (callLogger) {
               callLogger.log("reprompt", {
