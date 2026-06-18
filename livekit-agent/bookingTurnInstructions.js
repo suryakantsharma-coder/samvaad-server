@@ -1,9 +1,13 @@
 const { isAffirmativeTurn } = require("./userTranscriptNormalize");
 const { isMongoObjectIdString } = require("./callBookingSlots");
 const {
-  isEmergencyRepeatRequest,
-  isEmergencyHangUpRequest,
+  isEmergencyBookingRequest,
 } = require("./bookingSlotCapture");
+const {
+  getEmergencyTwoOptionsLine,
+  getEmergencyNoBookingLine,
+  EMERGENCY_NUMBER_ENGLISH_RULE,
+} = require("./preferredLanguage");
 
 /**
  * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} slots
@@ -31,8 +35,10 @@ function getNoInputMissingTopic(slots, lang, languageLocked = false) {
     slots?.caseType === "emergency" &&
     slots.emergencyPhase === "await_choice"
   ) {
-    if (lang === "gu") return "નંબર ફરી અથવા કૉલ કાપવી";
-    return "नंबर दोबारा या कॉल काटना";
+    if (lang === "gu") {
+      return "ઇમરજન્સી નંબર ફરી અથવા કૉલ કાપવી";
+    }
+    return "इमरजेंसी नंबर दोबारा या कॉल काटना";
   }
   if (languageLocked && !slots?.caseType) {
     if (lang === "gu") return "ઇમરજન્સી કે સામાન્ય અપોઇન્ટમેન્ટ";
@@ -157,26 +163,19 @@ function buildBookingTurnInstructions(p) {
     action =
       `Internal-next-turn: hospital greeting and language choice are done — ask ONLY whether this is an emergency case or a normal appointment, in one short ${lang} question. Do NOT ask for symptoms, disease, name, or booking details yet.`;
   } else if (slots.caseType === "emergency") {
-    if (slots.emergencyPhase === "done") {
+    const callerLang = preferredLanguage === "gu" ? "gu" : "hi";
+    const twoOptions = getEmergencyTwoOptionsLine(callerLang);
+    const noBooking = getEmergencyNoBookingLine(callerLang);
+    const wantsBooking =
+      isEmergencyBookingRequest(rawUser) ||
+      isEmergencyBookingRequest(normalizedUser);
+
+    if (wantsBooking) {
       action =
-        `Internal-next-turn: emergency guidance is complete. If the caller speaks again, one very short ${lang} line only — they may disconnect. Do NOT book.`;
-    } else if (slots.emergencyPhase === "await_choice") {
-      if (isEmergencyHangUpRequest(rawUser) || isEmergencyHangUpRequest(normalizedUser)) {
-        action =
-          `Internal-next-turn: caller wants to end the call. In one short warm ${lang} line thank them and say they can disconnect now. Do NOT book.`;
-      } else if (
-        isEmergencyRepeatRequest(rawUser) ||
-        isEmergencyRepeatRequest(normalizedUser)
-      ) {
-        action =
-          `Internal-next-turn: caller asked to hear the emergency number again. Repeat the hospital emergency number from HOSPITAL context once clearly in ${lang}, then ask again: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book.`;
-      } else {
-        action =
-          `Internal-next-turn: after giving the emergency number, the caller's reply was unclear. Repeat the emergency number once in ${lang}, then ask again: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book.`;
-      }
+        `EMERGENCY-ONLY — caller asked to book. Say in ${lang}: "${noBooking}" Do NOT speak the phone number (system plays digits with 1s gaps). Then ask ONLY: "${twoOptions}"`;
     } else {
       action =
-        `Internal-next-turn: caller said EMERGENCY. In one calm ${lang} reply: (1) tell them to go to the emergency department immediately or call the hospital emergency number from your HOSPITAL context; (2) then ask: HI "क्या मैं नंबर दोबारा बोलूँ, या आप कॉल काट सकते हैं?" / GU "શું હું નંબર ફરી બોલું, કે તમે કૉલ કાપી શકો છો?" Do NOT book a routine outpatient appointment. Stay feminine.`;
+        `EMERGENCY-ONLY — handled by emergency flow (digit playback with 1s gaps + two options). Do NOT speak the number yourself.`;
     }
   } else if (missingPatient) {
     action = `Internal-next-turn: ask for ONLY the first missing patient field (${missingPatient}) in one short ${lang} question. Do NOT read back the full booking block. Acknowledge briefly if needed.`;
@@ -208,13 +207,19 @@ function buildBookingTurnInstructions(p) {
       lang +
       " (no English variable names, tool names, MongoDB/ID/JSON terms, or status words like ok/true/false/null — see the hard-banned list in the main system prompt).",
     preferredLanguage === "hi"
-      ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers and no Gujarati sentences; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names are allowed as names only."
+      ? slots.caseType === "emergency"
+        ? "LANGUAGE_LOCK: Hindi for all speech except emergency phone digits — those must be English digits only (0-9)."
+        : "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers and no Gujarati sentences; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names are allowed as names only."
       : preferredLanguage === "gu"
-        ? "LANGUAGE_LOCK: Caller chose Gujarati for this call. Speak only Gujarati — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
+        ? slots.caseType === "emergency"
+          ? "LANGUAGE_LOCK: Gujarati for all speech except emergency phone digits — those must be English digits only (0-9)."
+          : "LANGUAGE_LOCK: Caller chose Gujarati for this call. Speak only Gujarati — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
         : "",
-    isMongoObjectIdString(slots?.doctorObjectId)
-      ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."
-      : "",
+    slots.caseType === "emergency"
+      ? "EMERGENCY_CALL_LOCK: Emergency call — no booking, no normal flow, no disease/name/date questions. Only Option A (repeat number in English digits) or Option B (caller noted number and may disconnect)."
+      : isMongoObjectIdString(slots?.doctorObjectId)
+        ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."
+        : "",
     "Captured slots so far (internal — do NOT read aloud):",
     snapshot,
     "Action plan (internal — do NOT read aloud):",

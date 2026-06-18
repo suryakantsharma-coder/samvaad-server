@@ -17,6 +17,40 @@ const HANG_UP_HI = "आप कॉल काट सकते हैं। धन�
 const HANG_UP_EN = "You can disconnect the call now. Thank you.";
 const HANG_UP_GU = "તમે કૉલ કાપી શકો છો. આભાર.";
 
+/** Emergency digits only — rest of turn stays in Hindi/Gujarati. */
+const EMERGENCY_NUMBER_ENGLISH_RULE =
+  "The system plays the emergency phone number separately — one English digit at a time with a 1 second pause between digits (configurable via EMERGENCY_DIGIT_GAP_MS). Do NOT speak the number in normal replies. Fallback only if system playback is unavailable: one English digit, pause 1 second, next digit.";
+
+/**
+ * @param {'hi'|'gu'} lang
+ */
+function getEmergencyTwoOptionsLine(lang) {
+  if (lang === "gu") {
+    return "શું હું ઇમરજન્સી નંબર ફરી બોલું, કે નંબર નોંધી લીધો હોય તો તમે કૉલ કાપી શકો છો?";
+  }
+  return "क्या मैं इमरजेंसी नंबर दोबारा बोलूँ, या नंबर नोट कर लिया हो तो आप कॉल काट सकते हैं?";
+}
+
+/**
+ * @param {'hi'|'gu'} lang
+ */
+function getEmergencyNoBookingLine(lang) {
+  if (lang === "gu") {
+    return "ઇમરજન્સી કેસમાં અમે અપોઇન્ટમેન્ટ બુક કરી શકતા નથી. કૃપા કરીને ઇમરજન્સી નંબર પર કૉલ કરો.";
+  }
+  return "इमरजेंसी में हम अपॉइंटमेंट बुक नहीं कर सकते। कृपया इमरजेंसी नंबर पर कॉल करें।";
+}
+
+/**
+ * @param {'hi'|'gu'} lang
+ */
+function getEmergencyGoodbyeLine(lang) {
+  if (lang === "gu") {
+    return "આભાર. તમે કૉલ કાપી શકો છો.";
+  }
+  return "धन्यवाद। आप कॉल काट सकते हैं।";
+}
+
 /**
  * Exact opening greeting — Hindi or Gujarati only.
  * @param {string} hospitalName
@@ -265,6 +299,10 @@ module.exports = {
   getThankYouLine,
   getHospitalLanguageGreetingInstructions,
   getHospitalLanguageRepromptLine,
+  getEmergencyTwoOptionsLine,
+  getEmergencyNoBookingLine,
+  getEmergencyGoodbyeLine,
+  EMERGENCY_NUMBER_ENGLISH_RULE,
   HANG_UP_HI,
   HANG_UP_EN,
   HANG_UP_GU,

@@ -170,7 +170,8 @@ function isEmergencyRepeatRequest(text) {
   if (!t) return false;
   return (
     /\b(?:repeat|again|once\s+more)\b/i.test(t) ||
-    /दोबारा|फिर\s*से|एक\s*बार\s*और|दुबारा|रिपीट/i.test(t)
+    /दोबारा|फिर\s*से|एक\s*बार\s*और|दुबारा|रिपीट|नंबर\s*फिर/i.test(t) ||
+    /ફરી\s*બોલ|ફરીથી|રિપીટ|નંબર\s*ફરી/i.test(t)
   );
 }
 
@@ -181,13 +182,28 @@ function isEmergencyHangUpRequest(text) {
   const t = String(text || "").trim();
   if (!t) return false;
   return (
-    /\b(?:hang\s*up|disconnect|cut\s+(?:the\s+)?call|end\s+(?:the\s+)?call|bye|goodbye|thanks?|thank\s+you)\b/i.test(
+    /\b(?:hang\s*up|disconnect|cut\s+(?:the\s+)?call|end\s+(?:the\s+)?call|bye|goodbye|thanks?|thank\s+you|noted?)\b/i.test(
       t,
     ) ||
-    /कॉल\s*काट|काट\s*द|काट\s*सक|डिस्कनेक्ट|धन्यवाद|बाय|नहीं\s*चाहिए|ठीक\s*है|theek|thik/i.test(
+    /कॉल\s*काट|काट\s*द|काट\s*सक|नोट\s*कर|लिख\s*लिया|याद\s*कर|धन्यवाद|ठीक\s*है|theek|thik/i.test(
       t,
     ) ||
-    /^(?:no|nahi|na|ना|नहीं)\.?$/i.test(t)
+    /કૉલ\s*કાપ|કાપી\s*શક|નોંધી\s*લીધ|લખી\s*લીધ|આભાર|બસ/i.test(t) ||
+    /^(?:no|nahi|na|ना|नहीं|haan|हाँ|हां|ji|જી)\.?$/i.test(t)
+  );
+}
+
+/**
+ * Caller tries to book or switch to normal flow during emergency.
+ * @param {string} text
+ */
+function isEmergencyBookingRequest(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return (
+    /\b(?:book|booking|appointment|schedule|normal)\b/i.test(t) ||
+    /बुक|अपॉइंटमेंट|अपाइंटमेंट|सामान्य|नॉर्मल|डॉक्टर\s*से\s*मिल/i.test(t) ||
+    /બુક|એપોઇન્ટમેન્ટ|સામાન્ય|નોર્મલ|ડૉક્ટર/i.test(t)
   );
 }
 
@@ -246,7 +262,7 @@ function maybeCaptureAppointmentIsoFromTranscript(slots, text) {
  * @param {string} rawUserText
  */
 function applyTranscriptToBookingSlots(slots, rawUserText) {
-  if (!slots) return;
+  if (!slots || slots.caseType === "emergency") return;
   const raw = String(rawUserText || "").trim();
   if (!raw) return;
   maybeCaptureCaseTypeFromTranscript(slots, raw);
@@ -262,6 +278,7 @@ module.exports = {
   maybeCaptureCaseTypeFromTranscript,
   isEmergencyRepeatRequest,
   isEmergencyHangUpRequest,
+  isEmergencyBookingRequest,
   maybeCaptureNameFromTranscript,
   maybeCaptureAgeGenderFromTranscript,
   maybeCaptureFirstVisitFromTranscript,

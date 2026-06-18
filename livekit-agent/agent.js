@@ -6,8 +6,8 @@ const {
   getPlainTranscript,
 } = require("./userTranscriptNormalize");
 const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
-const { applyTranscriptToBookingSlots, isEmergencyHangUpRequest } = require("./bookingSlotCapture");
-const { scheduleAutoEndCall } = require("./endPhoneCall");
+const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
+const { handleEmergencyUserTurn } = require("./emergencyCallFlow");
 const {
   inferHospitalCallerLanguage,
   detectExplicitHospitalLanguageSwitch,
@@ -25,6 +25,14 @@ const {
 } = require("./callBookingSlots");
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
+const BOOKING_TOOLS_BLOCKED_IN_EMERGENCY = new Set([
+  "create_patient",
+  "create_appointment",
+  "list_doctors",
+  "search_doctors",
+  "fetch_patient_by_patientId",
+  "fetch_patient_by_phone",
+]);
 
 /** Per-tool args allow-list for logs — keeps file readable without dumping sensitive blobs. */
 function redactToolArgsForLog(name, args) {
@@ -133,6 +141,27 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           agent && typeof agent.getCallLogger === "function"
             ? agent.getCallLogger()
             : null;
+        if (
+          agent &&
+          agent.callBookingSlots &&
+          agent.callBookingSlots.caseType === "emergency" &&
+          BOOKING_TOOLS_BLOCKED_IN_EMERGENCY.has(name)
+        ) {
+          if (logger) {
+            logger.log("tool_end", {
+              name,
+              ok: false,
+              durationMs: 0,
+              code: "EMERGENCY_CALL",
+            });
+          }
+          return {
+            ok: false,
+            code: "EMERGENCY_CALL",
+            message:
+              "Appointment booking is not available during an emergency call.",
+          };
+        }
         const rawArgs = args && typeof args === "object" ? args : {};
         const mergedArgs =
           agent && SLOT_MERGE_TOOLS.has(name)
@@ -385,13 +414,15 @@ class HospitalVoiceAgent extends voice.Agent {
         err && err.message ? err.message : err,
       );
     }
-    try {
-      maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
-    } catch (err) {
-      console.warn(
-        "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
-        err && err.message ? err.message : err,
-      );
+    if (this.callBookingSlots.caseType !== "emergency") {
+      try {
+        maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
+      } catch (err) {
+        console.warn(
+          "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
+          err && err.message ? err.message : err,
+        );
+      }
     }
 
     if (!this._routeUserTextThroughRealtime) return;
@@ -427,10 +458,43 @@ class HospitalVoiceAgent extends voice.Agent {
     }
 
     const slots = this.callBookingSlots;
-    const emergencyHangUp =
-      slots.caseType === "emergency" &&
-      slots.emergencyPhase === "await_choice" &&
-      (isEmergencyHangUpRequest(rawBefore) || isEmergencyHangUpRequest(textAfter));
+
+    if (slots.caseType === "emergency") {
+      if (logger) {
+        logger.log("generate_reply", {
+          purpose: "user_turn_emergency",
+          lang: this.preferredLanguage,
+          slotsSummary: this._slotsSummaryForLog(),
+          userText: rawBefore.length > 200
+            ? `${rawBefore.slice(0, 200)}…`
+            : rawBefore,
+        });
+      }
+      try {
+        await handleEmergencyUserTurn({
+          agent: this,
+          session: this.session,
+          slots,
+          rawBefore,
+          textAfter,
+          preferredLanguage: this.preferredLanguage,
+          logger,
+        });
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.error("[Agent] handleEmergencyUserTurn failed:", msg);
+        if (logger) {
+          logger.log("generate_reply_error", {
+            purpose: "emergency_flow",
+            errorMessage: msg,
+          });
+        }
+      }
+      if (logger) {
+        logger.log("stop_response", { reason: "emergency_flow_dispatched" });
+      }
+      throw new voice.StopResponse();
+    }
 
     let bookingIx;
     try {
@@ -472,27 +536,8 @@ class HospitalVoiceAgent extends voice.Agent {
         userMessage: newMessage,
         instructions: bookingIx,
       });
-      if (slots.caseType === "emergency" && !slots.emergencyPhase) {
-        slots.emergencyPhase = "await_choice";
-      }
-      if (emergencyHangUp) {
-        slots.emergencyPhase = "done";
-        if (handle && typeof handle.waitForPlayout === "function") {
-          handle
-            .waitForPlayout()
-            .then(() => {
-              scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
-            })
-            .catch((playoutErr) => {
-              console.warn(
-                "[Agent] emergency goodbye playout wait failed:",
-                playoutErr && playoutErr.message ? playoutErr.message : playoutErr,
-              );
-              scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
-            });
-        } else {
-          scheduleAutoEndCall({ agent: this, purpose: "emergency_goodbye" });
-        }
+      if (handle && typeof handle.waitForPlayout === "function") {
+        await handle.waitForPlayout();
       }
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);

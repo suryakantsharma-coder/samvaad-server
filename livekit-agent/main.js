@@ -564,6 +564,9 @@ const agentDef = defineAgent({
         getCallLogger: () => callLogger,
       });
       hospitalAgent._callRoomName = roomName;
+      hospitalAgent._hospitalEmergencyNumber =
+        String(hospital.emergencyNumber || hospital.receptionistNumber || "").trim() ||
+        null;
 
       const inputOpts = buildAgentSessionInputOptions({
         useSamvaadLlmTts: Boolean(useSamvaadLlmTts),
