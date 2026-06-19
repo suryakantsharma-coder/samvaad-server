@@ -46,9 +46,10 @@ const TEMPLATE_CATALOG = Object.freeze({
       "Did you take it? Your response is tracked and shared with [Dr. Name].",
     ],
     footer: "[Hospital Name]",
-    buttons: ["Taken"],
+    buttons: ["Taken", "Not Yet"],
     followups: [
-      "If Taken: Recorded. Keep it up, consistency speeds up recovery.",
+      "If Taken: Thank the patient and confirm the dose is recorded.",
+      "If Not Yet: Encourage taking medicines on time for recovery.",
     ],
   },
   dosageCompletion: {

@@ -8,13 +8,12 @@ const {
 const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
 const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
 const {
+  getBookingThankYouLine,
   inferHospitalCallerLanguage,
   detectExplicitHospitalLanguageSwitch,
   getEmptyInputRepromptInstructions,
-  HANG_UP_GU,
-  HANG_UP_HI,
-  HANG_UP_EN,
 } = require("./preferredLanguage");
+const { handleCallFlowTurn } = require("./emergencyFlow");
 const {
   createCallBookingSlots,
   updateSlotsFromToolArgs,
@@ -57,8 +56,7 @@ async function speakCreateAppointmentResult(agent, result) {
 
   if (!primary) return;
 
-  const hangUp =
-    lang === "gu" ? HANG_UP_GU : lang === "en" ? HANG_UP_EN : HANG_UP_HI;
+  const thankYou = getBookingThankYouLine(lang, agent.hospitalName);
   const langLabel =
     lang === "gu" ? "Gujarati" : lang === "en" ? "English" : "Hindi";
 
@@ -66,15 +64,15 @@ async function speakCreateAppointmentResult(agent, result) {
     ? (result.appointmentUpdated
         ? "The appointment was updated (ok: true). Speak EXACTLY the status line below in " +
           langLabel +
-          ", then the hang-up line. Do NOT say the update failed. Do NOT read internal English instructions. Do NOT change wording.\n" +
+          ", then the thank-you closing line. Do NOT say the update failed. Do NOT read internal English instructions. Do NOT change wording. Do NOT ask if they want to hang up — only the thank-you line.\n" +
           `Status: ${primary}\n` +
-          `Hang-up: ${hangUp}`
+          `Thank-you closing: ${thankYou}`
         : "The appointment is booked (ok: true). Speak EXACTLY the booking status line below in " +
           langLabel +
-          ", then the hang-up line. Do NOT say booking failed. Do NOT read internal English instructions. Do NOT change wording.\n" +
+          ", then the thank-you closing line. Do NOT say booking failed. Do NOT read internal English instructions. Do NOT change wording. Do NOT ask if they want to hang up — only the thank-you line.\n" +
           `Booking status: ${primary}\n` +
-          `Hang-up: ${hangUp}\n` +
-          "That status line is the ONLY full booking recap for this call — if the caller says hello / thank you later, give only one short warm line in the SAME language; never repeat the entire booking block unless they explicitly ask for the number again.")
+          `Thank-you closing: ${thankYou}\n` +
+          "That status line is the ONLY full booking recap for this call.")
     : "Booking failed (ok: false). Speak EXACTLY the line below in " +
       langLabel +
       ". Explain calmly what they can do next. Do not read raw technical English.\n" +
@@ -128,6 +126,21 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
       parameters: def.parameters,
       execute: async (args) => {
         const agent = agentRef && agentRef.current;
+        if (
+          agent &&
+          agent.callFlow &&
+          (agent.callFlow.phase === "emergency" ||
+            agent.callFlow.phase === "emergency_ending" ||
+            agent.callFlow.phase === "awaiting_case_type" ||
+            agent.callFlow.phase === "awaiting_language")
+        ) {
+          return {
+            ok: false,
+            code: "CALL_FLOW_BLOCKED",
+            message:
+              "Appointment tools are not available during language selection or emergency flow.",
+          };
+        }
         const logger =
           agent && typeof agent.getCallLogger === "function"
             ? agent.getCallLogger()
@@ -253,6 +266,10 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           }
           if (agent) {
             await speakCreateAppointmentResult(agent, result);
+            if (result.ok) {
+              const { scheduleAutoEndAfterBookingConfirmed } = require("./endCall");
+              scheduleAutoEndAfterBookingConfirmed({ agent });
+            }
           }
         }
 
@@ -268,6 +285,12 @@ class HospitalVoiceAgent extends voice.Agent {
     instructions,
     hospitalObjectId,
     callerPhone,
+    hospitalName = "",
+    emergencyNumber = "",
+    room = null,
+    roomName = "",
+    agentIdentity = "",
+    shutdownJob = null,
     /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
     routeUserTextThroughRealtime = false,
     /** Optional getter so this agent can pull the per-call logger lazily from main.js. */
@@ -281,10 +304,21 @@ class HospitalVoiceAgent extends voice.Agent {
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
     this._getCallLogger = typeof getCallLogger === "function" ? getCallLogger : null;
-    /** @type {'hi' | 'en'} */
+    /** @type {'hi' | 'gu' | 'en'} */
     this.preferredLanguage = "hi";
-    /** After first confident hi/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
+    /** After first confident hi/gu/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
     this.preferredLanguageLocked = false;
+    this.hospitalName = String(hospitalName || "").trim();
+    this.emergencyNumber = String(emergencyNumber || "").trim();
+    this.room = room || null;
+    this.roomName = String(roomName || "").trim();
+    this._callRoomName = this.roomName;
+    this.agentIdentity = String(agentIdentity || "").trim();
+    this.shutdownJob =
+      typeof shutdownJob === "function" ? shutdownJob : null;
+    /** @type {{ phase: string, emergencyStep: string|null, emergencyLlmActive?: boolean }} */
+    this.callFlow = { phase: "awaiting_language", emergencyStep: null, emergencyLlmActive: false };
+    this._emergencyHangupScheduled = false;
     this.callBookingSlots = createCallBookingSlots();
   }
 
@@ -358,6 +392,7 @@ class HospitalVoiceAgent extends voice.Agent {
       );
     }
     const textAfter = getPlainTranscript(newMessage);
+    const logger = this.getCallLogger();
 
     if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
       const preview = rawBefore
@@ -375,26 +410,63 @@ class HospitalVoiceAgent extends voice.Agent {
       );
     }
 
+    if (
+      this.callFlow.phase !== "emergency" &&
+      this.callFlow.phase !== "emergency_ending"
+    ) {
+      try {
+        applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
+      } catch (err) {
+        console.warn(
+          "[Agent] applyTranscriptToBookingSlots failed:",
+          err && err.message ? err.message : err,
+        );
+      }
+    }
+    if (
+      this.callFlow.phase === "booking" ||
+      this.callFlow.phase === "awaiting_language" ||
+      this.callFlow.phase === "awaiting_case_type"
+    ) {
+      try {
+        maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
+      } catch (err) {
+        console.warn(
+          "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
+          err && err.message ? err.message : err,
+        );
+      }
+    }
+
+    let callFlowHandled = false;
     try {
-      applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
+      callFlowHandled = await handleCallFlowTurn({
+        agent: this,
+        rawUser: rawBefore,
+        normalizedUser: textAfter,
+      });
     } catch (err) {
-      console.warn(
-        "[Agent] applyTranscriptToBookingSlots failed:",
+      console.error(
+        "[Agent] handleCallFlowTurn failed:",
         err && err.message ? err.message : err,
       );
     }
-    try {
-      maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
-    } catch (err) {
-      console.warn(
-        "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
-        err && err.message ? err.message : err,
-      );
+
+    if (callFlowHandled) {
+      if (logger) {
+        logger.log("stop_response", { reason: "call_flow_handled" });
+      }
+      throw new voice.StopResponse();
+    }
+
+    if (this.callFlow.phase === "emergency" || this.callFlow.phase === "emergency_ending") {
+      if (logger) {
+        logger.log("stop_response", { reason: "emergency_flow_active" });
+      }
+      throw new voice.StopResponse();
     }
 
     if (!this._routeUserTextThroughRealtime) return;
-
-    const logger = this.getCallLogger();
 
     if (!rawBefore.trim()) {
       if (logger) {
@@ -420,6 +492,32 @@ class HospitalVoiceAgent extends voice.Agent {
       }
       if (logger) {
         logger.log("stop_response", { reason: "empty_stt" });
+      }
+      throw new voice.StopResponse();
+    }
+
+    if (this.callFlow.phase !== "booking") {
+      const { buildCaseTypeQuestion } = require("./emergencyFlow");
+      const lang = this.preferredLanguage || "hi";
+      let preBookingIx;
+      if (this.callFlow.phase === "awaiting_case_type") {
+        preBookingIx =
+          `Ask exactly one short line in the caller's language: "${buildCaseTypeQuestion(lang)}" — do NOT start appointment booking.`;
+      } else {
+        preBookingIx =
+          "The caller has not clearly chosen Hindi or Gujarati yet. Ask once more which language they prefer — Hindi or Gujarati only. Do NOT offer English. Do NOT start booking or ask about symptoms.";
+      }
+      try {
+        this.session.generateReply({
+          toolChoice: "none",
+          instructions: preBookingIx,
+        });
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.warn("[Agent] pre-booking generateReply error:", msg);
+      }
+      if (logger) {
+        logger.log("stop_response", { reason: "not_booking_phase" });
       }
       throw new voice.StopResponse();
     }

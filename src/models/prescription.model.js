@@ -84,6 +84,11 @@ const prescriptionSchema = new mongoose.Schema(
       enum: ['Draft', 'Completed', 'Cancelled'],
       default: 'Draft',
     },
+    /** Set when dosage-completion feedback template is sent (end of medicine course). */
+    dosageCompletionSentAt: {
+      type: Date,
+      required: false,
+    },
     /** Set when the post follow-up feedback job completes successfully. */
     reminderFeedbackCompletedAt: {
       type: Date,

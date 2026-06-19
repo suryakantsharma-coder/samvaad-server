@@ -137,16 +137,20 @@ function buildPrescriptionWhatsAppText(prescription, hospitalName) {
 }
 
 /**
- * WhatsApp after prescription create (appointment-linked only).
- * Uses NAMED template `PRESCRIPTION_TEMPLATE_NAME` when set (patient_name, doctor_name, link).
+ * WhatsApp after prescription create.
+ * Uses NAMED template when set (patient_name, doctor_name, link, hospital_name).
  */
 async function notifyPrescriptionCreated(prescription) {
+  const rxId = prescription?._id != null ? String(prescription._id) : "";
+
   if (!prescription?.patient?.phoneNumber) {
+    console.warn("[WhatsApp] Prescription notify: no patient phone", { prescriptionId: rxId });
     return;
   }
 
   const hospitalId = prescription.hospital?._id || prescription.hospital;
   if (!hospitalId) {
+    console.warn("[WhatsApp] Prescription notify: no hospital on prescription", { prescriptionId: rxId });
     return;
   }
 
@@ -168,6 +172,10 @@ async function notifyPrescriptionCreated(prescription) {
   }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
+    console.warn("[WhatsApp] Prescription notify: WhatsApp credentials missing for hospital", {
+      prescriptionId: rxId,
+      hospitalId: String(hospitalId),
+    });
     return;
   }
 
@@ -209,9 +217,15 @@ async function notifyPrescriptionCreated(prescription) {
         patient_name: patientName,
         doctor_name: doctorName,
         link,
+        hospital_name: hospitalName,
       }),
       defaultCountryDigits: ccDigits,
       apiVersion: creds.api_version || undefined,
+    });
+    console.log("[WhatsApp] Prescription notify sent", {
+      prescriptionId: rxId,
+      templateName,
+      hospitalId: String(hospitalId),
     });
     return;
   }
@@ -225,6 +239,10 @@ async function notifyPrescriptionCreated(prescription) {
     textBody,
     defaultCountryDigits: ccDigits,
     apiVersion: creds.api_version || undefined,
+  });
+  console.log("[WhatsApp] Prescription notify sent (plain text)", {
+    prescriptionId: rxId,
+    hospitalId: String(hospitalId),
   });
 }
 

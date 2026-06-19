@@ -12,6 +12,7 @@ const { getNoInputRepromptInstructions } = require("./preferredLanguage");
  *   logTag?: string,
  *   getPreferredLanguage?: () => ('hi'|'gu'|'en'|null|undefined),
  *   getNoInputTopic?: () => (string|null|undefined),
+ *   shouldSkip?: () => boolean,
  *   onReprompt?: (info: { lang: 'hi'|'gu'|'en', missingTopic: string|null }) => void,
  * }} [opts]
  * @returns {() => void} detach listeners and clear timer
@@ -21,6 +22,7 @@ function attachNoInputReprompt(session, opts = {}) {
   const logTag = opts.logTag ?? "[NoInputReprompt]";
   const getPreferredLanguage = opts.getPreferredLanguage;
   const getNoInputTopic = opts.getNoInputTopic;
+  const shouldSkip = opts.shouldSkip;
   const onReprompt = opts.onReprompt;
   if (!ms || ms <= 0 || !session) {
     return () => {};
@@ -45,6 +47,7 @@ function attachNoInputReprompt(session, opts = {}) {
     timer = setTimeout(() => {
       if (gen !== armGeneration) return;
       if (session.closing) return;
+      if (typeof shouldSkip === "function" && shouldSkip()) return;
       if (session.agentState !== "listening" || session.userState !== "listening")
         return;
       try {

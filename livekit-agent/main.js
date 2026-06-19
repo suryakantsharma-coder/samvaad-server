@@ -403,6 +403,7 @@ const agentDef = defineAgent({
 
     let session = null;
     let detachNoInput = null;
+    let detachCallFlowBridge = null;
     let samvaadTts = null;
     let hospitalAgent = null;
     let sarvamStt = null;
@@ -559,6 +560,22 @@ const agentDef = defineAgent({
         instructions,
         hospitalObjectId: hospital._id,
         callerPhone,
+        hospitalName: hospital.name,
+        emergencyNumber: hospital.emergencyNumber,
+        room: ctx.room,
+        roomName,
+        agentIdentity:
+          ctx.agent && ctx.agent.identity ? String(ctx.agent.identity) : "",
+        shutdownJob: (reason) => {
+          try {
+            ctx.shutdown(reason || "call_end");
+          } catch (shErr) {
+            console.warn(
+              "[LiveKit Agent] ctx.shutdown:",
+              shErr && shErr.message ? shErr.message : shErr,
+            );
+          }
+        },
         routeUserTextThroughRealtime: useSarvamStt && !useSamvaadLlmTts,
         getCallLogger: () => callLogger,
       });
@@ -602,12 +619,22 @@ const agentDef = defineAgent({
           getPreferredLanguage: () =>
             hospitalAgent ? hospitalAgent.preferredLanguage : "hi",
           getNoInputTopic: () =>
-            hospitalAgent
-              ? getNoInputMissingTopic(
-                  hospitalAgent.callBookingSlots,
-                  hospitalAgent.preferredLanguage,
-                )
-              : null,
+            hospitalAgent &&
+            (hospitalAgent.callFlow.phase === "emergency" ||
+              hospitalAgent.callFlow.phase === "emergency_ending")
+              ? null
+              : hospitalAgent
+                ? getNoInputMissingTopic(
+                    hospitalAgent.callBookingSlots,
+                    hospitalAgent.preferredLanguage,
+                  )
+                : null,
+          shouldSkip: () =>
+            Boolean(
+              hospitalAgent &&
+                (hospitalAgent.callFlow.phase === "emergency" ||
+                  hospitalAgent.callFlow.phase === "emergency_ending"),
+            ),
           onReprompt: (info) => {
             if (callLogger) {
               callLogger.log("reprompt", {
@@ -620,6 +647,8 @@ const agentDef = defineAgent({
         });
       }
 
+      const { attachCallFlowBridge } = require("./callFlowBridge");
+
       if (useSamvaadLlmTts && samvaadTts) {
         session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
           if (!ev || !ev.isFinal) return;
@@ -631,46 +660,21 @@ const agentDef = defineAgent({
                 ? "gu-IN"
                 : "hi-IN";
         });
+        /** Samvaad: onUserTurnCompleted runs call flow; bridge only watches thank-you → hangup. */
+        detachCallFlowBridge = attachCallFlowBridge(session, hospitalAgent, {
+          handleUserTranscript: false,
+        });
       } else if (useSarvamStt) {
         /**
-         * In the Sarvam-STT → OpenAI Realtime pipeline, `onUserTurnCompleted`
-         * does NOT fire because user text is injected directly into the
-         * Realtime model, not through LiveKit's chat-context path. Without
-         * this hook, `hospitalAgent.preferredLanguage` stays at "hi" forever,
-         * which causes no-input reprompts and post-booking status lines to
-         * speak Hindi in the middle of an English call. Mirror the language
-         * inference + STT-side slot capture here so the side-channels work.
+         * Realtime + server turn_detection never calls agent.onUserTurnCompleted —
+         * emergency/booking call-flow + hangup run from STT finals here instead.
          */
-        session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-          if (!ev || !ev.isFinal) return;
-          const text = String(ev.transcript || "");
-          if (!text.trim()) return;
-          try {
-            hospitalAgent.updateLanguageFromTranscript(text);
-          } catch (e) {
-            console.warn(
-              "[LiveKit Agent] STT language sync failed:",
-              e && e.message ? e.message : e,
-            );
-          }
-          try {
-            const {
-              applyTranscriptToBookingSlots,
-            } = require("./bookingSlotCapture");
-            const {
-              maybeCaptureVisitReasonFromTranscript,
-            } = require("./callBookingSlots");
-            applyTranscriptToBookingSlots(hospitalAgent.callBookingSlots, text);
-            maybeCaptureVisitReasonFromTranscript(
-              hospitalAgent.callBookingSlots,
-              text,
-            );
-          } catch (e) {
-            console.warn(
-              "[LiveKit Agent] STT slot capture failed:",
-              e && e.message ? e.message : e,
-            );
-          }
+        detachCallFlowBridge = attachCallFlowBridge(session, hospitalAgent, {
+          handleUserTranscript: true,
+        });
+      } else {
+        detachCallFlowBridge = attachCallFlowBridge(session, hospitalAgent, {
+          handleUserTranscript: false,
         });
       }
 
@@ -678,6 +682,10 @@ const agentDef = defineAgent({
         if (detachNoInput) {
           detachNoInput();
           detachNoInput = null;
+        }
+        if (detachCallFlowBridge) {
+          detachCallFlowBridge();
+          detachCallFlowBridge = null;
         }
       });
 
@@ -738,7 +746,7 @@ const agentDef = defineAgent({
       try {
         handle = session.generateReply({
           instructions:
-            `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in English ("बातचीत हिंदी में रखें या English में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
+            `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask which language they prefer — Hindi or Gujarati only ("बातचीत हिंदी में रखें या ગુજરાતીમાં?"). Do NOT offer English. After they clearly choose Hindi or Gujarati, use only that language for the rest of the call until they ask to switch. Then ask whether this is an emergency case or a normal case — do NOT start appointment booking until they say normal case.`,
         });
         await handle.waitForPlayout();
       } catch (err) {
@@ -778,6 +786,10 @@ const agentDef = defineAgent({
       if (detachNoInput) {
         detachNoInput();
         detachNoInput = null;
+      }
+      if (detachCallFlowBridge) {
+        detachCallFlowBridge();
+        detachCallFlowBridge = null;
       }
       if (callLogger) {
         try {

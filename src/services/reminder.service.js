@@ -101,6 +101,7 @@ async function schedulePrescriptionReminders(prescription) {
   const medicines = Array.isArray(prescription.medicines) ? prescription.medicines : [];
   const now = new Date();
   let reminderJobs = 0;
+  let lastDoseAt = null;
 
   if (isReminderTestMode()) {
     console.warn(
@@ -117,6 +118,9 @@ async function schedulePrescriptionReminders(prescription) {
 
       const scheduledAt = getScheduledDateTimeForSlot(anchor, dayOffset, slot, now);
       const delay = computeDelayMs(scheduledAt, now);
+      if (!lastDoseAt || scheduledAt.getTime() > lastDoseAt.getTime()) {
+        lastDoseAt = scheduledAt;
+      }
 
       await queue.add(
         JOB_SEND_REMINDER,
@@ -134,7 +138,9 @@ async function schedulePrescriptionReminders(prescription) {
     }
   }
 
-  const feedbackAt = getFeedbackScheduledAt(anchor, followUpVal, {}, now);
+  const feedbackAt = lastDoseAt
+    ? new Date(lastDoseAt.getTime() + (isReminderTestMode() ? 12 * 60 * 1000 : 12 * 60 * 60 * 1000))
+    : getFeedbackScheduledAt(anchor, followUpVal, {}, now, medicines);
   const feedbackDelay = computeDelayMs(feedbackAt, now);
 
   await queue.add(

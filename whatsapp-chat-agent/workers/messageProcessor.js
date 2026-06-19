@@ -40,6 +40,16 @@ const {
 const {
   startUpcomingAppointmentsFlow,
 } = require("../flows/upcomingAppointmentsFlow");
+const {
+  detectMedicineReminderButtonReply,
+  buildMedicineReminderButtonReply,
+} = require("../flows/medicineReminderResponse");
+const {
+  handleDosageCompletionMessage,
+  handleDosageFollowUpMessage,
+  isDosageFollowUpActive,
+  isDosageCompletionPending,
+} = require("../flows/dosageCompletionFlow");
 
 const NON_ENGLISH_REPLY =
   "Thank you for your message. To serve you accurately, please continue in *English*.";
@@ -108,8 +118,30 @@ function extractUserTextFromMessage(msg) {
   return null;
 }
 
+function extractButtonMetaFromMessage(msg) {
+  if (!msg || typeof msg !== "object") {
+    return { buttonId: "", title: "" };
+  }
+  if (msg.type === "interactive" && msg.interactive) {
+    const i = msg.interactive;
+    if (i.type === "button_reply" && i.button_reply) {
+      return {
+        buttonId: String(i.button_reply.id || ""),
+        title: String(i.button_reply.title || ""),
+      };
+    }
+  }
+  if (msg.type === "button" && msg.button) {
+    return {
+      buttonId: String(msg.button.payload || ""),
+      title: String(msg.button.text || ""),
+    };
+  }
+  return { buttonId: "", title: "" };
+}
+
 function extractInboundPayloads(body) {
-  /** @type {{ from: string, body: string, phoneNumberId: string }[]} */
+  /** @type {{ from: string, body: string, phoneNumberId: string, buttonId: string }[]} */
   const out = [];
   const entries = Array.isArray(body?.entry) ? body.entry : [];
   for (const entry of entries) {
@@ -121,11 +153,13 @@ function extractInboundPayloads(body) {
       const messages = Array.isArray(value.messages) ? value.messages : [];
       for (const msg of messages) {
         const bodyText = extractUserTextFromMessage(msg);
+        const { buttonId } = extractButtonMetaFromMessage(msg);
         if (bodyText == null || !String(bodyText).trim()) continue;
         out.push({
           from: String(msg.from || ""),
           body: String(bodyText),
           phoneNumberId: String(phoneNumberId || ""),
+          buttonId,
         });
       }
     }
@@ -320,7 +354,7 @@ async function sendReply(outbound, to, text, options = {}) {
   });
 }
 
-async function routeOneMessage({ from, body, phoneNumberId }) {
+async function routeOneMessage({ from, body, phoneNumberId, buttonId = "" }) {
   if (mongoose.connection.readyState !== 1) {
     console.warn(
       "[whatsapp-chat-agent] MongoDB not connected; skip inbound message",
@@ -358,6 +392,60 @@ async function routeOneMessage({ from, body, phoneNumberId }) {
 
   setHospitalId(from, outbound.hospitalId);
   ctx.hospitalId = outbound.hospitalId;
+
+  if (isDosageFollowUpActive(ctx)) {
+    appendMessage(from, "user", userText);
+    const followUpResult = await handleDosageFollowUpMessage(
+      ctx,
+      userText,
+      from,
+      outbound.hospitalId,
+      buttonId,
+    );
+    if (followUpResult) {
+      await sendReply(outbound, from, followUpResult.reply, {
+        interactiveBody: followUpResult.interactive?.body,
+        interactiveButtons: followUpResult.interactive?.buttons,
+      });
+      appendMessage(from, "assistant", followUpResult.reply);
+      if (followUpResult.endFlow) {
+        resetFlows(from);
+      }
+      return;
+    }
+  }
+
+  if (isDosageCompletionPending(ctx)) {
+    appendMessage(from, "user", userText);
+    const dosageResult = await handleDosageCompletionMessage(
+      ctx,
+      userText,
+      from,
+      outbound.hospitalId,
+      buttonId,
+    );
+    if (dosageResult) {
+      await sendReply(outbound, from, dosageResult.reply, {
+        interactiveBody: dosageResult.interactive?.body,
+        interactiveButtons: dosageResult.interactive?.buttons,
+      });
+      appendMessage(from, "assistant", dosageResult.reply);
+      if (dosageResult.endFlow) {
+        resetFlows(from);
+      }
+      return;
+    }
+  }
+
+  const medicineReminderKind = detectMedicineReminderButtonReply(userText, buttonId, ctx);
+  if (medicineReminderKind) {
+    const hospitalName = hospitalDoc?.name?.trim() || "";
+    const reply = buildMedicineReminderButtonReply(medicineReminderKind, hospitalName);
+    appendMessage(from, "user", userText);
+    await sendReply(outbound, from, reply);
+    appendMessage(from, "assistant", reply);
+    return;
+  }
 
   if (CANCEL_RE.test(userText)) {
     resetFlows(from);

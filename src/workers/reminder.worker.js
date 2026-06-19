@@ -10,6 +10,7 @@ const {
   notifyPrescriptionReminderFeedback,
 } = require('../services/reminderWhatsAppNotify');
 const Prescription = require('../models/prescription.model');
+require('../models/doctor.model');
 const env = require('../config/env');
 const { isReminderTestMode } = require('../utils/time.util');
 
@@ -23,7 +24,12 @@ let workerConnection = null;
 async function loadPrescriptionForReminders(prescriptionId) {
   return Prescription.findById(prescriptionId)
     .populate('patient', 'fullName phoneNumber patientId hospital')
-    .populate('hospital', 'name phoneCountryCode');
+    .populate('hospital', 'name phoneCountryCode')
+    .populate({
+      path: 'appointment',
+      select: 'doctor',
+      populate: { path: 'doctor', select: 'fullName' },
+    });
 }
 
 function resolvePatientPhone(prescription) {
@@ -87,22 +93,12 @@ async function handleSendFeedback(job) {
     throw err;
   }
 
-  const updated = await Prescription.findOneAndUpdate(
+  await Prescription.findOneAndUpdate(
     { _id: prescription._id, status: { $ne: 'Cancelled' } },
-    {
-      $set: {
-        status: 'Completed',
-        reminderFeedbackCompletedAt: new Date(),
-      },
-    },
-    { new: true },
+    { $set: { dosageCompletionSentAt: new Date() } },
   );
 
-  if (!updated) {
-    console.warn('[Reminder] send-feedback: prescription not updated (cancelled?)', prescriptionId);
-  } else {
-    console.log('[Reminder] Prescription marked completed after feedback', prescriptionId);
-  }
+  console.log('[Reminder] Dosage completion feedback sent', prescriptionId);
 }
 
 /**

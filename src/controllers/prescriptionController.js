@@ -431,11 +431,9 @@ const create = async (req, res, next) => {
 
     res.status(201).json({ success: true, data: { prescription: populated } });
 
-    if (populated.appointment) {
-      notifyPrescriptionCreated(populated).catch((err) =>
-        console.error('[WhatsApp] prescription created notify:', err.message, err.details || '')
-      );
-    }
+    notifyPrescriptionCreated(populated).catch((err) =>
+      console.error('[WhatsApp] prescription created notify:', err.message, err.details || '')
+    );
   } catch (err) {
     next(err);
   }

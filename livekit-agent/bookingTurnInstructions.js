@@ -152,9 +152,11 @@ function buildBookingTurnInstructions(p) {
       " (no English variable names, tool names, MongoDB/ID/JSON terms, or status words like ok/true/false/null — see the hard-banned list in the main system prompt).",
     preferredLanguage === "hi"
       ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers (Great, Understood, Okay, Sure, Please, Thank you) and no English questions; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names (Hardik, Sarvodaya) are allowed as names only."
-      : preferredLanguage === "en"
-        ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
-        : "",
+      : preferredLanguage === "gu"
+        ? "LANGUAGE_LOCK: Caller chose Gujarati for this call. Every word you speak aloud must be Gujarati — use સમજાય ગયું, જી, કૃપા કરીને, આભાર, etc. Latin names are allowed as names only."
+        : preferredLanguage === "en"
+          ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi or Gujarati sentences mid-turn unless the caller explicitly asks to switch."
+          : "",
     isMongoObjectIdString(slots?.doctorObjectId)
       ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."
       : "",

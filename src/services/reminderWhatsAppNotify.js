@@ -11,8 +11,8 @@ const {
 const {
   buildMedicineReminderWhatsAppBody,
   buildMedicineReminderTemplateMedicinesParam,
-  buildFeedbackMessage,
 } = require("./reminder.service");
+const { setDosageCompletionPending } = require("../../whatsapp-chat-agent/services/contextService");
 const {
   getResolvedHospitalMessagingSettings,
   logMessagingPermissionDenied,
@@ -21,6 +21,56 @@ const {
   TEMPLATE_KEYS,
   getAssignedTemplateName,
 } = require("./whatsappTemplateAssignment.service");
+
+function formatDoctorDisplayName(fullName) {
+  const name = fullName?.trim();
+  if (!name) return "Doctor";
+  if (/^dr\.?\s/i.test(name)) return name;
+  return `Dr. ${name}`;
+}
+
+function resolveDoctorName(prescription) {
+  const appt = prescription.appointment;
+  if (appt && typeof appt === "object" && appt.doctor && typeof appt.doctor === "object") {
+    return formatDoctorDisplayName(appt.doctor.fullName);
+  }
+  return "Doctor";
+}
+
+function resolveDoctorId(prescription) {
+  const appt = prescription.appointment;
+  if (appt && typeof appt === "object" && appt.doctor) {
+    if (typeof appt.doctor === "object" && appt.doctor._id) {
+      return String(appt.doctor._id);
+    }
+    return String(appt.doctor);
+  }
+  return null;
+}
+
+function resolveContextPhoneKey(patientPhone, ccDigits) {
+  return (
+    normalizeWhatsAppTo(patientPhone, ccDigits) ||
+    String(patientPhone || "").replace(/\D/g, "") ||
+    ""
+  );
+}
+
+function buildDosageCompletionFallbackText(patientName, hospitalName) {
+  const name = patientName?.trim() || "there";
+  const facility = hospitalName?.trim() || "Hospital";
+  return [
+    `Hi ${name},`,
+    "",
+    "You have finished your prescribed medicine course.",
+    "",
+    "How are you feeling now?",
+    "",
+    "Please reply with *Fully Recovered* or *Not Yet*.",
+    "",
+    `— ${facility} Care Team`,
+  ].join("\n");
+}
 
 /**
  * @param {import('mongoose').Document|object} prescription
@@ -93,6 +143,8 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
     (prescription.patientName && String(prescription.patientName).trim()) ||
     (typeof patient.fullName === "string" && patient.fullName.trim()) ||
     "Patient";
+  const hospitalName = hospital?.name || "Hospital";
+  const doctorName = resolveDoctorName(prescription);
 
   const assignedTemplateName = await getAssignedTemplateName({
     hospitalId,
@@ -111,7 +163,9 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
       languageCode: env.MEDICINE_TEMPLATE_LANG,
       components: templateBodyNamedParameters({
         patient_name: patientName,
-        medicines: medsList,
+        medicine_details: medsList,
+        doctor_name: doctorName,
+        hospital_name: hospitalName,
       }),
       defaultCountryDigits: ccDigits,
       apiVersion: creds.api_version || undefined,
@@ -140,14 +194,15 @@ async function notifyMedicineReminder(prescription, slot, medicines) {
 }
 
 /**
- * End-of-course feedback message (plain text; no template env defined by product).
+ * End-of-course dosage completion message (template with Fully Recovered / Not Yet).
  * @param {import('mongoose').Document|object} prescription
  * @returns {Promise<{ sent: boolean, reason?: string }>}
  */
 async function notifyPrescriptionReminderFeedback(prescription) {
+  const rxId = String(prescription._id || "");
   const patient = prescription.patient;
   if (!patient?.phoneNumber) {
-    console.warn("[WhatsApp] Reminder feedback: no patient phone", String(prescription._id));
+    console.warn("[WhatsApp] Dosage completion: no patient phone", rxId);
     return { sent: false, reason: "no_phone" };
   }
 
@@ -158,7 +213,7 @@ async function notifyPrescriptionReminderFeedback(prescription) {
     null;
 
   if (!hospitalId) {
-    console.warn("[WhatsApp] Reminder feedback: no hospital", String(prescription._id));
+    console.warn("[WhatsApp] Dosage completion: no hospital", rxId);
     return { sent: false, reason: "no_hospital" };
   }
 
@@ -172,32 +227,32 @@ async function notifyPrescriptionReminderFeedback(prescription) {
 
   if (!perm.whatsapp.isEnabled) {
     logMessagingPermissionDenied(hospitalId, "whatsapp_disabled", {
-      flow: "prescription_reminder_feedback",
-      prescriptionId: String(prescription._id),
+      flow: "dosage_completion",
+      prescriptionId: rxId,
     });
     throw new UnrecoverableError(
-      `[Hospital settings] Reminder feedback denied: WhatsApp disabled (prescription ${String(prescription._id)})`
+      `[Hospital settings] Dosage completion denied: WhatsApp disabled (prescription ${rxId})`
     );
   }
   if (!perm.whatsapp.medicinesReminder) {
     logMessagingPermissionDenied(hospitalId, "whatsapp_medicines_reminder", {
-      flow: "prescription_reminder_feedback",
-      prescriptionId: String(prescription._id),
+      flow: "dosage_completion",
+      prescriptionId: rxId,
     });
     throw new UnrecoverableError(
-      `[Hospital settings] Reminder feedback denied: medicinesReminder off (prescription ${String(prescription._id)})`
+      `[Hospital settings] Dosage completion denied: medicinesReminder off (prescription ${rxId})`
     );
   }
 
   if (!creds?.phone_number_id || !creds?.access_token) {
-    console.warn("[WhatsApp] Reminder feedback: WhatsApp not configured", String(hospitalId));
+    console.warn("[WhatsApp] Dosage completion: WhatsApp not configured", String(hospitalId));
     return { sent: false, reason: "no_whatsapp_creds" };
   }
 
   const ccDigits = (hospital?.phoneCountryCode || "+91").replace(/\D/g, "") || "91";
   const to = normalizeWhatsAppTo(patient.phoneNumber, ccDigits);
   if (!to) {
-    console.warn("[WhatsApp] Reminder feedback: invalid phone", String(prescription._id));
+    console.warn("[WhatsApp] Dosage completion: invalid phone", rxId);
     return { sent: false, reason: "invalid_phone" };
   }
 
@@ -205,19 +260,63 @@ async function notifyPrescriptionReminderFeedback(prescription) {
     (prescription.patientName && String(prescription.patientName).trim()) ||
     (typeof patient.fullName === "string" && patient.fullName.trim()) ||
     "Patient";
+  const hospitalName = hospital?.name || "Hospital";
+  const doctorName = resolveDoctorName(prescription);
+  const doctorId = resolveDoctorId(prescription);
+  const patientId =
+    patient && typeof patient === "object" && patient._id ? String(patient._id) : String(prescription.patient || "");
 
-  const textBody = buildFeedbackMessage(patientName);
-
-  await sendWhatsAppText({
+  const assignedTemplateName = await getAssignedTemplateName({
+    hospitalId,
     phoneNumberId: creds.phone_number_id,
-    accessToken: creds.access_token,
-    to: patient.phoneNumber,
-    textBody,
-    defaultCountryDigits: ccDigits,
-    apiVersion: creds.api_version || undefined,
+    templateKey: TEMPLATE_KEYS.DOSAGE_COMPLETION,
   });
+  const templateName = assignedTemplateName || env.DOSAGE_COMPLETION_TEMPLATE_NAME;
 
-  console.log("[WhatsApp] Reminder feedback sent", { prescriptionId: String(prescription._id) });
+  if (templateName) {
+    await sendWhatsAppTemplate({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: patient.phoneNumber,
+      templateName,
+      languageCode: env.DOSAGE_COMPLETION_TEMPLATE_LANG,
+      components: templateBodyNamedParameters({
+        patient_name: patientName,
+        doctor_name: doctorName,
+        hospital_name: hospitalName,
+      }),
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+  } else {
+    const textBody = buildDosageCompletionFallbackText(patientName, hospitalName);
+    await sendWhatsAppText({
+      phoneNumberId: creds.phone_number_id,
+      accessToken: creds.access_token,
+      to: patient.phoneNumber,
+      textBody,
+      defaultCountryDigits: ccDigits,
+      apiVersion: creds.api_version || undefined,
+    });
+  }
+
+  const phoneKey = resolveContextPhoneKey(patient.phoneNumber, ccDigits);
+  if (phoneKey) {
+    setDosageCompletionPending(phoneKey, {
+      prescriptionId: rxId,
+      patientId,
+      patientName,
+      doctorId,
+      doctorName,
+      hospitalName,
+      hospitalId: String(hospitalId),
+    });
+  }
+
+  console.log("[WhatsApp] Dosage completion sent", {
+    prescriptionId: rxId,
+    templateName: templateName || null,
+  });
   return { sent: true };
 }
 

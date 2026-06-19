@@ -98,12 +98,21 @@ const env = {
     (process.env.APPOINTMENT_TEMPLATE_NAME || "").trim() ||
     (process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "").trim(),
   APPOINTMENT_TEMPLATE_LANG: process.env.APPOINTMENT_TEMPLATE_LANG || "en_US",
-  /** prescription_created_message — patient_name, doctor_name, link */
+  /** prescription_created_message — patient_name, doctor_name, link, hospital_name */
   PRESCRIPTION_TEMPLATE_NAME: (process.env.PRESCRIPTION_TEMPLATE_NAME || "").trim(),
   PRESCRIPTION_TEMPLATE_LANG: process.env.PRESCRIPTION_TEMPLATE_LANG || "en_US",
-  /** medicines_reminder_message — patient_name, medicines */
+  /** medicines_reminder_message — patient_name, medicine_details, doctor_name, hospital_name */
   MEDICINE_TEMPLATE_NAME: (process.env.MEDICINE_TEMPLATE_NAME || "").trim(),
   MEDICINE_TEMPLATE_LANG: process.env.MEDICINE_TEMPLATE_LANG || "en_US",
+  /** dosage_completion_message — patient_name, doctor_name, hospital_name */
+  DOSAGE_COMPLETION_TEMPLATE_NAME: (process.env.DOSAGE_COMPLETION_TEMPLATE_NAME || "").trim(),
+  DOSAGE_COMPLETION_TEMPLATE_LANG: process.env.DOSAGE_COMPLETION_TEMPLATE_LANG || "en_US",
+  /** dosage_followup_not_yet_message — patient_name, doctor_name, hospital_name */
+  DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME: (
+    process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_NAME || ""
+  ).trim(),
+  DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG:
+    process.env.DOSAGE_FOLLOWUP_NOT_YET_TEMPLATE_LANG || "en_US",
   /** Optional URL string for template param 2 (e.g. patient portal). Falls back to appointmentId. */
   WHATSAPP_APPOINTMENT_LINK_URL: process.env.WHATSAPP_APPOINTMENT_LINK_URL || "",
   WHATSAPP_PATIENT_PORTAL_URL: process.env.WHATSAPP_PATIENT_PORTAL_URL || "",

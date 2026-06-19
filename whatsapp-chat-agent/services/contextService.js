@@ -14,6 +14,28 @@ function pruneMessages(ctx) {
 }
 
 /**
+ * @param {string} phoneDigits
+ * @param {object} data
+ */
+function setDosageCompletionPending(phoneDigits, data) {
+  const ctx = getContext(phoneDigits);
+  if (!ctx) return;
+  ctx.activeFlow = "dosage_completion";
+  ctx.dosageCompletion = data;
+  ctx.dosageFollowup = null;
+}
+
+function clearDosageCompletionState(phoneDigits) {
+  const ctx = getContext(phoneDigits);
+  if (!ctx) return;
+  if (ctx.activeFlow === "dosage_completion" || ctx.activeFlow === "dosage_followup") {
+    ctx.activeFlow = null;
+  }
+  ctx.dosageCompletion = null;
+  ctx.dosageFollowup = null;
+}
+
+/**
  * @param {string} phoneDigits - WhatsApp `from` or normalized digits
  */
 function getContext(phoneDigits) {
@@ -65,6 +87,9 @@ function resetFlows(phoneDigits) {
   ctx.activeFlow = null;
   ctx.appointment = null;
   ctx.prescription = null;
+  ctx.followup = null;
+  ctx.dosageCompletion = null;
+  ctx.dosageFollowup = null;
 }
 
 module.exports = {
@@ -72,5 +97,7 @@ module.exports = {
   setHospitalId,
   appendMessage,
   resetFlows,
+  setDosageCompletionPending,
+  clearDosageCompletionState,
   FOUR_DAYS_MS,
 };

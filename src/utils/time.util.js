@@ -7,11 +7,11 @@ const env = require('../config/env');
 
 const SLOTS = ['breakfast', 'lunch', 'dinner'];
 
-/** Local wall-clock times for each slot (production). */
+/** Local wall-clock times for each slot (production, Asia/Kolkata via process TZ). */
 const SLOT_HOURS = {
   breakfast: { hour: 9, minute: 0, second: 0, ms: 0 },
   lunch: { hour: 14, minute: 0, second: 0, ms: 0 },
-  dinner: { hour: 23, minute: 40, second: 0, ms: 0 },
+  dinner: { hour: 20, minute: 0, second: 0, ms: 0 },
 };
 
 /**
@@ -101,17 +101,63 @@ function computeDelayMs(scheduledAt, now = new Date()) {
 }
 
 /**
- * Absolute time for feedback job.
- * **Production:** day after follow-up window, 10:00 local.
- * **Test mode:** shortly after the last dinner of the last scheduled day.
+ * Latest scheduled medicine reminder instant for a prescription course.
+ * @param {Date} anchorDate
+ * @param {number} followUpDays
+ * @param {object[]} medicines
+ * @param {Date} [scheduleReferenceTime]
+ * @returns {Date|null}
+ */
+function getLastMedicineDoseScheduledAt(anchorDate, followUpDays, medicines, scheduleReferenceTime) {
+  const list = Array.isArray(medicines) ? medicines : [];
+  const days = Math.max(0, Number(followUpDays) || 0);
+  if (!days || !list.length) return null;
+
+  let last = null;
+  for (let dayOffset = 0; dayOffset < days; dayOffset += 1) {
+    for (const slot of SLOTS) {
+      const hasActive = list.some((m) => {
+        const t = m?.time;
+        if (!t || typeof t !== "object" || !t[slot]) return false;
+        const durationDays =
+          m.duration != null && typeof m.duration === "object" && typeof m.duration.value === "number"
+            ? Math.floor(m.duration.value)
+            : typeof m.duration === "string" && m.duration.match(/(\d+)/)
+              ? Math.max(1, parseInt(m.duration.match(/(\d+)/)[1], 10))
+              : null;
+        if (durationDays != null && dayOffset >= durationDays) return false;
+        return true;
+      });
+      if (!hasActive) continue;
+
+      const at = getScheduledDateTimeForSlot(anchorDate, dayOffset, slot, scheduleReferenceTime);
+      if (!last || at.getTime() > last.getTime()) {
+        last = at;
+      }
+    }
+  }
+  return last;
+}
+
+/**
+ * Absolute time for dosage-completion feedback job.
+ * **Production:** 12 hours after the last scheduled medicine dose.
+ * **Test mode:** 12 minutes after the last dinner of the last scheduled day.
  *
  * @param {Date} anchorDate
  * @param {number} followUpDays - `followUp.value`
- * @param {{ hour?: number, minute?: number }} [opts]
+ * @param {{ hour?: number, minute?: number, delayHours?: number }} [opts]
  * @param {Date} [scheduleReferenceTime]
+ * @param {object[]} [medicines]
  * @returns {Date}
  */
-function getFeedbackScheduledAt(anchorDate, followUpDays, opts = {}, scheduleReferenceTime = null) {
+function getFeedbackScheduledAt(
+  anchorDate,
+  followUpDays,
+  opts = {},
+  scheduleReferenceTime = null,
+  medicines = [],
+) {
   if (
     isReminderTestMode() &&
     scheduleReferenceTime instanceof Date &&
@@ -123,6 +169,17 @@ function getFeedbackScheduledAt(anchorDate, followUpDays, opts = {}, scheduleRef
       lastDay * TEST_DAY_SPACING_MS +
       TEST_SLOT_MINUTES_FROM_DAY_START.dinner * 60 * 1000;
     return new Date(lastDinnerMs + 12 * 60 * 1000);
+  }
+
+  const delayHours = opts.delayHours ?? 12;
+  const lastDose = getLastMedicineDoseScheduledAt(
+    anchorDate,
+    followUpDays,
+    medicines,
+    scheduleReferenceTime,
+  );
+  if (lastDose) {
+    return new Date(lastDose.getTime() + delayHours * 60 * 60 * 1000);
   }
 
   const hour = opts.hour ?? 10;
@@ -144,5 +201,6 @@ module.exports = {
   getReminderAnchorDate,
   getScheduledDateTimeForSlot,
   computeDelayMs,
+  getLastMedicineDoseScheduledAt,
   getFeedbackScheduledAt,
 };
