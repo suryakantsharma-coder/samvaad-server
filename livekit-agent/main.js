@@ -564,6 +564,7 @@ const agentDef = defineAgent({
         getCallLogger: () => callLogger,
       });
       hospitalAgent._callRoomName = roomName;
+      hospitalAgent._hospitalName = String(hospital.name || "").trim() || null;
       hospitalAgent._hospitalEmergencyNumber =
         String(hospital.emergencyNumber || hospital.receptionistNumber || "").trim() ||
         null;
@@ -614,6 +615,13 @@ const agentDef = defineAgent({
                   hospitalAgent.preferredLanguageLocked,
                 )
               : null,
+          shouldSuppressReprompt: () =>
+            Boolean(
+              hospitalAgent &&
+                (hospitalAgent.postBookingClosingInFlight ||
+                  hospitalAgent.callBookingSlots?.caseType === "emergency" ||
+                  hospitalAgent.callBookingSlots?.emergencyPhase === "done"),
+            ),
           onReprompt: (info) => {
             if (callLogger) {
               callLogger.log("reprompt", {
@@ -626,53 +634,24 @@ const agentDef = defineAgent({
         });
       }
 
-      if (useSamvaadLlmTts && samvaadTts) {
-        session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-          if (!ev || !ev.isFinal) return;
-          hospitalAgent.updateLanguageFromTranscript(ev.transcript || "");
-          samvaadTts._targetLanguageCode =
-            hospitalAgent.preferredLanguage === "gu" ? "gu-IN" : "hi-IN";
-        });
-      } else if (useSarvamStt) {
-        /**
-         * In the Sarvam-STT → OpenAI Realtime pipeline, `onUserTurnCompleted`
-         * does NOT fire because user text is injected directly into the
-         * Realtime model, not through LiveKit's chat-context path. Without
-         * this hook, `hospitalAgent.preferredLanguage` stays at "hi" forever,
-         * which causes no-input reprompts and post-booking status lines to
-         * speak Hindi in the middle of a Gujarati call. Mirror the language
-         * inference + STT-side slot capture here so the side-channels work.
-         */
+      if (useSarvamStt) {
         session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
           if (!ev || !ev.isFinal) return;
           const text = String(ev.transcript || "");
           if (!text.trim()) return;
-          try {
+          if (useSamvaadLlmTts && samvaadTts) {
             hospitalAgent.updateLanguageFromTranscript(text);
-          } catch (e) {
-            console.warn(
-              "[LiveKit Agent] STT language sync failed:",
-              e && e.message ? e.message : e,
-            );
+            samvaadTts._targetLanguageCode =
+              hospitalAgent.preferredLanguage === "gu" ? "gu-IN" : "hi-IN";
           }
-          try {
-            const {
-              applyTranscriptToBookingSlots,
-            } = require("./bookingSlotCapture");
-            const {
-              maybeCaptureVisitReasonFromTranscript,
-            } = require("./callBookingSlots");
-            applyTranscriptToBookingSlots(hospitalAgent.callBookingSlots, text);
-            maybeCaptureVisitReasonFromTranscript(
-              hospitalAgent.callBookingSlots,
-              text,
-            );
-          } catch (e) {
-            console.warn(
-              "[LiveKit Agent] STT slot capture failed:",
-              e && e.message ? e.message : e,
-            );
-          }
+          hospitalAgent
+            .dispatchUserTranscript(text)
+            .catch((e) => {
+              console.error(
+                "[LiveKit Agent] dispatchUserTranscript failed:",
+                e && e.message ? e.message : e,
+              );
+            });
         });
       }
 

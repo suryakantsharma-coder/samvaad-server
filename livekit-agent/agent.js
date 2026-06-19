@@ -6,8 +6,9 @@ const {
   getPlainTranscript,
 } = require("./userTranscriptNormalize");
 const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
-const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
+const { applyTranscriptToBookingSlots, isEmergencyHangUpRequest, isEmergencyCallActive } = require("./bookingSlotCapture");
 const { handleEmergencyUserTurn } = require("./emergencyCallFlow");
+const { scheduleAutoEndAfterBookingConfirmed } = require("./endPhoneCall");
 const {
   inferHospitalCallerLanguage,
   detectExplicitHospitalLanguageSwitch,
@@ -144,7 +145,7 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
         if (
           agent &&
           agent.callBookingSlots &&
-          agent.callBookingSlots.caseType === "emergency" &&
+          isEmergencyCallActive(agent.callBookingSlots) &&
           BOOKING_TOOLS_BLOCKED_IN_EMERGENCY.has(name)
         ) {
           if (logger) {
@@ -283,6 +284,12 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           }
           if (agent) {
             await speakCreateAppointmentResult(agent, result);
+            if (result.ok) {
+              scheduleAutoEndAfterBookingConfirmed({
+                agent,
+                speechAlreadyComplete: true,
+              });
+            }
           }
         }
 
@@ -375,37 +382,15 @@ class HospitalVoiceAgent extends voice.Agent {
       .join(",") || "(none)";
   }
 
-  /**
-   * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
-   */
-  async onUserTurnCompleted(_chatCtx, newMessage) {
-    const rawBefore = getPlainTranscript(newMessage);
-    try {
-      normalizeShortYesNoInPlace(newMessage);
-    } catch (err) {
-      console.warn(
-        "[Agent] normalizeShortYesNoInPlace failed:",
-        err && err.message ? err.message : err,
-      );
-    }
-    const textAfter = getPlainTranscript(newMessage);
+  _isEmergencyHangUpTurn(rawBefore, textAfter) {
+    const slots = this.callBookingSlots;
+    return (
+      isEmergencyHangUpRequest(rawBefore, slots) ||
+      isEmergencyHangUpRequest(textAfter, slots)
+    );
+  }
 
-    if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
-      const preview = rawBefore
-        ? `"${rawBefore.slice(0, 200)}${rawBefore.length > 200 ? "…" : ""}"`
-        : "(empty — reprompting caller)";
-      console.log("[Sarvam STT] onUserTurnCompleted user text:", preview);
-    }
-
-    try {
-      this.updateLanguageFromTranscript(rawBefore || textAfter);
-    } catch (err) {
-      console.warn(
-        "[Agent] updateLanguageFromTranscript failed:",
-        err && err.message ? err.message : err,
-      );
-    }
-
+  _syncSlotsFromUserText(rawBefore) {
     try {
       applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
     } catch (err) {
@@ -424,10 +409,117 @@ class HospitalVoiceAgent extends voice.Agent {
         );
       }
     }
+  }
 
-    if (!this._routeUserTextThroughRealtime) return;
+  _interruptRealtimeIfNeeded() {
+    const session = this.session;
+    if (!session || typeof session.interrupt !== "function") return;
+    try {
+      session.interrupt();
+    } catch (err) {
+      console.warn(
+        "[Agent] session.interrupt failed:",
+        err && err.message ? err.message : err,
+      );
+    }
+  }
 
+  /**
+   * Handle final STT for every Sarvam pipeline (Realtime + Samvaad).
+   * @param {string} text
+   */
+  async dispatchUserTranscript(text) {
+    const rawBefore = String(text || "").trim();
+    if (!rawBefore || !this.session) return;
+
+    if (this.postBookingClosingInFlight && this.callBookingSlots?.emergencyPhase === "done") {
+      return;
+    }
+
+    try {
+      this.updateLanguageFromTranscript(rawBefore);
+    } catch (err) {
+      console.warn(
+        "[Agent] updateLanguageFromTranscript failed:",
+        err && err.message ? err.message : err,
+      );
+    }
+    this._syncSlotsFromUserText(rawBefore);
+
+    const hangUpTurn = this._isEmergencyHangUpTurn(rawBefore, rawBefore);
+    if (this._sttTurnInFlight) {
+      if (!hangUpTurn && !isEmergencyCallActive(this.callBookingSlots)) return;
+      this._interruptRealtimeIfNeeded();
+    }
+
+    this._sttTurnInFlight = true;
+    try {
+      console.log(
+        "[Agent] dispatchUserTranscript:",
+        rawBefore.slice(0, 120),
+        hangUpTurn ? "(hang-up)" : "",
+        isEmergencyCallActive(this.callBookingSlots) ? "(emergency)" : "",
+      );
+      this._interruptRealtimeIfNeeded();
+
+      if (isEmergencyCallActive(this.callBookingSlots)) {
+        await this._runProgrammaticUserTurn(rawBefore, rawBefore, null);
+        return;
+      }
+
+      if (this._routeUserTextThroughRealtime) {
+        await this._runProgrammaticUserTurn(rawBefore, rawBefore, null);
+      }
+    } finally {
+      this._sttTurnInFlight = false;
+    }
+  }
+
+  /**
+   * @deprecated use dispatchUserTranscript
+   */
+  async dispatchSttUserTurn(text) {
+    return this.dispatchUserTranscript(text);
+  }
+
+  /**
+   * @deprecated use dispatchUserTranscript
+   */
+  async dispatchEmergencyTurnIfNeeded(text) {
+    return this.dispatchUserTranscript(text);
+  }
+
+  /**
+   * @param {string} rawBefore
+   * @param {string} textAfter
+   * @param {import('@livekit/agents').llm.ChatMessage | null} [userMessage]
+   */
+  async _runProgrammaticUserTurn(rawBefore, textAfter, userMessage) {
     const logger = this.getCallLogger();
+    const slots = this.callBookingSlots;
+
+    if (this.postBookingClosingInFlight) {
+      if (slots.emergencyPhase === "done") {
+        try {
+          await handleEmergencyUserTurn({
+            agent: this,
+            session: this.session,
+            slots,
+            rawBefore,
+            textAfter,
+            preferredLanguage: this.preferredLanguage,
+            logger,
+          });
+        } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          console.error("[Agent] handleEmergencyUserTurn (closing) failed:", msg);
+        }
+      }
+      if (logger) {
+        logger.log("stop_response", { reason: "closing_in_flight" });
+      }
+      return;
+    }
 
     if (!rawBefore.trim()) {
       if (logger) {
@@ -454,12 +546,22 @@ class HospitalVoiceAgent extends voice.Agent {
       if (logger) {
         logger.log("stop_response", { reason: "empty_stt" });
       }
-      throw new voice.StopResponse();
+      return;
     }
 
-    const slots = this.callBookingSlots;
-
-    if (slots.caseType === "emergency") {
+    if (isEmergencyCallActive(slots)) {
+      const hangUpTurn = this._isEmergencyHangUpTurn(rawBefore, textAfter);
+      if (
+        this._emergencyFlowInFlight &&
+        !hangUpTurn &&
+        slots.emergencyPhase !== "done"
+      ) {
+        if (logger) {
+          logger.log("stop_response", { reason: "emergency_flow_in_flight" });
+        }
+        return;
+      }
+      this._emergencyFlowInFlight = true;
       if (logger) {
         logger.log("generate_reply", {
           purpose: "user_turn_emergency",
@@ -489,11 +591,13 @@ class HospitalVoiceAgent extends voice.Agent {
             errorMessage: msg,
           });
         }
+      } finally {
+        this._emergencyFlowInFlight = false;
       }
       if (logger) {
         logger.log("stop_response", { reason: "emergency_flow_dispatched" });
       }
-      throw new voice.StopResponse();
+      return;
     }
 
     let bookingIx;
@@ -532,10 +636,11 @@ class HospitalVoiceAgent extends voice.Agent {
     }
 
     try {
-      const handle = this.session.generateReply({
-        userMessage: newMessage,
+      const replyOpts = {
         instructions: bookingIx,
-      });
+      };
+      if (userMessage) replyOpts.userMessage = userMessage;
+      const handle = this.session.generateReply(replyOpts);
       if (handle && typeof handle.waitForPlayout === "function") {
         await handle.waitForPlayout();
       }
@@ -548,7 +653,6 @@ class HospitalVoiceAgent extends voice.Agent {
           errorMessage: msg,
         });
       }
-      /* Fallback: ask the caller to repeat in their language so the call does not go silent. */
       try {
         this.session.generateReply({
           toolChoice: "none",
@@ -565,6 +669,51 @@ class HospitalVoiceAgent extends voice.Agent {
     if (logger) {
       logger.log("stop_response", { reason: "user_turn_dispatched" });
     }
+  }
+
+  /**
+   * LiveKit clears STT output for RealtimeModel before generateReply; we inject Sarvam text here instead.
+   */
+  async onUserTurnCompleted(_chatCtx, newMessage) {
+    const rawBefore = getPlainTranscript(newMessage);
+    try {
+      normalizeShortYesNoInPlace(newMessage);
+    } catch (err) {
+      console.warn(
+        "[Agent] normalizeShortYesNoInPlace failed:",
+        err && err.message ? err.message : err,
+      );
+    }
+    const textAfter = getPlainTranscript(newMessage);
+
+    if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
+      const preview = rawBefore
+        ? `"${rawBefore.slice(0, 200)}${rawBefore.length > 200 ? "…" : ""}"`
+        : "(empty — reprompting caller)";
+      console.log("[Sarvam STT] onUserTurnCompleted user text:", preview);
+    }
+
+    try {
+      this.updateLanguageFromTranscript(rawBefore || textAfter);
+    } catch (err) {
+      console.warn(
+        "[Agent] updateLanguageFromTranscript failed:",
+        err && err.message ? err.message : err,
+      );
+    }
+
+    this._syncSlotsFromUserText(rawBefore);
+
+    const slots = this.callBookingSlots;
+    if (isEmergencyCallActive(slots)) {
+      this._interruptRealtimeIfNeeded();
+      await this._runProgrammaticUserTurn(rawBefore, textAfter, newMessage);
+      throw new voice.StopResponse();
+    }
+
+    if (!this._routeUserTextThroughRealtime) return;
+
+    await this._runProgrammaticUserTurn(rawBefore, textAfter, newMessage);
     throw new voice.StopResponse();
   }
 }

@@ -42,13 +42,16 @@ function getEmergencyNoBookingLine(lang) {
 }
 
 /**
+ * Thank-you + take care — end call after caller notes the emergency number.
  * @param {'hi'|'gu'} lang
+ * @param {string | null | undefined} hospitalName
  */
-function getEmergencyGoodbyeLine(lang) {
+function getEmergencyThankYouLine(lang, hospitalName) {
+  const name = String(hospitalName || "").trim() || "the hospital";
   if (lang === "gu") {
-    return "આભાર. તમે કૉલ કાપી શકો છો.";
+    return `${name} ને કૉલ કરવા બદલ આભાર. કાળજી રાખજો.`;
   }
-  return "धन्यवाद। आप कॉल काट सकते हैं।";
+  return `${name} को कॉल करने के लिए धन्यवाद। अपना ध्यान रखें।`;
 }
 
 /**
@@ -301,7 +304,7 @@ module.exports = {
   getHospitalLanguageRepromptLine,
   getEmergencyTwoOptionsLine,
   getEmergencyNoBookingLine,
-  getEmergencyGoodbyeLine,
+  getEmergencyThankYouLine,
   EMERGENCY_NUMBER_ENGLISH_RULE,
   HANG_UP_HI,
   HANG_UP_EN,

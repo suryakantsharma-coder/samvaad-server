@@ -13,6 +13,9 @@ function parseEnvFlag(name, defaultOn) {
   return defaultOn;
 }
 
+/** Default post-closing delay when caller flow passes speechAlreadyComplete (emergency noted). */
+const DEFAULT_SPEECH_COMPLETE_DELAY_MS = 2000;
+
 /** @param {string} name @param {number} def */
 function parseEnvMs(name, def) {
   const v = process.env[name];
@@ -28,6 +31,12 @@ function isAutoEndAfterBookingEnabled() {
 /** Optional extra pause after confirmation audio finishes; default 0 (cut as soon as idle). */
 function getAutoEndDelayMs() {
   return parseEnvMs("AGENT_AUTO_END_DELAY_MS", 0);
+}
+
+/** Delay after thank-you when speech playout was already awaited (emergency noted). */
+function getSpeechCompleteEndDelayMs() {
+  const v = parseEnvMs("AGENT_AUTO_END_DELAY_MS", DEFAULT_SPEECH_COMPLETE_DELAY_MS);
+  return v > 0 ? v : DEFAULT_SPEECH_COMPLETE_DELAY_MS;
 }
 
 /** Agent must stay listening this long before hangup (avoids cutting between speech chunks). */
@@ -129,50 +138,87 @@ async function waitForStableAgentIdle(session, stableMs, maxMs = 180000) {
  *   roomName?: string | null,
  *   session?: import('@livekit/agents').voice.AgentSession | null,
  *   logger?: { log?: (type: string, data?: object) => void } | null,
+ *   extraDelayMs?: number,
+ *   speechAlreadyComplete?: boolean,
  * }} opts
  */
 async function autoEndCallAfterBooking(opts = {}) {
-  if (!isAutoEndAfterBookingEnabled()) return { ok: false, code: "DISABLED" };
+  if (!isAutoEndAfterBookingEnabled()) {
+    console.warn(LOG_TAG, "auto end skipped: AGENT_AUTO_END_AFTER_BOOKING is disabled");
+    return { ok: false, code: "DISABLED" };
+  }
 
   const roomName = opts.roomName;
   const session = opts.session;
-  const extraDelayMs = getAutoEndDelayMs();
+  const speechAlreadyComplete = Boolean(opts.speechAlreadyComplete);
+  const extraDelayMs = speechAlreadyComplete
+    ? opts.extraDelayMs != null
+      ? opts.extraDelayMs
+      : getSpeechCompleteEndDelayMs()
+    : opts.extraDelayMs != null
+      ? opts.extraDelayMs
+      : getAutoEndDelayMs();
   const logger = opts.logger;
+  const purpose = opts.purpose || "post_booking";
 
-  if (session) {
+  console.log(LOG_TAG, "autoEndCallAfterBooking start", {
+    purpose,
+    roomName: roomName || "(missing)",
+    speechAlreadyComplete,
+    extraDelayMs,
+  });
+
+  if (session && !speechAlreadyComplete) {
+    console.log(LOG_TAG, "waiting for agent stable idle before hangup…");
     await waitForStableAgentIdle(session, getAutoEndStableIdleMs());
+  } else if (speechAlreadyComplete) {
+    console.log(LOG_TAG, "thank-you / closing speech already complete — skipping idle wait");
   }
 
   if (session && session.closing) {
+    console.warn(LOG_TAG, "auto end aborted: session already closing");
     return { ok: false, code: "SESSION_CLOSING" };
   }
 
   if (extraDelayMs > 0) {
+    console.log(LOG_TAG, `post-speech delay started (${extraDelayMs}ms)`);
     if (logger && typeof logger.log === "function") {
       logger.log("auto_end_extra_delay", {
         delayMs: extraDelayMs,
         roomName: roomName || null,
+        purpose,
+        speechAlreadyComplete,
       });
     }
     await delay(extraDelayMs);
+    console.log(LOG_TAG, "post-speech delay finished");
     if (session && session.closing) {
+      console.warn(LOG_TAG, "auto end aborted after delay: session closing");
       return { ok: false, code: "SESSION_CLOSING" };
     }
   }
 
+  console.log(LOG_TAG, "invoking endPhoneCallByDeletingRoom", roomName || "(missing)");
   if (logger && typeof logger.log === "function") {
     logger.log("auto_end_hangup", {
       roomName: roomName || null,
-      afterConfirmationIdle: true,
+      afterConfirmationIdle: !speechAlreadyComplete,
+      purpose,
     });
   }
 
   const result = await endPhoneCallByDeletingRoom(roomName);
+  if (result.ok) {
+    console.log(LOG_TAG, "call disconnected successfully", roomName || "");
+  } else {
+    console.warn(LOG_TAG, "call disconnect failed", result.code, result.message || "");
+  }
   if (logger && typeof logger.log === "function") {
     logger.log("auto_end_complete", {
       roomName: roomName || null,
       ok: Boolean(result.ok),
       code: result.code || null,
+      purpose,
     });
   }
   return result;
@@ -183,11 +229,20 @@ async function autoEndCallAfterBooking(opts = {}) {
  * @param {{
  *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _callRoomName?: string | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
  *   purpose?: string,
+ *   extraDelayMs?: number,
+ *   speechAlreadyComplete?: boolean,
  * }} p
  */
 function scheduleAutoEndCall(p) {
   const agent = p && p.agent;
-  if (!agent || !isAutoEndAfterBookingEnabled()) return;
+  if (!agent || !isAutoEndAfterBookingEnabled()) {
+    console.warn(
+      LOG_TAG,
+      "scheduleAutoEndCall skipped:",
+      !agent ? "no agent" : "AGENT_AUTO_END_AFTER_BOOKING disabled",
+    );
+    return;
+  }
 
   const roomName =
     (agent._callRoomName && String(agent._callRoomName)) ||
@@ -199,12 +254,28 @@ function scheduleAutoEndCall(p) {
   const logger =
     typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
   const purpose = (p && p.purpose) || "auto_end";
+  const extraDelayMs = p && p.extraDelayMs != null ? p.extraDelayMs : undefined;
+  const speechAlreadyComplete = Boolean(p && p.speechAlreadyComplete);
+
+  if (!roomName) {
+    console.warn(LOG_TAG, "scheduleAutoEndCall: roomName missing on agent — hangup may fail");
+  }
 
   agent.postBookingClosingInFlight = true;
-  console.log(LOG_TAG, `scheduling auto hangup (${purpose}) for room:`, roomName || "(missing)");
+  console.log(LOG_TAG, `scheduling auto hangup (${purpose}) for room:`, roomName || "(missing)", {
+    speechAlreadyComplete,
+    extraDelayMs: extraDelayMs != null ? extraDelayMs : "(default)",
+  });
 
   setImmediate(() => {
-    autoEndCallAfterBooking({ roomName, session, logger })
+    autoEndCallAfterBooking({
+      roomName,
+      session,
+      logger,
+      extraDelayMs,
+      speechAlreadyComplete,
+      purpose,
+    })
       .catch((err) => {
         const msg = err && err.message ? err.message : String(err);
         console.error(LOG_TAG, "deferred auto end failed:", msg);
@@ -223,15 +294,25 @@ function scheduleAutoEndCall(p) {
  * (so tool_response speech can finish before the SIP line drops).
  * @param {{
  *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
+ *   purpose?: string,
+ *   extraDelayMs?: number,
+ *   speechAlreadyComplete?: boolean,
  * }} p
  */
 function scheduleAutoEndAfterBookingConfirmed(p) {
-  scheduleAutoEndCall({ agent: p && p.agent, purpose: "post_booking" });
+  scheduleAutoEndCall({
+    agent: p && p.agent,
+    purpose: (p && p.purpose) || "post_booking",
+    extraDelayMs: p && p.extraDelayMs,
+    speechAlreadyComplete: p && p.speechAlreadyComplete,
+  });
 }
 
 module.exports = {
   isAutoEndAfterBookingEnabled,
   getAutoEndDelayMs,
+  getSpeechCompleteEndDelayMs,
+  DEFAULT_SPEECH_COMPLETE_DELAY_MS,
   getAutoEndStableIdleMs,
   getThankYouLine,
   endPhoneCallByDeletingRoom,

@@ -6,10 +6,25 @@ const {
 const {
   getEmergencyTwoOptionsLine,
   getEmergencyNoBookingLine,
-  getEmergencyGoodbyeLine,
+  getEmergencyThankYouLine,
 } = require("./preferredLanguage");
 const { speakEmergencyNumberDigitByDigit, getEmergencyDigitGapMs } = require("./emergencyNumberSpeech");
-const { scheduleAutoEndCall } = require("./endPhoneCall");
+const { scheduleAutoEndAfterBookingConfirmed } = require("./endPhoneCall");
+
+const LOG_TAG = "[EmergencyFlow]";
+
+/**
+ * Same end-call entry point as post-booking confirmation (speech already played out).
+ * @param {import('./agent').HospitalVoiceAgent} agent
+ */
+function scheduleEmergencyGoodbyeEndCall(agent) {
+  console.log(LOG_TAG, "scheduling end call via scheduleAutoEndAfterBookingConfirmed");
+  scheduleAutoEndAfterBookingConfirmed({
+    agent,
+    speechAlreadyComplete: true,
+    purpose: "emergency_goodbye",
+  });
+}
 
 /**
  * @param {import('@livekit/agents').voice.AgentSession} session
@@ -24,6 +39,32 @@ async function speakInstructions(session, instructions) {
   if (handle && typeof handle.waitForPlayout === "function") {
     await handle.waitForPlayout();
   }
+}
+
+/**
+ * Speak exactly one line via TTS (no LLM paraphrase). Falls back to generateReply.
+ * @param {import('@livekit/agents').voice.AgentSession} session
+ * @param {string} text
+ */
+async function speakExactLine(session, text) {
+  const line = String(text || "").trim();
+  if (!line || !session) return;
+  try {
+    const handle = session.say(line, {
+      addToChatCtx: false,
+      allowInterruptions: false,
+    });
+    if (handle && typeof handle.waitForPlayout === "function") {
+      await handle.waitForPlayout();
+    }
+    return;
+  } catch (_) {
+    /* OpenAI Realtime-only pipeline — no external TTS */
+  }
+  await speakInstructions(
+    session,
+    `URGENT_ONE_TURN — Speak EXACTLY this one line and stop. Do not add any other words:\n"${line}"`,
+  );
 }
 
 /**
@@ -46,12 +87,14 @@ async function handleEmergencyUserTurn(p) {
   const wantsRepeat =
     isEmergencyRepeatRequest(rawBefore) || isEmergencyRepeatRequest(textAfter);
   const wantsHangUp =
-    isEmergencyHangUpRequest(rawBefore) || isEmergencyHangUpRequest(textAfter);
+    isEmergencyHangUpRequest(rawBefore, slots) ||
+    isEmergencyHangUpRequest(textAfter, slots);
   const wantsBooking =
     isEmergencyBookingRequest(rawBefore) ||
     isEmergencyBookingRequest(textAfter);
   const isFirstAnnounce = !slots.emergencyPhase;
   const emergencyNumber = agent._hospitalEmergencyNumber;
+  const hospitalName = agent._hospitalName;
 
   if (logger) {
     logger.log("generate_reply", {
@@ -61,18 +104,43 @@ async function handleEmergencyUserTurn(p) {
       wantsHangUp,
       wantsBooking,
       isFirstAnnounce,
+      emergencyPhase: slots.emergencyPhase || null,
+      caseType: slots.caseType || null,
     });
+  }
+
+  if (slots.emergencyPhase === "done") {
+    console.log(LOG_TAG, "emergency already complete — re-scheduling end call only");
+    scheduleEmergencyGoodbyeEndCall(agent);
+    return;
   }
 
   if (wantsHangUp) {
     slots.emergencyPhase = "done";
-    await speakInstructions(
-      session,
-      `EMERGENCY — Say in ${langLabel} only: "${getEmergencyGoodbyeLine(callerLang)}"`,
-    );
-    scheduleAutoEndCall({ agent, purpose: "emergency_goodbye" });
+    slots.caseType = "emergency";
+    agent.postBookingClosingInFlight = true;
+    const thankYou = getEmergencyThankYouLine(callerLang, hospitalName);
+    if (logger) {
+      logger.log("generate_reply", {
+        purpose: "emergency_thank_you",
+        lang: preferredLanguage,
+        line: thankYou,
+      });
+    }
+    console.log(LOG_TAG, "caller noted number — speaking thank-you:", thankYou);
+    await speakExactLine(session, thankYou);
+    console.log(LOG_TAG, "thank-you message completed");
+    if (logger) {
+      logger.log("emergency_thank_you_complete", {
+        lang: preferredLanguage,
+        line: thankYou,
+      });
+    }
+    scheduleEmergencyGoodbyeEndCall(agent);
     return;
   }
+
+  if (slots.emergencyPhase === "done") return;
 
   if (wantsBooking) {
     await speakInstructions(
@@ -96,13 +164,21 @@ async function handleEmergencyUserTurn(p) {
         gapMs: getEmergencyDigitGapMs(),
       });
     }
-    await speakEmergencyNumberDigitByDigit(session, emergencyNumber);
+    await speakEmergencyNumberDigitByDigit(
+      session,
+      emergencyNumber,
+      () => slots.emergencyPhase !== "done",
+    );
   }
+
+  if (slots.emergencyPhase === "done") return;
 
   await speakInstructions(
     session,
     `EMERGENCY — Say in ${langLabel} only: "${getEmergencyTwoOptionsLine(callerLang)}"`,
   );
+
+  if (slots.emergencyPhase === "done") return;
 
   if (!slots.emergencyPhase) {
     slots.emergencyPhase = "await_choice";

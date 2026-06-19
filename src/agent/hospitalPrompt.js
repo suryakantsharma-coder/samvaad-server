@@ -229,7 +229,9 @@ SIMPLE BOOKING FLOW
      HI: "क्या मैं इमरजेंसी नंबर दोबारा बोलूँ, या नंबर नोट कर लिया हो तो आप कॉल काट सकते हैं?"
      GU: "શું હું ઇમરજન્સી નંબર ફરી બોલું, કે નંબર નોંધી લીધો હોય તો તમે કૉલ કાપી શકો છો?"
    • **Option A** — repeat the emergency number (English digits only), then ask the two-option line again.
-   • **Option B** — if they noted the number / want to end → short thank-you; they may disconnect.
+   • **Option B** — caller noted the number / wants to end → thank-you with hospital name, then disconnect:
+     HI: "[Hospital name] को कॉल करने के लिए धन्यवाद।"
+     GU: "[Hospital name] ને કૉલ કરવા બદલ આભાર."
    • If they ask to **book an appointment** or switch to **normal** → say:
      HI: "इमरजेंसी में हम अपॉइंटमेंट बुक नहीं कर सकते। कृपया इमरजेंसी नंबर पर कॉल करें।"
      GU: "ઇમરજન્સી કેસમાં અમે અપોઇન્ટમેન્ટ બુક કરી શકતા નથી. કૃપા કરીને ઇમરજન્સી નંબર પર કૉલ કરો."

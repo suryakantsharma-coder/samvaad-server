@@ -82,15 +82,22 @@ async function speakOneEnglishDigit(session, word) {
  * Emergency number only: one English digit at a time with a pause between digits.
  * @param {import('@livekit/agents').voice.AgentSession} session
  * @param {string | null | undefined} emergencyNumber
+ * @param {() => boolean} [shouldContinue] when false, stop digit playback early
  */
-async function speakEmergencyNumberDigitByDigit(session, emergencyNumber) {
+async function speakEmergencyNumberDigitByDigit(
+  session,
+  emergencyNumber,
+  shouldContinue,
+) {
   const digits = parseEmergencyDigits(emergencyNumber);
   if (!digits.length || !session) return;
   const gapMs = getEmergencyDigitGapMs();
   for (let i = 0; i < digits.length; i++) {
+    if (typeof shouldContinue === "function" && !shouldContinue()) return;
     await speakOneEnglishDigit(session, digitToEnglishWord(digits[i]));
     if (i < digits.length - 1 && gapMs > 0) {
       await delay(gapMs);
+      if (typeof shouldContinue === "function" && !shouldContinue()) return;
     }
   }
 }

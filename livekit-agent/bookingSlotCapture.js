@@ -149,14 +149,16 @@ function maybeCaptureCaseTypeFromTranscript(slots, text) {
   }
   if (
     /\b(?:emergency|urgent)\b/i.test(t) ||
-    /इमरजेंसी|आपातकाल|आपात|एमर्जेंसी/i.test(t)
+    /इमरजेंसी|आपातकाल|आपात|एमर्जेंसी/i.test(t) ||
+    /ઇમરજન્સી|ઇમર્જન્સી|આપાતકાલિન|આપાત/i.test(t)
   ) {
     slots.caseType = "emergency";
     return;
   }
   if (
     /\b(?:normal|regular|routine)\b/i.test(t) ||
-    /सामान्य|नॉर्मल|साधारण/i.test(t)
+    /सामान्य|नॉर्मल|साधारण/i.test(t) ||
+    /સામાન્ય|નોર્મલ/i.test(t)
   ) {
     slots.caseType = "normal";
   }
@@ -176,20 +178,85 @@ function isEmergencyRepeatRequest(text) {
 }
 
 /**
+ * Strong "I noted / wrote down the number" confirmation (STT-tolerant).
  * @param {string} text
  */
-function isEmergencyHangUpRequest(text) {
+function isEmergencyNotedConfirmation(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length < 3) return false;
+  if (/\bgot\s*it\b/i.test(t)) return true;
+  if (/\b(?:i\s+)?(?:have\s+)?noted(?:\s+it|\s+down)?\b/i.test(t)) return true;
+  if (/\bwrote\s*it\s*down\b/i.test(t)) return true;
+  if (/note\s*kar|kar\s*liya|likh\s*liya|likh\s*li|lock\s*kar/i.test(t)) return true;
+  if (/नोट|लिख|लॉक\s*कर|कर\s*लिया|याद\s*कर|समझ\s*गय|हो\s*गया/i.test(t)) return true;
+  if (/નોંધ|લખ|કર\s*લીધ|યાદ\s*થઈ|સમજાઈ/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * If Realtime already ran emergency guidance but slots were not updated, promote on noted confirmation.
+ * @param {import("./callBookingSlots").CallBookingSlots} slots
+ * @param {string} text
+ */
+function maybeInferEmergencyFromNotedConfirmation(slots, text) {
+  if (!slots || slots.emergencyPhase === "done") return;
+  if (slots.caseType === "emergency" && slots.emergencyPhase === "await_choice") return;
+  if (!isEmergencyNotedConfirmation(text)) return;
+  slots.caseType = "emergency";
+  slots.emergencyPhase = "await_choice";
+}
+
+/**
+ * Caller confirmed they noted the emergency number (Option B) — end call, no booking.
+ * @param {string} text
+ * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} [slots]
+ */
+function isEmergencyHangUpRequest(text, slots) {
   const t = String(text || "").trim();
   if (!t) return false;
-  return (
-    /\b(?:hang\s*up|disconnect|cut\s+(?:the\s+)?call|end\s+(?:the\s+)?call|bye|goodbye|thanks?|thank\s+you|noted?)\b/i.test(
+  if (slots && slots.emergencyPhase === "done") return true;
+  if (slots && slots.caseType === "emergency" && !slots.emergencyPhase) {
+    return isEmergencyNotedConfirmation(t);
+  }
+  if (slots && slots.emergencyPhase !== "await_choice") {
+    return false;
+  }
+  if (isEmergencyNotedConfirmation(t)) return true;
+  if (
+    /\b(?:hang\s*up|disconnect|cut\s+(?:the\s+)?call|end\s+(?:the\s+)?call|bye|goodbye)\b/i.test(
       t,
-    ) ||
-    /कॉल\s*काट|काट\s*द|काट\s*सक|नोट\s*कर|लिख\s*लिया|याद\s*कर|धन्यवाद|ठीक\s*है|theek|thik/i.test(
-      t,
-    ) ||
-    /કૉલ\s*કાપ|કાપી\s*શક|નોંધી\s*લીધ|લખી\s*લીધ|આભાર|બસ/i.test(t) ||
-    /^(?:no|nahi|na|ना|नहीं|haan|हाँ|हां|ji|જી)\.?$/i.test(t)
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:thank\s*you|thanks)\b/i.test(t) ||
+    /\b(?:okay|ok)[,.\s]+noted\b/i.test(t) ||
+    /\bunderstood\b/i.test(t) ||
+    /\bsaved\s*(?:it|the\s*number)?\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /call\s*cut|cut\s*kar|कॉल\s*काट|काट\s*द|काट\s*सक|धन्यवाद/i.test(t) ||
+    /કૉલ\s*કાપ|કાપી\s*શક|આભાર/i.test(t)
+  ) {
+    return true;
+  }
+  return /^(?:ok(?:ay)?|theek\s*hai|thik\s*hai|yes|haan|हाँ|हां|ji|જી|બસ)\.?$/i.test(
+    t,
+  );
+}
+
+/**
+ * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} slots
+ */
+function isEmergencyCallActive(slots) {
+  return Boolean(
+    slots &&
+      (slots.caseType === "emergency" ||
+        slots.emergencyPhase === "await_choice" ||
+        slots.emergencyPhase === "done"),
   );
 }
 
@@ -262,10 +329,11 @@ function maybeCaptureAppointmentIsoFromTranscript(slots, text) {
  * @param {string} rawUserText
  */
 function applyTranscriptToBookingSlots(slots, rawUserText) {
-  if (!slots || slots.caseType === "emergency") return;
+  if (!slots) return;
   const raw = String(rawUserText || "").trim();
-  if (!raw) return;
   maybeCaptureCaseTypeFromTranscript(slots, raw);
+  maybeInferEmergencyFromNotedConfirmation(slots, raw);
+  if (slots.caseType === "emergency" || !raw) return;
   maybeCaptureNameFromTranscript(slots, raw);
   maybeCaptureAgeGenderFromTranscript(slots, raw);
   maybeCaptureFirstVisitFromTranscript(slots, raw);
@@ -278,6 +346,9 @@ module.exports = {
   maybeCaptureCaseTypeFromTranscript,
   isEmergencyRepeatRequest,
   isEmergencyHangUpRequest,
+  isEmergencyNotedConfirmation,
+  maybeInferEmergencyFromNotedConfirmation,
+  isEmergencyCallActive,
   isEmergencyBookingRequest,
   maybeCaptureNameFromTranscript,
   maybeCaptureAgeGenderFromTranscript,
