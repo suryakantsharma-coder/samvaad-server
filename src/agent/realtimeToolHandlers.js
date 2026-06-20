@@ -890,7 +890,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           slotPatientCount: slotCountU,
           slotCapacity: slotCapacityU,
           messageEn:
-            "Appointment updated. Speak messageHindi, messageGujarati, or messageEnglish once as status.",
+            "Appointment updated. Do NOT speak — the runtime delivers the English confirmation. Stay silent.",
           appointmentUpdated: true,
         });
       }
@@ -1104,7 +1104,7 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         slotPatientCount: slotCountNew,
         slotCapacity,
         messageEn:
-          "Booked. Speak messageHindi, messageGujarati, or messageEnglish once as booking status (no second confirmation — they already confirmed).",
+          "Booked. Do NOT speak — the runtime delivers the English confirmation. Stay silent.",
       });
     }
 

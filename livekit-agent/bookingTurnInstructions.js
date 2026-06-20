@@ -1,5 +1,31 @@
 const { isAffirmativeTurn } = require("./userTranscriptNormalize");
-const { isMongoObjectIdString, isEmergencyFlowActive } = require("./callBookingSlots");
+const {
+  isMongoObjectIdString,
+  isEmergencyFlowActive,
+} = require("./callBookingSlots");
+
+const EN_BOOKING_WAIT_LINE =
+  "I'm booking that for you now — one moment, please stay on the line.";
+const HI_BOOKING_WAIT_LINE =
+  "मैं अभी बुक कर रही हूँ — एक मिनट लाइन पर रहिएगा।";
+
+/**
+ * @param {'hi'|'en'} preferredLanguage
+ */
+function getBookingWaitLineInstruction(preferredLanguage) {
+  if (preferredLanguage === "en") {
+    return (
+      'Say exactly this English wait line and nothing else before tools: "' +
+      EN_BOOKING_WAIT_LINE +
+      '"'
+    );
+  }
+  return (
+    'Say exactly this Hindi wait line and nothing else before tools: "' +
+    HI_BOOKING_WAIT_LINE +
+    '"'
+  );
+}
 
 /**
  * @param {'hi'|'gu'|'en'} preferredLanguage
@@ -60,27 +86,27 @@ function getNoInputMissingTopic(slots, lang) {
     return "नाम";
   }
   if (p === "age_gender") {
-    if (lang === "gu") return "ઉંમર અને લિંગ (male/female/other)";
+    // if (lang === "gu") return "ઉંમર અને લિંગ (male/female/other)";
     if (lang === "en") return "age and gender (male/female/other)";
     return "उम्र और लिंग (male/female/other)";
   }
   if (p === "reason") {
-    if (lang === "gu") return "તબિયત / મુલાકાતનું કારણ";
+    // if (lang === "gu") return "તબિયત / મુલાકાતનું કારણ";
     if (lang === "en") return "reason for visit";
     return "तबीयत / विज़िट की वजह";
   }
   if (!String(slots?.appointmentDateTimeISO || "").trim()) {
-    if (lang === "gu") return "તારીખ અને સમય";
+    // if (lang === "gu") return "તારીખ અને સમય";
     if (lang === "en") return "date and time";
     return "तारीख और समय";
   }
   if (!String(slots?.doctorObjectId || "").trim()) {
-    if (lang === "gu") return "ડૉક્ટર પસંદગી";
+    // if (lang === "gu") return "ડૉક્ટર પસંદગી";
     if (lang === "en") return "doctor choice";
     return "डॉक्टर की पसंद";
   }
   if (!isMongoObjectIdString(slots?.patientObjectId)) {
-    if (lang === "gu") return "create_patient પછી patient._id";
+    // if (lang === "gu") return "create_patient પછી patient._id";
     if (lang === "en") return "patient id after create_patient";
     return "create_patient के बाद patient._id";
   }
@@ -163,10 +189,13 @@ function buildBookingTurnInstructions(p) {
       "If you have NOT yet done the single read-back for this booking, do it once in " +
       lang +
       " before any tools; if you already did and the caller confirmed, do not read the full block again.";
+    const waitLine = getBookingWaitLineInstruction(
+      preferredLanguage === "en" ? "en" : "hi",
+    );
     if (!hasPatientOid) {
-      action = `Tool-now: ${gate} Internal recovery order — first register the patient (name + age + gender + English reason), wait for success, then create the appointment using the freshly returned patient reference (never use age, "1", or the human patient number). Speak only the short wait line in ${lang}. If an appointment was already booked earlier in this same call, the next create-appointment call updates that same booking automatically — never mention numbers or IDs aloud.`;
+      action = `Tool-now: ${gate} Internal recovery order — first register the patient (name + age + gender + English reason), wait for success, then create the appointment using the freshly returned patient reference (never use age, "1", or the human patient number). ${waitLine}. If an appointment was already booked earlier in this same call, the next create-appointment call updates that same booking automatically — never mention numbers or IDs aloud.`;
     } else {
-      action = `Tool-now: ${gate} Speak the short wait line in ${lang}, then create the appointment with the doctor reference, valid patient reference, English reason, and IST date-time. If an earlier appointment exists in this call and the caller is changing details, that booking is updated automatically.`;
+      action = `Tool-now: ${gate} ${waitLine}, then create the appointment with the doctor reference, valid patient reference, English reason, and IST date-time. If an earlier appointment exists in this call and the caller is changing details, that booking is updated automatically.`;
     }
   } else if (affirm && hasPatient && hasIso && !hasDoctor) {
     action =
@@ -184,7 +213,9 @@ function buildBookingTurnInstructions(p) {
     preferredLanguage === "hi"
       ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers (Great, Understood, Okay, Sure, Please, Thank you) and no English questions; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names (Hardik, Sarvodaya) are allowed as names only."
       : preferredLanguage === "en"
-        ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
+        ? "LANGUAGE_LOCK: Caller chose ENGLISH for this call. Every word you speak aloud must be English only — NEVER Hindi (no thik hai, main book kar rahi hoon, ek minute, dhanyawad, etc.). After booking confirmation use ONLY messageEnglish from tools, never messageHindi. Booking wait line must be exactly: \"" +
+          EN_BOOKING_WAIT_LINE +
+          "\""
         : "",
     isMongoObjectIdString(slots?.doctorObjectId)
       ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."

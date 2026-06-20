@@ -1,17 +1,16 @@
-/** @typedef {'hi' | 'gu' | 'en'} PreferredLanguage */
+/** @typedef {'hi' | 'en'} PreferredLanguage */
 
-const GUJARATI_SCRIPT_RE = /[\u0A80-\u0AFF]/;
-const GUJARATI_HINT_RE =
-  /\b(ગુજરાતી|ગુજરાત|હા|ના|નહીં|કૃપા|આવતી|કાલ|આજ|જી)\b/i;
+// const GUJARATI_SCRIPT_RE = /[\u0A80-\u0AFF]/;
+// const GUJARATI_HINT_RE = /\b(ગુજરાતી|ગુજરાત|હા|ના|નહીં|કૃપા|આવતી|કાલ|આજ|જી)\b/i;
 const HINDI_SCRIPT_RE = /[\u0900-\u097F]/;
-const HINDI_HINT_RE =
-  /\b(हिंदी|हिन्दी|हाँ|हा|नहीं|कृपया|कल|आज|जी)\b/i;
+const HINDI_HINT_RE = /\b(हिंदी|हिन्दी|हाँ|हा|नहीं|कृपया|कल|आज|जी)\b/i;
+const ENGLISH_SCRIPT_RE = /[\u0041-\u005A\u0061-\u007A]/;
+const ENGLISH_HINT_RE = /\b(english|inglish|inglis|angrezi)\b/i;
 
 /** Latin / spoken preference before script heuristics (first reply to language question, etc.). */
-const EXPLICIT_GU_RE = /\b(gujarati|gujrati|gujarathi|gujju)\b/i;
+// const EXPLICIT_GU_RE = /\b(gujarati|gujrati|gujarathi|gujju)\b/i;
 const EXPLICIT_HI_RE = /\b(hindi|hindii|hinglish)\b/i;
-const EXPLICIT_EN_RE =
-  /\b(english|inglish|inglis|angrezi)\b/i;
+const EXPLICIT_EN_RE = /\b(english|inglish|inglis|angrezi)\b/i;
 
 /**
  * Reply right after "Hindi or English?" that does NOT choose a language — must not lock English.
@@ -52,11 +51,11 @@ function detectPreferredLanguage(text) {
 function inferCallerLanguage(text) {
   const s = String(text || "").trim();
   if (!s) return null;
-  if (/ગુજરાતી/.test(s) || EXPLICIT_GU_RE.test(s)) return "gu";
+  // if (/ગુજરાતી/.test(s) || EXPLICIT_GU_RE.test(s)) return "gu";
   /* Hindi script used to write "Gujarati" e.g. गुजराती में बात */
-  if (/गुजराती|गુજરાતી/i.test(s)) return "gu";
+  // if (/गुजराती|गુજરાતી/i.test(s)) return "gu";
   if (/हिंदी|हिन्दी/.test(s) || EXPLICIT_HI_RE.test(s)) return "hi";
-  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return "gu";
+  // if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return "gu";
   if (HINDI_SCRIPT_RE.test(s) || HINDI_HINT_RE.test(s)) return "hi";
   return null;
 }
@@ -93,7 +92,37 @@ function looksLikeEnglishPrimary(s) {
 }
 
 /**
- * Hospital receptionist: Hindi vs English only (no Gujarati lock from STT).
+ * Explicit answer to "Hindi or English?" — not inferred from general speech.
+ * @param {string} text
+ * @returns {'hi'|'en'|null}
+ */
+function inferExplicitLanguageChoice(text) {
+  const s = String(text || "").trim();
+  if (!s || isBareLanguageChoiceNonAnswer(s)) return null;
+  if (
+    EXPLICIT_EN_RE.test(s) ||
+    /इंग्लिश|इंग्रेजी|अंग्रेज़ी|अंग्रेजी|english\s*mein|in\s+english/i.test(s)
+  ) {
+    return "en";
+  }
+  if (
+    /हिंदी|हिन्दी/.test(s) ||
+    EXPLICIT_HI_RE.test(s) ||
+    /hindi\s*mein|in\s+hindi/i.test(s)
+  ) {
+    return "hi";
+  }
+  if (/\b(hindi|english)\b/i.test(s)) {
+    if (/\benglish\b/i.test(s) && !/\bhindi\b/i.test(s)) return "en";
+    if (/\bhindi\b/i.test(s) && !/\benglish\b/i.test(s)) return "hi";
+  }
+  return null;
+}
+
+/**
+ * Hospital receptionist: Hindi vs English only.
+ * Before lock: explicit choice or clear English primary — do NOT lock Hindi from
+ * Devanagari names/snippets alone (avoids flipping English calls to Hindi).
  * @param {string} text
  * @returns {'hi'|'en'|null}
  */
@@ -101,17 +130,15 @@ function inferHospitalCallerLanguage(text) {
   const s = String(text || "").trim();
   if (!s) return null;
   if (isBareLanguageChoiceNonAnswer(s)) return null;
-  if (EXPLICIT_EN_RE.test(s)) return "en";
-  if (/इंग्लिश|इंग्रेजी|अंग्रेज़ी|अंग्रेजी/.test(s)) return "en";
+
+  const explicit = inferExplicitLanguageChoice(s);
+  if (explicit) return explicit;
+
   if (looksLikeEnglishPrimary(s)) return "en";
+
   if (/हिंदी|हिन्दी/.test(s) || EXPLICIT_HI_RE.test(s)) return "hi";
   if (isShortDevanagariNoise(s)) return null;
-  if (HINDI_SCRIPT_RE.test(s) || HINDI_HINT_RE.test(s)) return "hi";
-  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return null;
-  if (/\b(hindi|english)\b/i.test(s)) {
-    if (/\benglish\b/i.test(s) && !/\bhindi\b/i.test(s)) return "en";
-    if (/\bhindi\b/i.test(s) && !/\benglish\b/i.test(s)) return "hi";
-  }
+
   return null;
 }
 
@@ -133,7 +160,7 @@ function detectExplicitLanguageSwitch(text) {
     /(अब|फिर)?\s*(हिंदी|हिन्दी)\s*(में)?/i.test(s) ||
     /\b(speak|switch\s+to)\s+hindi\b/i.test(s) ||
     /\bhindi\s*(please|maam|madam)?\b/i.test(s);
-  if (toGu && !toHi) return "gu";
+  // if (toGu && !toHi) return "gu";
   if (toHi && !toGu) return "hi";
   if (toGu && toHi) return null;
   return null;
@@ -149,7 +176,9 @@ function detectExplicitHospitalLanguageSwitch(text) {
   if (!s || s.length > 160) return null;
   const toEn =
     EXPLICIT_EN_RE.test(s) ||
-    /(अब|कृपया|प्लीज़|please)?\s*(इंग्लिश|अंग्रेज़ी|अंग्रेजी)\s*(में)?/i.test(s) ||
+    /(अब|कृपया|प्लीज़|please)?\s*(इंग्लिश|अंग्रेज़ी|अंग्रेजी)\s*(में)?/i.test(
+      s,
+    ) ||
     /\b(speak|switch\s+to|in)\s+english\b/i.test(s) ||
     /\benglish\s*(please|maam|madam)?\b/i.test(s);
   const toHi =
@@ -243,6 +272,7 @@ function getThankYouLine(lang, hospitalName) {
 module.exports = {
   detectPreferredLanguage,
   inferCallerLanguage,
+  inferExplicitLanguageChoice,
   inferHospitalCallerLanguage,
   detectExplicitLanguageSwitch,
   detectExplicitHospitalLanguageSwitch,

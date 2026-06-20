@@ -388,8 +388,8 @@ const agentDef = defineAgent({
     await ctx.connect();
 
     let session = null;
-      let detachEmergencyEnd = null;
-      let detachNoInput = null;
+    let detachEmergencyEnd = null;
+    let detachNoInput = null;
     let samvaadTts = null;
     let hospitalAgent = null;
     let sarvamStt = null;
@@ -740,7 +740,7 @@ const agentDef = defineAgent({
       let handle;
       try {
         handle = session.generateReply({
-          instructions: `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in Gujrati ("बातचीत हिंदी में रखें या ગુજરાતીમાં में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
+          instructions: `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in English ("बातचीत हिंदी में रखें या इंग्लिश में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
         });
         await handle.waitForPlayout();
       } catch (err) {

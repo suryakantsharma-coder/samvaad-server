@@ -30,6 +30,47 @@ const { maybeScheduleEmergencyEndFromCallerNoted } = require("./emergencyCallEnd
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
 
+const EN_BOOKING_WAIT_LINE =
+  "I'm booking that for you now — one moment, please stay on the line.";
+const HI_BOOKING_WAIT_LINE =
+  "मैं अभी बुक कर रही हूँ — एक मिनट लाइन पर रहिएगा।";
+
+/**
+ * Strip Hindi/Gujarati tool copy from Realtime tool results on English calls
+ * so the model does not read messageHindi aloud after booking.
+ * @param {Record<string, unknown> | null | undefined} result
+ * @param {'hi'|'gu'|'en'} lang
+ * @param {string} toolName
+ */
+function sanitizeToolResultForCallerLanguage(result, lang, toolName) {
+  if (!result || typeof result !== "object" || lang !== "en") return result;
+  const out = { ...result };
+  delete out.messageHindi;
+  delete out.messageGujarati;
+
+  if (toolName === "create_appointment" && out.ok) {
+    out.message =
+      "SUCCESS — do NOT speak to the caller. The runtime already delivered the English booking confirmation and thank-you. Stay completely silent.";
+    return out;
+  }
+
+  if (out.messageEnglish) {
+    out.message = out.messageEnglish;
+  } else if (
+    typeof out.message === "string" &&
+    /[\u0900-\u097F]/.test(out.message)
+  ) {
+    out.message =
+      "Respond to the caller in English only. Do not read Hindi tool fields aloud.";
+  }
+
+  if (out.ok === false && out.messageEnglish) {
+    out.message = out.messageEnglish;
+  }
+
+  return out;
+}
+
 /** Per-tool args allow-list for logs — keeps file readable without dumping sensitive blobs. */
 function redactToolArgsForLog(name, args) {
   if (!args || typeof args !== "object") return {};
@@ -45,19 +86,21 @@ function redactToolArgsForLog(name, args) {
 async function speakCreateAppointmentResult(agent, result) {
   if (!agent || !result || !agent.session) return;
 
-  const lang = agent.preferredLanguage === "gu" ? "gu" : agent.preferredLanguage === "en" ? "en" : "hi";
+  const lang = agent.preferredLanguage === "en" ? "en" : "hi";
 
   let primary;
   if (lang === "en") {
-    primary =
-      result.messageEnglish ||
-      result.message ||
-      result.messageHindi ||
-      result.messageGujarati;
-  } else if (lang === "gu") {
-    primary = result.messageGujarati || result.messageHindi;
+    primary = result.messageEnglish || null;
+    if (!primary || /[\u0900-\u097F]/.test(primary)) {
+      primary =
+        "Your appointment is booked. A confirmation will reach you on WhatsApp shortly.";
+    }
   } else {
-    primary = result.messageHindi || result.messageGujarati || result.message;
+    primary =
+      result.messageHindi ||
+      result.messageGujarati ||
+      result.messageEnglish ||
+      result.message;
   }
 
   if (!primary) return;
@@ -65,8 +108,7 @@ async function speakCreateAppointmentResult(agent, result) {
   const hospitalName =
     agent._hospital && agent._hospital.name ? String(agent._hospital.name) : "";
   const thankYou = getThankYouLine(lang, hospitalName);
-  const langLabel =
-    lang === "gu" ? "Gujarati" : lang === "en" ? "English" : "Hindi";
+  const langLabel = lang === "en" ? "English" : "Hindi";
 
   const instructions = result.ok
     ? (result.appointmentUpdated
@@ -286,6 +328,14 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
                 scheduleAutoEndAfterBookingConfirmed({ agent });
               }
             }
+          }
+
+          if (agent && result) {
+            result = sanitizeToolResultForCallerLanguage(
+              result,
+              agent.preferredLanguage,
+              name,
+            );
           }
 
           return result;
