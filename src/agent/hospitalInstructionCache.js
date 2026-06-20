@@ -84,11 +84,7 @@ async function getDoctorListTextForHospital(hospital) {
   const cacheKey = `${hospitalId}:${compact ? "c" : "f"}`;
   const now = Date.now();
   const hit = doctorListCache.get(cacheKey);
-  if (
-    hit &&
-    hit.expiresAt > now &&
-    hit.hospitalUpdatedAt === updatedAtMs
-  ) {
+  if (hit && hit.expiresAt > now && hit.hospitalUpdatedAt === updatedAtMs) {
     return hit.doctorListText;
   }
 
@@ -115,3 +111,5 @@ module.exports = {
   clearHospitalInstructionCache,
   isCompactDoctorPrompt,
 };
+
+// comment to push to github
