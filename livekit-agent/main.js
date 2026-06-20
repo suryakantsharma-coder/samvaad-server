@@ -21,6 +21,19 @@ const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
 const { attachCallLogger } = require("./callLogger");
 const { resolveHospitalId } = require("./resolveHospitalId");
+const { loadSileroVadForProcess } = require("./loadSileroVad");
+const { attachWebSocketErrorGuard } = require("./webSocketErrorGuard");
+const {
+  parseEnvMs,
+  parseEnvInt,
+  parseEnvFloat,
+  isVerboseConnectionLogs,
+  shouldSkipPostCallExtraction,
+} = require("./agentEnv");
+const { runPostCallPipeline } = require("./postCallPipeline");
+const { isMongoObjectIdString } = require("./callBookingSlots");
+
+attachWebSocketErrorGuard();
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -31,15 +44,6 @@ const useSarvamStt = Boolean(
   process.env.SARVAM_API_KEY && process.env.SARVAM_API_KEY.trim(),
 );
 
-/** @param {string} name @param {number} def */
-function parseEnvMs(name, def) {
-  const v = process.env[name];
-  if (v == null || v === "") return def;
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : def;
-}
-
-/** Slides ~300ms off default stack (Silero 550ms silence + LiveKit 500ms endpointing). Tweak with env. */
 const SARVAM_VAD_LOAD_OPTS = {
   sampleRate: 16000,
   minSilenceDuration: parseEnvMs("VAD_MIN_SILENCE_MS", 360),
@@ -220,66 +224,93 @@ function snapshotRemoteParticipants(room) {
  * @param {object} [extra] - optional extra fields (e.g. hospital summary)
  */
 async function logCallConnection(ctx, phase, extra = {}) {
-  const payload = {
+  const summary = {
     phase,
     timestamp: new Date().toISOString(),
     workerId: ctx.workerId,
-    job: snapshotJob(ctx.job),
-    runningJob: ctx.info
-      ? {
-          url: ctx.info.url,
-          token: redactToken(ctx.info.token),
-          workerId: ctx.info.workerId,
-        }
-      : null,
-    room: (() => {
+    jobId: ctx.job && ctx.job.id ? ctx.job.id : null,
+    roomName:
+      (ctx.job && ctx.job.room && ctx.job.room.name) ||
+      (ctx.room && ctx.room.name) ||
+      null,
+    agentName: ctx.job && ctx.job.agentName ? ctx.job.agentName : null,
+    remoteParticipants: (() => {
       try {
-        const r = ctx.room;
-        if (!r) return null;
-        return {
-          name: r.name,
-          metadata: r.metadata,
-          connectionState: r.connectionState,
-          isConnected: r.isConnected,
-          numParticipants: r.numParticipants,
-          numPublishers: r.numPublishers,
-          remoteParticipantCount: r.remoteParticipants
-            ? r.remoteParticipants.size
-            : 0,
-          localParticipant: r.localParticipant
-            ? {
-                identity: r.localParticipant.identity,
-                sid: r.localParticipant.sid,
-                metadata: r.localParticipant.metadata,
-              }
-            : undefined,
-        };
-      } catch (e) {
-        return { _error: e.message };
+        return ctx.room && ctx.room.remoteParticipants
+          ? ctx.room.remoteParticipants.size
+          : 0;
+      } catch {
+        return null;
       }
     })(),
-    remoteParticipants: snapshotRemoteParticipants(ctx.room),
-    agent: ctx.agent
-      ? {
-          identity: ctx.agent.identity,
-          sid: ctx.agent.sid,
-          metadata: ctx.agent.metadata,
-        }
-      : null,
     ...extra,
   };
 
-  try {
-    if (ctx.room && typeof ctx.room.getSid === "function") {
-      payload.roomSid = await ctx.room.getSid();
+  if (isVerboseConnectionLogs()) {
+    const payload = {
+      ...summary,
+      job: snapshotJob(ctx.job),
+      runningJob: ctx.info
+        ? {
+            url: ctx.info.url,
+            token: redactToken(ctx.info.token),
+            workerId: ctx.info.workerId,
+          }
+        : null,
+      room: (() => {
+        try {
+          const r = ctx.room;
+          if (!r) return null;
+          return {
+            name: r.name,
+            metadata: r.metadata,
+            connectionState: r.connectionState,
+            isConnected: r.isConnected,
+            numParticipants: r.numParticipants,
+            numPublishers: r.numPublishers,
+            remoteParticipantCount: r.remoteParticipants
+              ? r.remoteParticipants.size
+              : 0,
+            localParticipant: r.localParticipant
+              ? {
+                  identity: r.localParticipant.identity,
+                  sid: r.localParticipant.sid,
+                  metadata: r.localParticipant.metadata,
+                }
+              : undefined,
+          };
+        } catch (e) {
+          return { _error: e.message };
+        }
+      })(),
+      remoteParticipants: snapshotRemoteParticipants(ctx.room),
+      agent: ctx.agent
+        ? {
+            identity: ctx.agent.identity,
+            sid: ctx.agent.sid,
+            metadata: ctx.agent.metadata,
+          }
+        : null,
+    };
+
+    try {
+      if (ctx.room && typeof ctx.room.getSid === "function") {
+        payload.roomSid = await ctx.room.getSid();
+      }
+    } catch (e) {
+      payload.roomSidError = e.message;
     }
-  } catch (e) {
-    payload.roomSidError = e.message;
+
+    console.log(
+      `[LiveKit Agent] Call / job context (${phase})`,
+      JSON.stringify(payload, null, 2),
+    );
+    return;
   }
 
   console.log(
     `[LiveKit Agent] Call / job context (${phase})`,
-    JSON.stringify(payload, null, 2),
+    JSON.stringify(summary),
   );
 }
 
@@ -338,13 +369,12 @@ async function resolveCallerPhone(ctx) {
 }
 
 const agentDef = defineAgent({
-  prewarm: async (_proc) => {
+  prewarm: async (proc) => {
     if (!useSarvamStt) return;
     try {
-      const { VAD } = require("@livekit/agents-plugin-silero");
-      await VAD.load(SARVAM_VAD_LOAD_OPTS);
+      await loadSileroVadForProcess(proc, SARVAM_VAD_LOAD_OPTS);
       console.log(
-        "[LiveKit Agent] Prewarm: Silero VAD ready",
+        "[LiveKit Agent] Prewarm: Silero VAD ready (shared for this worker child)",
         `minSilence=${SARVAM_VAD_LOAD_OPTS.minSilenceDuration}ms`,
       );
     } catch (e) {
@@ -381,6 +411,9 @@ const agentDef = defineAgent({
     let hospitalAgent = null;
     let sarvamStt = null;
     let callLogger = null;
+    /** @type {Record<string, unknown> | null} */
+    let hospital = null;
+    let callerPhone = null;
 
     try {
       await logCallConnection(ctx, "job_received", {
@@ -397,17 +430,17 @@ const agentDef = defineAgent({
       } = require("./sarvamTts");
       const useSamvaadLlmTts = useSarvamStt && useSamvaadVoiceLlmPipeline();
 
-      let hospital;
       let vad;
       if (useSarvamStt) {
-        const { VAD } = require("@livekit/agents-plugin-silero");
         const { SarvamSTT, useWebSocketStreaming } = require("./sarvamStt");
-        [hospital, vad] = await Promise.all([
-          HospitalModel.findById(hospitalId).lean(),
-          VAD.load(SARVAM_VAD_LOAD_OPTS),
-        ]);
+        const needsSileroVad =
+          useSamvaadLlmTts || !useWebSocketStreaming();
+        hospital = await HospitalModel.findById(hospitalId).lean();
         if (!hospital) {
           throw new Error(`[LiveKit Agent] Hospital not found: ${hospitalId}`);
+        }
+        if (needsSileroVad) {
+          vad = await loadSileroVadForProcess(ctx.proc, SARVAM_VAD_LOAD_OPTS);
         }
         sarvamStt = new SarvamSTT();
         sarvamStt.on("error", (ev) => {
@@ -447,8 +480,9 @@ const agentDef = defineAgent({
         }
       }
 
-      const { phone: callerPhone, source: callerPhoneSource } =
+      const { phone: resolvedCallerPhone, source: callerPhoneSource } =
         await resolveCallerPhone(ctx);
+      callerPhone = resolvedCallerPhone;
 
       const instructions = await getHospitalInstructions(hospital, callerPhone);
 
@@ -531,10 +565,10 @@ const agentDef = defineAgent({
           })
         : new voice.AgentSession({
             llm: new openai.realtime.RealtimeModel(realtimeModelOpts),
-            ...(useSarvamStt && vad && sarvamStt
+            ...(useSarvamStt && sarvamStt
               ? {
-                  vad,
                   stt: sarvamStt,
+                  ...(vad ? { vad } : {}),
                   aecWarmupDuration: 0,
                   turnHandling: sarvamTurnHandling,
                 }
@@ -766,6 +800,35 @@ const agentDef = defineAgent({
       );
       throw err;
     } finally {
+      const bookedOnCall =
+        hospitalAgent &&
+        hospitalAgent.callBookingSlots &&
+        isMongoObjectIdString(hospitalAgent.callBookingSlots.appointmentObjectId);
+      const skipPostCall =
+        shouldSkipPostCallExtraction() && Boolean(bookedOnCall);
+
+      if (session && hospital) {
+        try {
+          await runPostCallPipeline({
+            session,
+            hospital,
+            callerPhone,
+            roomName,
+            skipExtraction: skipPostCall,
+            skipReason: skipPostCall
+              ? "live appointment booked on call (AGENT_SKIP_POSTCALL_IF_BOOKED)"
+              : null,
+          });
+        } catch (postCallErr) {
+          console.warn(
+            "[LiveKit Agent] postCallPipeline:",
+            postCallErr && postCallErr.message
+              ? postCallErr.message
+              : postCallErr,
+          );
+        }
+      }
+
       if (detachEmergencyEnd) {
         detachEmergencyEnd();
         detachEmergencyEnd = null;
@@ -829,6 +892,17 @@ module.exports = agentDef;
 
 console.log("[LiveKit Agent] Starting worker, agent name:", AGENT_NAME);
 console.log(
+  "[LiveKit Agent] Worker pool: LIVEKIT_NUM_IDLE_PROCESSES=" +
+    parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 2) +
+    ", LIVEKIT_INIT_PROCESS_TIMEOUT_MS=" +
+    parseEnvMs("LIVEKIT_INIT_PROCESS_TIMEOUT_MS", 20000) +
+    ", LIVEKIT_LOAD_THRESHOLD=" +
+    parseEnvFloat("LIVEKIT_LOAD_THRESHOLD", 0.75),
+);
+console.log(
+  "[LiveKit Agent] Cost/perf: SARVAM_STT_STREAMING defaults to WS in production (set 0 for batch+VAD); AGENT_COMPACT_HOSPITAL_PROMPT=1 in prod; HOSPITAL_INSTRUCTION_CACHE_MS=300000; AGENT_VERBOSE_CONNECTION_LOGS=0 in prod",
+);
+console.log(
   "[LiveKit Agent] Ensure LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, OPENAI_API_KEY, MONGODB_URI are set in .env",
 );
 console.log(
@@ -870,5 +944,11 @@ cli.runApp(
   new ServerOptions({
     agent: __filename,
     agentName: AGENT_NAME,
+    numIdleProcesses: parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 2),
+    initializeProcessTimeout: parseEnvMs(
+      "LIVEKIT_INIT_PROCESS_TIMEOUT_MS",
+      20000,
+    ),
+    loadThreshold: parseEnvFloat("LIVEKIT_LOAD_THRESHOLD", 0.75),
   }),
 );

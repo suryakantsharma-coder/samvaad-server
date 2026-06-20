@@ -25,13 +25,18 @@ function sttWarn(...args) {
 }
 
 /**
- * Default: batch REST + Silero VAD (StreamAdapter) — most reliable.
- * Set SARVAM_STT_STREAMING=1 to use WebSocket streaming (lower latency when working).
+ * Default: WebSocket streaming in production (lower CPU — no Silero batch REST per utterance).
+ * Set SARVAM_STT_STREAMING=0 to force batch REST + Silero VAD.
  */
 function useWebSocketStreaming() {
   const v = process.env.SARVAM_STT_STREAMING;
-  if (v == null || String(v).trim() === "") return false;
+  if (v == null || String(v).trim() === "") {
+    return process.env.NODE_ENV === "production";
+  }
   const s = String(v).trim().toLowerCase();
+  if (s === "0" || s === "false" || s === "no" || s === "off" || s === "batch") {
+    return false;
+  }
   return s === "1" || s === "true" || s === "yes" || s === "ws" || s === "stream";
 }
 

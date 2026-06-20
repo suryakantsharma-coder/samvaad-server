@@ -81,7 +81,14 @@ async function loadRefsForExtraction(hospitalObjectId, callerPhone) {
 /**
  * Persist under caller-numbers/, English transcript required for stored record when API key is set.
  */
-async function runPostCallPipeline({ session, hospital, callerPhone, roomName }) {
+async function runPostCallPipeline({
+  session,
+  hospital,
+  callerPhone,
+  roomName,
+  skipExtraction = false,
+  skipReason = null,
+}) {
   const hospitalId = String(hospital._id);
   const hospitalNameEnglish = (hospital.name || "").trim() || "Unknown hospital";
   const phone10 = normalizePhone10(callerPhone);
@@ -100,7 +107,14 @@ async function runPostCallPipeline({ session, hospital, callerPhone, roomName })
   let englishTranslationError = null;
 
   if (originalLanguageTranscript.length > 0) {
-    if (process.env.OPENAI_API_KEY) {
+    if (skipExtraction) {
+      englishTranscript = originalLanguageTranscript.map((t) => ({
+        role: t.role,
+        text: t.text,
+      }));
+      englishTranslationError =
+        skipReason || "extraction skipped — live booking completed on call";
+    } else if (process.env.OPENAI_API_KEY) {
       try {
         englishTranscript = await translateTranscriptTurnsToEnglish(
           originalLanguageTranscript,
@@ -152,6 +166,14 @@ async function runPostCallPipeline({ session, hospital, callerPhone, roomName })
 
   if (englishTranscript.length === 0) {
     console.warn("[PostCall] Empty transcript; skipping extraction.");
+    return;
+  }
+
+  if (skipExtraction) {
+    console.log(
+      "[PostCall] Skipping GPT extraction:",
+      skipReason || "skipExtraction=true",
+    );
     return;
   }
 

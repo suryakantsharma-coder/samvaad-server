@@ -5,7 +5,6 @@
  * name, address, doctors injected dynamically. Caller phone is known — never ask.
  */
 
-const DoctorModel = require("../models/doctor.model");
 const {
   istTodayYmd,
   istTomorrowYmd,
@@ -16,6 +15,7 @@ const {
   resolveAvgPatientTimeMinutes,
   resolveHourBucketCapacity,
 } = require("./checkupDuration");
+const { getDoctorListTextForHospital } = require("./hospitalInstructionCache");
 
 const IST_TIME_ZONE = "Asia/Kolkata";
 const WEEKDAY_LABELS_EN = [
@@ -85,39 +85,10 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
 
   let doctorListText = "No doctors currently available.";
   try {
-    const doctors = await DoctorModel.find({ hospital: hospital._id })
-      .select("fullName designation availability status averagePatientTime")
-      .lean();
-
+    doctorListText = await getDoctorListTextForHospital(hospital);
     console.log(
-      `[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`,
+      `[Agent] doctor list for ${hospitalName} (${doctorListText.includes("\n") ? doctorListText.split("\n").length : 1} dept lines, cached TTL)`,
     );
-
-    if (doctors && doctors.length > 0) {
-      const byDept = {};
-      doctors.forEach((d) => {
-        const dept = d.designation || "General";
-        (byDept[dept] = byDept[dept] || []).push(d);
-      });
-
-      doctorListText = Object.entries(byDept)
-        .map(([dept, list]) => {
-          const items = list
-            .map((d) => {
-              const id = d._id ? String(d._id) : "";
-              const avgMin = resolveAvgPatientTimeMinutes(d);
-              const perSlot = resolveHourBucketCapacity(d);
-              return (
-                `**doctorObjectId=\`${id}\`** · Dr. ${d.fullName} (${d.availability || "9 AM – 5 PM"})` +
-                ` · avg ${avgMin} min/patient · ${perSlot} patient${perSlot === 1 ? "" : "s"}/hour slot` +
-                (d.status && d.status !== "On Duty" ? ` — ${d.status}` : "")
-              );
-            })
-            .join(", ");
-          return `${dept}: ${items}`;
-        })
-        .join("\n");
-    }
   } catch (err) {
     console.error(
       `[Agent] DoctorModel.find failed for ${hospitalName}:`,
