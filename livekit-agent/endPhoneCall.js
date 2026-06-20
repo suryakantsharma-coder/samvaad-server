@@ -25,14 +25,23 @@ function isAutoEndAfterBookingEnabled() {
   return parseEnvFlag("AGENT_AUTO_END_AFTER_BOOKING", true);
 }
 
+function isAutoEndAfterEmergencyEnabled() {
+  return parseEnvFlag("AGENT_AUTO_END_AFTER_EMERGENCY", true);
+}
+
 /** Optional extra pause after confirmation audio finishes; default 0 (cut as soon as idle). */
 function getAutoEndDelayMs() {
   return parseEnvMs("AGENT_AUTO_END_DELAY_MS", 0);
 }
 
+/** Extra pause after emergency thank-you before deleteRoom (default 2s). */
+function getEmergencyEndDelayMs() {
+  return parseEnvMs("AGENT_EMERGENCY_END_DELAY_MS", 500);
+}
+
 /** Agent must stay listening this long before hangup (avoids cutting between speech chunks). */
 function getAutoEndStableIdleMs() {
-  return parseEnvMs("AGENT_AUTO_END_STABLE_IDLE_MS", 1200);
+  return parseEnvMs("AGENT_AUTO_END_STABLE_IDLE_MS", 1000);
 }
 
 /**
@@ -113,12 +122,7 @@ async function waitForStableAgentIdle(session, stableMs, maxMs = 180000) {
     }
     await delay(100);
   }
-  console.warn(
-    LOG_TAG,
-    "waitForStableAgentIdle timed out after",
-    maxMs,
-    "ms",
-  );
+  console.warn(LOG_TAG, "waitForStableAgentIdle timed out after", maxMs, "ms");
 }
 
 /**
@@ -185,22 +189,30 @@ async function autoEndCallAfterBooking(opts = {}) {
  *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
  * }} p
  */
+function resolveAgentRoomName(agent) {
+  if (!agent) return "";
+  if (agent._callRoomName) return String(agent._callRoomName);
+  if (agent._emergencyTransferCtx && agent._emergencyTransferCtx.roomName) {
+    return String(agent._emergencyTransferCtx.roomName);
+  }
+  return "";
+}
+
 function scheduleAutoEndAfterBookingConfirmed(p) {
   const agent = p && p.agent;
   if (!agent || !isAutoEndAfterBookingEnabled()) return;
 
-  const roomName =
-    (agent._callRoomName && String(agent._callRoomName)) ||
-    (agent._emergencyTransferCtx &&
-    agent._emergencyTransferCtx.roomName
-      ? String(agent._emergencyTransferCtx.roomName)
-      : "");
+  const roomName = resolveAgentRoomName(agent);
   const session = agent.session || null;
   const logger =
     typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
 
   agent.postBookingClosingInFlight = true;
-  console.log(LOG_TAG, "scheduling auto hangup after booking for room:", roomName || "(missing)");
+  console.log(
+    LOG_TAG,
+    "scheduling auto hangup after booking for room:",
+    roomName || "(missing)",
+  );
 
   setImmediate(() => {
     autoEndCallAfterBooking({ roomName, session, logger })
@@ -217,14 +229,133 @@ function scheduleAutoEndAfterBookingConfirmed(p) {
   });
 }
 
+/**
+ * After caller confirms they noted the emergency number, wait for the agent's
+ * thank-you line to finish, then delete the room (SIP BYE).
+ * @param {{
+ *   roomName?: string | null,
+ *   session?: import('@livekit/agents').voice.AgentSession | null,
+ *   logger?: { log?: (type: string, data?: object) => void } | null,
+ * }} opts
+ */
+async function autoEndCallAfterEmergency(opts = {}) {
+  if (!isAutoEndAfterEmergencyEnabled()) return { ok: false, code: "DISABLED" };
+
+  const roomName = opts.roomName;
+  const session = opts.session;
+  const extraDelayMs = getEmergencyEndDelayMs();
+  const logger = opts.logger;
+
+  if (logger && typeof logger.log === "function") {
+    logger.log("auto_end_emergency_start", {
+      roomName: roomName || null,
+      stableIdleMs: getAutoEndStableIdleMs(),
+      extraDelayMs,
+    });
+  }
+
+  if (session) {
+    await waitForStableAgentIdle(session, getAutoEndStableIdleMs());
+  }
+
+  if (session && session.closing) {
+    if (logger && typeof logger.log === "function") {
+      logger.log("auto_end_emergency_aborted", {
+        roomName: roomName || null,
+        reason: "session_closing",
+      });
+    }
+    return { ok: false, code: "SESSION_CLOSING" };
+  }
+
+  if (extraDelayMs > 0) {
+    if (logger && typeof logger.log === "function") {
+      logger.log("auto_end_emergency_extra_delay", {
+        delayMs: extraDelayMs,
+        roomName: roomName || null,
+      });
+    }
+    await delay(extraDelayMs);
+    if (session && session.closing) {
+      return { ok: false, code: "SESSION_CLOSING" };
+    }
+  }
+
+  if (logger && typeof logger.log === "function") {
+    logger.log("auto_end_emergency_hangup", {
+      roomName: roomName || null,
+      afterThankYouIdle: true,
+    });
+  }
+
+  const result = await endPhoneCallByDeletingRoom(roomName);
+  if (logger && typeof logger.log === "function") {
+    logger.log("auto_end_emergency_complete", {
+      roomName: roomName || null,
+      ok: Boolean(result.ok),
+      code: result.code || null,
+    });
+  }
+  return result;
+}
+
+/**
+ * Schedule hangup once caller confirms they noted the emergency number.
+ * The LLM speaks the thank-you line via prompt; we cut after playout.
+ * @param {{
+ *   agent: { session?: import('@livekit/agents').voice.AgentSession | null, _callRoomName?: string | null, _emergencyTransferCtx?: { roomName?: string | null } | null, getCallLogger?: () => unknown, postBookingClosingInFlight?: boolean },
+ * }} p
+ */
+function scheduleAutoEndAfterEmergencyNoted(p) {
+  const agent = p && p.agent;
+  if (!agent || !isAutoEndAfterEmergencyEnabled()) return;
+
+  const roomName = resolveAgentRoomName(agent);
+  const session = agent.session || null;
+  const logger =
+    typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
+
+  agent.postBookingClosingInFlight = true;
+  console.log(
+    LOG_TAG,
+    "scheduling auto hangup after emergency thank-you for room:",
+    roomName || "(missing)",
+  );
+
+  if (logger && typeof logger.log === "function") {
+    logger.log("auto_end_emergency_scheduled", { roomName: roomName || null });
+  }
+
+  setImmediate(() => {
+    autoEndCallAfterEmergency({ roomName, session, logger })
+      .catch((err) => {
+        const msg = err && err.message ? err.message : String(err);
+        console.error(LOG_TAG, "deferred emergency auto end failed:", msg);
+        if (logger && typeof logger.log === "function") {
+          logger.log("auto_end_emergency_error", {
+            errorMessage: msg,
+            roomName,
+          });
+        }
+      })
+      .finally(() => {
+        agent.postBookingClosingInFlight = false;
+      });
+  });
+}
+
 module.exports = {
   isAutoEndAfterBookingEnabled,
+  isAutoEndAfterEmergencyEnabled,
   getAutoEndDelayMs,
+  getEmergencyEndDelayMs,
   getAutoEndStableIdleMs,
   getThankYouLine,
   endPhoneCallByDeletingRoom,
   waitForAgentSpeechIdle,
   waitForStableAgentIdle,
   autoEndCallAfterBooking,
+  autoEndCallAfterEmergency,
   scheduleAutoEndAfterBookingConfirmed,
+  scheduleAutoEndAfterEmergencyNoted,
 };

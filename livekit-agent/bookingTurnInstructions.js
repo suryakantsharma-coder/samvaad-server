@@ -1,5 +1,33 @@
 const { isAffirmativeTurn } = require("./userTranscriptNormalize");
-const { isMongoObjectIdString } = require("./callBookingSlots");
+const { isMongoObjectIdString, isEmergencyFlowActive } = require("./callBookingSlots");
+
+/**
+ * @param {'hi'|'gu'|'en'} preferredLanguage
+ */
+function buildEmergencyTurnInstructions(preferredLanguage) {
+  const lang =
+    preferredLanguage === "gu"
+      ? "Gujarati"
+      : preferredLanguage === "en"
+        ? "English"
+        : "Hindi";
+  return [
+    "INTERNAL_TURN_NOTES — EMERGENCY PATH ACTIVE. NEVER read these notes aloud.",
+    "The caller chose EMERGENCY. Do NOT ask for patient name, age, doctor, date, time, or visit reason.",
+    "Do NOT call create_patient, create_appointment, list_doctors, or any booking tool.",
+    "Speak only in " +
+      lang +
+      " except emergency digits — those must be English number words one digit at a time.",
+    "If you have not yet read the emergency number: read it digit-by-digit in English, then ask once in " +
+      lang +
+      ': "Should I repeat the number, or have you noted it?"',
+    "If the caller wants a repeat: read digits again in English and ask the same question again.",
+    "If the caller confirmed they noted it (haan / note kar liya / noted): speak ONLY the hospital thank-you closing line in " +
+      lang +
+      ", then go completely silent — the system disconnects automatically.",
+    "Never pivot to appointment booking on this call.",
+  ].join("\n");
+}
 
 /**
  * @param {import("./callBookingSlots").CallBookingSlots | null | undefined} slots
@@ -22,6 +50,9 @@ function getFirstMissingPatientField(slots) {
  * @returns {string|null}
  */
 function getNoInputMissingTopic(slots, lang) {
+  if (isEmergencyFlowActive(slots)) {
+    return null;
+  }
   const p = getFirstMissingPatientField(slots);
   if (p === "name") {
     if (lang === "gu") return "નામ";
@@ -101,6 +132,9 @@ function formatSlotSnapshot(slots) {
  */
 function buildBookingTurnInstructions(p) {
   const { slots, rawUser, normalizedUser, preferredLanguage } = p;
+  if (isEmergencyFlowActive(slots)) {
+    return buildEmergencyTurnInstructions(preferredLanguage);
+  }
   const lang =
     preferredLanguage === "gu"
       ? "Gujarati"

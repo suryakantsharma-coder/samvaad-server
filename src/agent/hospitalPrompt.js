@@ -50,7 +50,9 @@ function buildUpcomingWeekdayReference() {
     const targetDow = (todayDow + i) % 7;
     if (targetDow === 0) continue; // skip Sunday
     const dateUtc = new Date(todayStartUtc.getTime() + i * 24 * 60 * 60 * 1000);
-    rows.push(`${WEEKDAY_LABELS_EN[targetDow]} = ${formatCalendarDateIST(dateUtc)}`);
+    rows.push(
+      `${WEEKDAY_LABELS_EN[targetDow]} = ${formatCalendarDateIST(dateUtc)}`,
+    );
   }
   return rows.join(", ");
 }
@@ -64,7 +66,9 @@ No hospital context was provided. Greet briefly in Hindi and English: say you ca
 // ─── Main builder ─────────────────────────────────────────────────────────────
 async function getHospitalInstructions(hospital, callerPhone = null) {
   if (!hospital) {
-    console.warn("[Agent] getHospitalInstructions: no hospital provided — using fallback.");
+    console.warn(
+      "[Agent] getHospitalInstructions: no hospital provided — using fallback.",
+    );
     return HOSPITAL_PROMPT;
   }
 
@@ -85,7 +89,9 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
       .select("fullName designation availability status averagePatientTime")
       .lean();
 
-    console.log(`[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`);
+    console.log(
+      `[Agent] ${doctors?.length ?? 0} doctors fetched for ${hospitalName}`,
+    );
 
     if (doctors && doctors.length > 0) {
       const byDept = {};
@@ -113,7 +119,10 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
         .join("\n");
     }
   } catch (err) {
-    console.error(`[Agent] DoctorModel.find failed for ${hospitalName}:`, err.message);
+    console.error(
+      `[Agent] DoctorModel.find failed for ${hospitalName}:`,
+      err.message,
+    );
   }
 
   const todayYmd = istTodayYmd();
@@ -155,9 +164,11 @@ Match the caller's complaint to the right specialty (cough/throat → ENT or Gen
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CALLER PHONE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${callerNum
+${
+  callerNum
     ? `Stored: **${callerNum}** — used in tools. Do NOT ask; do NOT read digits aloud.`
-    : `No number on file — leave phone blank in tools. Do NOT ask.`}
+    : `No number on file — leave phone blank in tools. Do NOT ask.`
+}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANGUAGE — Hindi OR Gujarati only (no English option)
@@ -187,15 +198,23 @@ EMERGENCY vs NORMAL — ask immediately after language lock
   GU: "કૃપા કરીને જણાવો — આ ઇમરજન્સી કેસ છે કે સામાન્ય કેસ?"
 
 **If EMERGENCY (इमरजेंसी / emergency / આપત્તિ / urgent):**
+
+Strictly follow the above instructions.
+ 1. always speack number in english.
+ 2. don't talk anything after noted confirmation from caller.
+
+
 • **Do NOT** ask about symptoms, doctors, dates, or appointments. **No booking tools. No appointment talk at all.**
-• Intro in the locked language, then say the hospital emergency number from above (**Emergency : ${hospital.emergencyNumber || "N/A"}**) **one digit at a time in English** (nine, eight, seven…), with a **full one-second pause between each digit**.
+• Intro in the locked language, then say the hospital emergency number from above (**Emergency : ${hospital.emergencyNumber || "N/A"}**) **one digit at a time in English** (one, two, three, four, five, six, seven, eight, nine, Ten…).
 • Then ask in the locked language: "क्या मैं नंबर दोबारा बोलूँ, या आपने नोट कर लिया है?" / "શું હું નંબર ફરી બોલું, કે તમે નોંધી લીધું છે?"
-• If they want a **repeat**, read the digits again in English (one digit per second) and ask the same question again.
+• If they want a **repeat**, read the digits again in English and ask the same question again.
 • If they say they have **noted it** (note kar liya / haan / હા), say thank you for calling **${hospitalName}**:
   HI: "${hospitalName} में फ़ोन करने के लिए धन्यवाद।"
   GU: "${hospitalName} માં ફોન કરવા બદલ આભાર."
   Then **end the call immediately** — never continue to booking.
 • Keep repeating the number until they confirm they have noted it.
+• Don't talk anything after that please.
+
 
 **If NORMAL (सामान्य / normal / સામાન્ય / appointment / routine):**
 • Proceed to the **SIMPLE BOOKING FLOW** below — visit reason, patient details, doctor, slot, etc.

@@ -16,9 +16,7 @@ const { HospitalVoiceAgent } = require("./agent");
 const { ensureMongoConnected } = require("./dbConnect");
 const HospitalModel = require("../src/models/hospital.model");
 const { getHospitalInstructions } = require("../src/agent/hospitalPrompt");
-const {
-  extractSipCallerPhoneFromRoom,
-} = require("./sipCallerPhone");
+const { extractSipCallerPhoneFromRoom } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
 const { attachCallLogger } = require("./callLogger");
@@ -26,8 +24,7 @@ const { attachCallLogger } = require("./callLogger");
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
   process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-mini-2025-12-15";
-const OPENAI_LLM_MODEL =
-  process.env.OPENAI_LLM_MODEL || "gpt-4.1";
+const OPENAI_LLM_MODEL = process.env.OPENAI_LLM_MODEL || "gpt-4.1";
 
 const useSarvamStt = Boolean(
   process.env.SARVAM_API_KEY && process.env.SARVAM_API_KEY.trim(),
@@ -59,9 +56,7 @@ function getSarvamTurnHandling() {
 
 /** Caller-side mic noise suppression before STT (LiveKit AudioFilter). */
 function envInputNoiseCancellationMode() {
-  return String(
-    process.env.LIVEKIT_INPUT_NOISE_CANCELLATION || "telephony",
-  )
+  return String(process.env.LIVEKIT_INPUT_NOISE_CANCELLATION || "telephony")
     .trim()
     .toLowerCase();
 }
@@ -71,12 +66,7 @@ function envInputNoiseCancellationMode() {
  */
 function getInputNoiseCancellationOptions() {
   const mode = envInputNoiseCancellationMode();
-  if (
-    mode === "off" ||
-    mode === "0" ||
-    mode === "false" ||
-    mode === "none"
-  ) {
+  if (mode === "off" || mode === "0" || mode === "false" || mode === "none") {
     return undefined;
   }
   if (mode === "bvc" || mode === "background" || mode === "voice") {
@@ -114,21 +104,13 @@ function shouldSkipInputNcForLatency(useSamvaadLlmTts, lowLatency) {
  */
 function getInputNoiseCancellationStatus(p) {
   const mode = envInputNoiseCancellationMode();
-  if (
-    mode === "off" ||
-    mode === "0" ||
-    mode === "false" ||
-    mode === "none"
-  ) {
+  if (mode === "off" || mode === "0" || mode === "false" || mode === "none") {
     return {
       active: false,
       summary: "off (LIVEKIT_INPUT_NOISE_CANCELLATION)",
     };
   }
-  const skip = shouldSkipInputNcForLatency(
-    p.useSamvaadLlmTts,
-    p.lowLatency,
-  );
+  const skip = shouldSkipInputNcForLatency(p.useSamvaadLlmTts, p.lowLatency);
   if (skip) {
     return {
       active: false,
@@ -319,7 +301,11 @@ async function logCallConnection(ctx, phase, extra = {}) {
 function patchRealtimeCommitToClearOnly(agent) {
   const activity = agent && agent._agentActivity;
   const rs = activity && activity.realtimeLLMSession;
-  if (!rs || typeof rs.commitAudio !== "function" || typeof rs.clearAudio !== "function") {
+  if (
+    !rs ||
+    typeof rs.commitAudio !== "function" ||
+    typeof rs.clearAudio !== "function"
+  ) {
     return;
   }
   const clear = rs.clearAudio.bind(rs);
@@ -402,7 +388,8 @@ const agentDef = defineAgent({
     await ctx.connect();
 
     let session = null;
-    let detachNoInput = null;
+      let detachEmergencyEnd = null;
+      let detachNoInput = null;
     let samvaadTts = null;
     let hospitalAgent = null;
     let sarvamStt = null;
@@ -451,13 +438,17 @@ const agentDef = defineAgent({
           console.log(
             "[Sarvam STT] metrics:",
             m && m.metadata ? m.metadata : m,
-            m && m.audioDurationMs != null ? `audioMs=${m.audioDurationMs}` : "",
+            m && m.audioDurationMs != null
+              ? `audioMs=${m.audioDurationMs}`
+              : "",
           );
         });
         const _epMin = getSarvamTurnHandling().endpointing.minDelay;
         console.log(
           "[LiveKit Agent] Sarvam STT:",
-          useWebSocketStreaming() ? "WebSocket streaming" : "batch REST + Silero VAD",
+          useWebSocketStreaming()
+            ? "WebSocket streaming"
+            : "batch REST + Silero VAD",
           `| VAD minSilence=${SARVAM_VAD_LOAD_OPTS.minSilenceDuration}ms prefixPad=${SARVAM_VAD_LOAD_OPTS.prefixPaddingDuration}ms endpointingMin=${_epMin}ms`,
           "| env: VAD_MIN_SILENCE_MS, VAD_PREFIX_PADDING_MS, AGENT_ENDPOINTING_MIN_MS | try SARVAM_STT_STREAMING=1, OPENAI_LLM_MODEL=gpt-4o-mini",
           "| SARVAM_STT_DEBUG=1 for transcripts; SARVAM_STT_DEBUG=0 off",
@@ -534,7 +525,9 @@ const agentDef = defineAgent({
       }
 
       const lowLatency = process.env.LOW_LATENCY_AUDIO !== "0";
-      const sarvamTurnHandling = useSarvamStt ? getSarvamTurnHandling() : void 0;
+      const sarvamTurnHandling = useSarvamStt
+        ? getSarvamTurnHandling()
+        : void 0;
       session = useSamvaadLlmTts
         ? new voice.AgentSession({
             vad,
@@ -551,7 +544,12 @@ const agentDef = defineAgent({
         : new voice.AgentSession({
             llm: new openai.realtime.RealtimeModel(realtimeModelOpts),
             ...(useSarvamStt && vad && sarvamStt
-              ? { vad, stt: sarvamStt, aecWarmupDuration: 0, turnHandling: sarvamTurnHandling }
+              ? {
+                  vad,
+                  stt: sarvamStt,
+                  aecWarmupDuration: 0,
+                  turnHandling: sarvamTurnHandling,
+                }
               : {}),
           });
 
@@ -597,6 +595,9 @@ const agentDef = defineAgent({
         })(),
       });
 
+      const { attachEmergencyCallEndBridge } = require("./emergencyCallEnd");
+      detachEmergencyEnd = attachEmergencyCallEndBridge(session, hospitalAgent);
+
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
       if (noInputRepromptMs > 0) {
         detachNoInput = attachNoInputReprompt(session, {
@@ -619,7 +620,8 @@ const agentDef = defineAgent({
               callLogger.log("reprompt", {
                 reason: "no_input",
                 lang: info && info.lang ? info.lang : null,
-                missingTopic: info && info.missingTopic ? info.missingTopic : null,
+                missingTopic:
+                  info && info.missingTopic ? info.missingTopic : null,
               });
             }
           },
@@ -660,17 +662,7 @@ const agentDef = defineAgent({
             );
           }
           try {
-            const {
-              applyTranscriptToBookingSlots,
-            } = require("./bookingSlotCapture");
-            const {
-              maybeCaptureVisitReasonFromTranscript,
-            } = require("./callBookingSlots");
-            applyTranscriptToBookingSlots(hospitalAgent.callBookingSlots, text);
-            maybeCaptureVisitReasonFromTranscript(
-              hospitalAgent.callBookingSlots,
-              text,
-            );
+            hospitalAgent.applyCallerTranscriptSideEffects(text);
           } catch (e) {
             console.warn(
               "[LiveKit Agent] STT slot capture failed:",
@@ -681,13 +673,20 @@ const agentDef = defineAgent({
       }
 
       session.once(voice.AgentSessionEventTypes.Close, () => {
+        if (detachEmergencyEnd) {
+          detachEmergencyEnd();
+          detachEmergencyEnd = null;
+        }
         if (detachNoInput) {
           detachNoInput();
           detachNoInput = null;
         }
       });
 
-      const { PcmGainAudioOutput, getAgentOutputPcmGain } = require("./pcmGainAudioOutput");
+      const {
+        PcmGainAudioOutput,
+        getAgentOutputPcmGain,
+      } = require("./pcmGainAudioOutput");
       const outPcmGain = getAgentOutputPcmGain(Boolean(useSamvaadLlmTts));
       if (session.output.audio && outPcmGain !== 1) {
         session.output.audio = new PcmGainAudioOutput(
@@ -720,9 +719,7 @@ const agentDef = defineAgent({
         inputProcessing: (() => {
           if (!useSarvamStt) return "default";
           if (useSamvaadLlmTts) {
-            return (
-              "no Realtime; aecWarmup=0; NC: LOW_LATENCY_AUDIO=0, LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1, or LIVEKIT_INPUT_NOISE_CANCELLATION"
-            );
+            return "no Realtime; aecWarmup=0; NC: LOW_LATENCY_AUDIO=0, LIVEKIT_INPUT_NC_WITH_LOW_LATENCY=1, or LIVEKIT_INPUT_NOISE_CANCELLATION";
           }
           return require("./sarvamStt").useWebSocketStreaming()
             ? "Sarvam WebSocket (PCM) STT; Realtime commitAudio → clearAudio"
@@ -743,8 +740,7 @@ const agentDef = defineAgent({
       let handle;
       try {
         handle = session.generateReply({
-          instructions:
-            `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in English ("बातचीत हिंदी में रखें या English में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
+          instructions: `You are Neha (female receptionist). First speak in Hindi: welcome to ${hospital.name}, introduce yourself as Neha, and ask whether they want to continue in Hindi or in Gujrati ("बातचीत हिंदी में रखें या ગુજરાતીમાં में?"). After they clearly choose, use only that language for the rest of the call until they ask to switch.`,
         });
         await handle.waitForPlayout();
       } catch (err) {
@@ -758,7 +754,8 @@ const agentDef = defineAgent({
         }
       }
 
-      if (callLogger) callLogger.log("greeting", { roomName, hospitalName: hospital.name });
+      if (callLogger)
+        callLogger.log("greeting", { roomName, hospitalName: hospital.name });
 
       console.log(
         "[LiveKit Agent] Initial greeting sent for room:",
@@ -781,6 +778,10 @@ const agentDef = defineAgent({
       );
       throw err;
     } finally {
+      if (detachEmergencyEnd) {
+        detachEmergencyEnd();
+        detachEmergencyEnd = null;
+      }
       if (detachNoInput) {
         detachNoInput();
         detachNoInput = null;
@@ -791,7 +792,9 @@ const agentDef = defineAgent({
         } catch (logDetachErr) {
           console.warn(
             "[LiveKit Agent] callLogger.detach:",
-            logDetachErr && logDetachErr.message ? logDetachErr.message : logDetachErr,
+            logDetachErr && logDetachErr.message
+              ? logDetachErr.message
+              : logDetachErr,
           );
         }
         callLogger = null;
@@ -812,7 +815,9 @@ const agentDef = defineAgent({
         } catch (sttCloseErr) {
           console.warn(
             "[LiveKit Agent] sarvamStt.close:",
-            sttCloseErr && sttCloseErr.message ? sttCloseErr.message : sttCloseErr,
+            sttCloseErr && sttCloseErr.message
+              ? sttCloseErr.message
+              : sttCloseErr,
           );
         }
       }
@@ -822,7 +827,9 @@ const agentDef = defineAgent({
         } catch (ttsCloseErr) {
           console.warn(
             "[LiveKit Agent] sarvamTts.close:",
-            ttsCloseErr && ttsCloseErr.message ? ttsCloseErr.message : ttsCloseErr,
+            ttsCloseErr && ttsCloseErr.message
+              ? ttsCloseErr.message
+              : ttsCloseErr,
           );
         }
       }
