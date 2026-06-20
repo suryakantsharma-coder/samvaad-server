@@ -98,7 +98,7 @@ const env = {
     (process.env.APPOINTMENT_TEMPLATE_NAME || "").trim() ||
     (process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "").trim(),
   APPOINTMENT_TEMPLATE_LANG: process.env.APPOINTMENT_TEMPLATE_LANG || "en_US",
-  /** prescription_created_message — patient_name, doctor_name, link, hospital_name */
+  /** prescription_created_message — patient_name, doctor_name, prescription_link, hospital_name */
   PRESCRIPTION_TEMPLATE_NAME: (process.env.PRESCRIPTION_TEMPLATE_NAME || "").trim(),
   PRESCRIPTION_TEMPLATE_LANG: process.env.PRESCRIPTION_TEMPLATE_LANG || "en_US",
   /** medicines_reminder_message — patient_name, medicine_details, doctor_name, hospital_name */

@@ -138,7 +138,7 @@ function buildPrescriptionWhatsAppText(prescription, hospitalName) {
 
 /**
  * WhatsApp after prescription create.
- * Uses NAMED template when set (patient_name, doctor_name, link, hospital_name).
+ * Uses NAMED template when set (patient_name, doctor_name, prescription_link, hospital_name).
  */
 async function notifyPrescriptionCreated(prescription) {
   const rxId = prescription?._id != null ? String(prescription._id) : "";
@@ -216,7 +216,7 @@ async function notifyPrescriptionCreated(prescription) {
       components: templateBodyNamedParameters({
         patient_name: patientName,
         doctor_name: doctorName,
-        link,
+        prescription_link: link,
         hospital_name: hospitalName,
       }),
       defaultCountryDigits: ccDigits,

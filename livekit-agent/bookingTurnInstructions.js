@@ -8,7 +8,8 @@ const { isMongoObjectIdString } = require("./callBookingSlots");
 function getFirstMissingPatientField(slots) {
   if (!slots) return "name";
   if (!String(slots.fullName || "").trim()) return "name";
-  if (slots.age == null || !Number.isFinite(Number(slots.age))) return "age_gender";
+  if (slots.age == null || !Number.isFinite(Number(slots.age)))
+    return "age_gender";
   if (!String(slots.gender || "").trim()) return "age_gender";
   if (!String(slots.reason || "").trim()) return "reason";
   return null;
@@ -77,8 +78,7 @@ function formatSlotSnapshot(slots) {
     parts.push(`pending-date-ist=${slots.pendingDateYmd}`);
   if (slots.appointmentDateTimeISO)
     parts.push(`appointment-datetime-ist=${slots.appointmentDateTimeISO}`);
-  if (slots.doctorObjectId)
-    parts.push(`doctor-ref=${slots.doctorObjectId}`);
+  if (slots.doctorObjectId) parts.push(`doctor-ref=${slots.doctorObjectId}`);
   if (isMongoObjectIdString(slots.patientObjectId))
     parts.push(`patient-ref=${slots.patientObjectId}`);
   else
@@ -87,9 +87,7 @@ function formatSlotSnapshot(slots) {
     );
   if (slots.appointmentObjectId)
     parts.push(`appointment-ref=${slots.appointmentObjectId}`);
-  return parts.length
-    ? parts.join("; ")
-    : "(nothing captured yet)";
+  return parts.length ? parts.join("; ") : "(nothing captured yet)";
 }
 
 /**
@@ -112,8 +110,7 @@ function buildBookingTurnInstructions(p) {
   const snapshot = formatSlotSnapshot(slots);
   const missingPatient = getFirstMissingPatientField(slots);
   const hasPatient =
-    !missingPatient &&
-    String(slots.reason || "").trim().length > 0;
+    !missingPatient && String(slots.reason || "").trim().length > 0;
   const hasIso = String(slots.appointmentDateTimeISO || "").trim().length > 0;
   const hasDoctor = String(slots.doctorObjectId || "").trim().length > 0;
   const hasPatientOid = isMongoObjectIdString(slots.patientObjectId);
@@ -152,11 +149,9 @@ function buildBookingTurnInstructions(p) {
       " (no English variable names, tool names, MongoDB/ID/JSON terms, or status words like ok/true/false/null — see the hard-banned list in the main system prompt).",
     preferredLanguage === "hi"
       ? "LANGUAGE_LOCK: Caller chose Hindi for this call. Every word you speak aloud must be Hindi — no English sentence openers (Great, Understood, Okay, Sure, Please, Thank you) and no English questions; use ठीक है, समझ गई, जी, कृपया, धन्यवाद, etc. Latin names (Hardik, Sarvodaya) are allowed as names only."
-      : preferredLanguage === "gu"
-        ? "LANGUAGE_LOCK: Caller chose Gujarati for this call. Every word you speak aloud must be Gujarati — use સમજાય ગયું, જી, કૃપા કરીને, આભાર, etc. Latin names are allowed as names only."
-        : preferredLanguage === "en"
-          ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi or Gujarati sentences mid-turn unless the caller explicitly asks to switch."
-          : "",
+      : preferredLanguage === "en"
+        ? "LANGUAGE_LOCK: Caller chose English for this call. Speak only clear Indian English — do not switch to Hindi sentences mid-turn unless the caller explicitly asks to switch."
+        : "",
     isMongoObjectIdString(slots?.doctorObjectId)
       ? "Doctor is already chosen — use captured doctor-ref as doctorObjectId. Do NOT call list_doctors."
       : "",

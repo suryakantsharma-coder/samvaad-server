@@ -93,23 +93,24 @@ function looksLikeEnglishPrimary(s) {
 }
 
 /**
- * Hospital receptionist: Hindi or Gujarati only (no English language lock).
+ * Hospital receptionist: Hindi vs English only (no Gujarati lock from STT).
  * @param {string} text
- * @returns {'hi'|'gu'|null}
+ * @returns {'hi'|'en'|null}
  */
 function inferHospitalCallerLanguage(text) {
   const s = String(text || "").trim();
   if (!s) return null;
   if (isBareLanguageChoiceNonAnswer(s)) return null;
-  if (/ગુજરાતી/.test(s) || EXPLICIT_GU_RE.test(s)) return "gu";
-  if (/गुजराती|गુજરાતી/i.test(s)) return "gu";
+  if (EXPLICIT_EN_RE.test(s)) return "en";
+  if (/इंग्लिश|इंग्रेजी|अंग्रेज़ी|अंग्रेजी/.test(s)) return "en";
+  if (looksLikeEnglishPrimary(s)) return "en";
   if (/हिंदी|हिन्दी/.test(s) || EXPLICIT_HI_RE.test(s)) return "hi";
   if (isShortDevanagariNoise(s)) return null;
-  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return "gu";
   if (HINDI_SCRIPT_RE.test(s) || HINDI_HINT_RE.test(s)) return "hi";
-  if (/\b(hindi|gujarati)\b/i.test(s)) {
-    if (/\bhindi\b/i.test(s) && !/\bgujarati\b/i.test(s)) return "hi";
-    if (/\bgujarati\b/i.test(s) && !/\bhindi\b/i.test(s)) return "gu";
+  if (GUJARATI_SCRIPT_RE.test(s) || GUJARATI_HINT_RE.test(s)) return null;
+  if (/\b(hindi|english)\b/i.test(s)) {
+    if (/\benglish\b/i.test(s) && !/\bhindi\b/i.test(s)) return "en";
+    if (/\bhindi\b/i.test(s) && !/\benglish\b/i.test(s)) return "hi";
   }
   return null;
 }
@@ -139,12 +140,27 @@ function detectExplicitLanguageSwitch(text) {
 }
 
 /**
- * Explicit Hindi ↔ Gujarati when hospital language is locked.
+ * Explicit Hindi ↔ English when hospital language is locked.
  * @param {string} text
- * @returns {'hi'|'gu'|null}
+ * @returns {'hi'|'en'|null}
  */
 function detectExplicitHospitalLanguageSwitch(text) {
-  return detectExplicitLanguageSwitch(text);
+  const s = String(text || "").trim();
+  if (!s || s.length > 160) return null;
+  const toEn =
+    EXPLICIT_EN_RE.test(s) ||
+    /(अब|कृपया|प्लीज़|please)?\s*(इंग्लिश|अंग्रेज़ी|अंग्रेजी)\s*(में)?/i.test(s) ||
+    /\b(speak|switch\s+to|in)\s+english\b/i.test(s) ||
+    /\benglish\s*(please|maam|madam)?\b/i.test(s);
+  const toHi =
+    /(अब|कृपया)?\s*(हिंदी|हिन्दी)\s*(में)?/i.test(s) ||
+    /(हिंदी|हिन्दी)\s*(में)?\s*(रख|रखे|रखना|बोल|बात)/i.test(s) ||
+    /\bhindi\s+(mein|main)\b/i.test(s) ||
+    /\b(speak|switch\s+to)\s+hindi\b/i.test(s) ||
+    /\bhindi\s*(please|maam|madam)?\b/i.test(s);
+  if (toEn && !toHi) return "en";
+  if (toHi && !toEn) return "hi";
+  return null;
 }
 
 /**
@@ -208,40 +224,20 @@ function getNoInputRepromptInstructions(lang, opts = {}) {
   );
 }
 
-const HANG_UP_HI =
-  "अगर और कुछ पूछना हो तो बताइएगा; वरना आप कॉल काट सकते हैं। धन्यवाद।";
-const HANG_UP_GU =
-  "જો હજી કંઈ પૂછવું હોય તો કહેજો; નહીંતર તમે ફોન મૂકી શકો છો. આભાર.";
-const HANG_UP_EN =
-  "If you need anything else, just say so; otherwise you may hang up. Thank you.";
-
 /**
- * Closing line after successful booking — thank you for calling the hospital.
- * @param {'hi'|'gu'|'en'|null|undefined} lang
- * @param {string} [hospitalName]
+ * Post-booking closing line — thank the caller; never ask them to hang up.
+ * @param {'hi'|'gu'|'en'} lang
+ * @param {string | null | undefined} hospitalName
  */
-function getBookingThankYouLine(lang, hospitalName) {
-  const name =
-    String(hospitalName || "").trim() ||
-    (lang === "gu" ? "અસ્પતાલ" : lang === "en" ? "the hospital" : "अस्पताल");
-  if (lang === "gu") {
-    return `${name} માં ફોન કરવા બદલ આભાર.`;
-  }
+function getThankYouLine(lang, hospitalName) {
+  const name = String(hospitalName || "").trim() || "the hospital";
   if (lang === "en") {
     return `Thank you for calling ${name}.`;
   }
-  return `${name} में फ़ोन करने के लिए धन्यवाद।`;
-}
-
-/**
- * @param {'hi'|'gu'|'en'|null|undefined} lang
- * @param {string} [hospitalName]
- */
-function getThankYouLine(lang, hospitalName) {
-  if (hospitalName) return getBookingThankYouLine(lang, hospitalName);
-  if (lang === "gu") return HANG_UP_GU;
-  if (lang === "en") return HANG_UP_EN;
-  return HANG_UP_HI;
+  if (lang === "gu") {
+    return `${name} ને કૉલ કરવા બદલ આભાર.`;
+  }
+  return `${name} को कॉल करने के लिए धन्यवाद।`;
 }
 
 module.exports = {
@@ -253,8 +249,4 @@ module.exports = {
   getEmptyInputRepromptInstructions,
   getNoInputRepromptInstructions,
   getThankYouLine,
-  getBookingThankYouLine,
-  HANG_UP_HI,
-  HANG_UP_GU,
-  HANG_UP_EN,
 };

@@ -8,12 +8,11 @@ const {
 const { buildBookingTurnInstructions } = require("./bookingTurnInstructions");
 const { applyTranscriptToBookingSlots } = require("./bookingSlotCapture");
 const {
-  getBookingThankYouLine,
   inferHospitalCallerLanguage,
   detectExplicitHospitalLanguageSwitch,
   getEmptyInputRepromptInstructions,
+  getThankYouLine,
 } = require("./preferredLanguage");
-const { handleCallFlowTurn } = require("./emergencyFlow");
 const {
   createCallBookingSlots,
   updateSlotsFromToolArgs,
@@ -21,6 +20,10 @@ const {
   maybeCaptureVisitReasonFromTranscript,
   isMongoObjectIdString,
 } = require("./callBookingSlots");
+const {
+  isAutoEndAfterBookingEnabled,
+  scheduleAutoEndAfterBookingConfirmed,
+} = require("./endPhoneCall");
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
 
@@ -56,7 +59,9 @@ async function speakCreateAppointmentResult(agent, result) {
 
   if (!primary) return;
 
-  const thankYou = getBookingThankYouLine(lang, agent.hospitalName);
+  const hospitalName =
+    agent._hospital && agent._hospital.name ? String(agent._hospital.name) : "";
+  const thankYou = getThankYouLine(lang, hospitalName);
   const langLabel =
     lang === "gu" ? "Gujarati" : lang === "en" ? "English" : "Hindi";
 
@@ -64,15 +69,15 @@ async function speakCreateAppointmentResult(agent, result) {
     ? (result.appointmentUpdated
         ? "The appointment was updated (ok: true). Speak EXACTLY the status line below in " +
           langLabel +
-          ", then the thank-you closing line. Do NOT say the update failed. Do NOT read internal English instructions. Do NOT change wording. Do NOT ask if they want to hang up — only the thank-you line.\n" +
+          ", then the thank-you closing line. Do NOT say the update failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
           `Status: ${primary}\n` +
-          `Thank-you closing: ${thankYou}`
+          `Thank-you: ${thankYou}`
         : "The appointment is booked (ok: true). Speak EXACTLY the booking status line below in " +
           langLabel +
-          ", then the thank-you closing line. Do NOT say booking failed. Do NOT read internal English instructions. Do NOT change wording. Do NOT ask if they want to hang up — only the thank-you line.\n" +
+          ", then the thank-you closing line. Do NOT say booking failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
           `Booking status: ${primary}\n` +
-          `Thank-you closing: ${thankYou}\n` +
-          "That status line is the ONLY full booking recap for this call.")
+          `Thank-you: ${thankYou}\n` +
+          "Speak the thank-you line as your FINAL sentence — do NOT ask if they need anything else afterward. Do NOT offer further help after the thank-you.")
     : "Booking failed (ok: false). Speak EXACTLY the line below in " +
       langLabel +
       ". Explain calmly what they can do next. Do not read raw technical English.\n" +
@@ -126,21 +131,6 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
       parameters: def.parameters,
       execute: async (args) => {
         const agent = agentRef && agentRef.current;
-        if (
-          agent &&
-          agent.callFlow &&
-          (agent.callFlow.phase === "emergency" ||
-            agent.callFlow.phase === "emergency_ending" ||
-            agent.callFlow.phase === "awaiting_case_type" ||
-            agent.callFlow.phase === "awaiting_language")
-        ) {
-          return {
-            ok: false,
-            code: "CALL_FLOW_BLOCKED",
-            message:
-              "Appointment tools are not available during language selection or emergency flow.",
-          };
-        }
         const logger =
           agent && typeof agent.getCallLogger === "function"
             ? agent.getCallLogger()
@@ -159,121 +149,127 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           });
         }
 
-        let result;
+        const isAppointmentBook = name === "create_appointment";
+        if (agent && isAppointmentBook) {
+          agent.appointmentBookingInFlight = true;
+        }
+
         try {
-          result = await runHospitalTool(
-            hospitalObjectId,
-            name,
-            mergedArgs,
-            {
-              callerPhone: callerPhone || null,
-              callBookingSlots: agent ? agent.callBookingSlots : null,
-            },
-          );
-        } catch (toolErr) {
-          const msg = toolErr && toolErr.message ? toolErr.message : String(toolErr);
-          console.error(`[Agent] tool ${name} threw:`, msg);
+          let result;
+          try {
+            result = await runHospitalTool(
+              hospitalObjectId,
+              name,
+              mergedArgs,
+              {
+                callerPhone: callerPhone || null,
+                callBookingSlots: agent ? agent.callBookingSlots : null,
+              },
+            );
+          } catch (toolErr) {
+            const msg = toolErr && toolErr.message ? toolErr.message : String(toolErr);
+            console.error(`[Agent] tool ${name} threw:`, msg);
+            if (logger) {
+              logger.log("tool_end", {
+                name,
+                ok: false,
+                durationMs: Date.now() - toolStart,
+                code: "TOOL_THREW",
+                errorMessage: msg,
+              });
+            }
+            return { ok: false, code: "TOOL_THREW", message: msg };
+          }
+
           if (logger) {
             logger.log("tool_end", {
               name,
-              ok: false,
+              ok: Boolean(result && result.ok),
               durationMs: Date.now() - toolStart,
-              code: "TOOL_THREW",
-              errorMessage: msg,
+              code: result && result.code ? String(result.code) : null,
+              errorMessage:
+                result && !result.ok && result.message ? String(result.message) : null,
+              hasMessageHindi: Boolean(result && result.messageHindi),
+              hasMessageGujarati: Boolean(result && result.messageGujarati),
+              appointmentId:
+                result && result.appointment ? result.appointment.appointmentId : null,
             });
           }
-          /** Surface as a structured failure so the model recovers naturally. */
-          return { ok: false, code: "TOOL_THREW", message: msg };
-        }
 
-        if (logger) {
-          logger.log("tool_end", {
-            name,
-            ok: Boolean(result && result.ok),
-            durationMs: Date.now() - toolStart,
-            code: result && result.code ? String(result.code) : null,
-            errorMessage:
-              result && !result.ok && result.message ? String(result.message) : null,
-            hasMessageHindi: Boolean(result && result.messageHindi),
-            hasMessageGujarati: Boolean(result && result.messageGujarati),
-            appointmentId:
-              result && result.appointment ? result.appointment.appointmentId : null,
-          });
-        }
-
-        if (agent) {
-          if (
-            name === "create_patient" &&
-            result &&
-            result.ok &&
-            result.patient &&
-            result.patient._id
-          ) {
-            agent.callBookingSlots.patientObjectId = String(result.patient._id);
-          }
-          if (
-            (name === "list_doctors" || name === "search_doctors") &&
-            result &&
-            result.ok &&
-            Array.isArray(result.doctors) &&
-            result.doctors.length === 1 &&
-            result.doctors[0]._id
-          ) {
-            agent.callBookingSlots.doctorObjectId = String(
-              result.doctors[0]._id,
-            );
-          }
-          updateSlotsFromToolArgs(agent.callBookingSlots, mergedArgs);
-
-          /**
-           * If create_appointment failed because the chosen doctor reference was wrong,
-           * DROP any stale slot doctor id — otherwise mergeToolArgsWithSlots silently
-           * re-attaches Yugen on the NEXT call when the model omits doctorObjectId
-           * (common after narration). Without this fix the agent can verbally pivot to
-           * "Dr Asha Patel" yet still POST book with stale Dr Yugen's id from slots.
-           */
-          if (
-            name === "create_appointment" &&
-            result &&
-            !result.ok &&
-            result.code === "INVALID_DOCTOR_REF"
-          ) {
-            if (agent.callBookingSlots) {
-              delete agent.callBookingSlots.doctorObjectId;
-            }
-          }
-
-          if (
-            name === "create_appointment" &&
-            result &&
-            result.ok &&
-            result.appointment &&
-            result.appointment.doctor &&
-            isMongoObjectIdString(String(result.appointment.doctor))
-          ) {
-            /** Sync slot doctor reference to whoever was actually booked. */
-            agent.callBookingSlots.doctorObjectId = String(
-              result.appointment.doctor,
-            );
-          }
-        }
-
-        if (name === "create_appointment" && result) {
-          if (agent && result.ok && result.appointment && result.appointment._id) {
-            agent.callBookingSlots.appointmentObjectId = String(
-              result.appointment._id,
-            );
-          }
           if (agent) {
-            await speakCreateAppointmentResult(agent, result);
-            if (result.ok) {
-              const { scheduleAutoEndAfterBookingConfirmed } = require("./endCall");
-              scheduleAutoEndAfterBookingConfirmed({ agent });
+            if (
+              name === "create_patient" &&
+              result &&
+              result.ok &&
+              result.patient &&
+              result.patient._id
+            ) {
+              agent.callBookingSlots.patientObjectId = String(result.patient._id);
+            }
+            if (
+              (name === "list_doctors" || name === "search_doctors") &&
+              result &&
+              result.ok &&
+              Array.isArray(result.doctors) &&
+              result.doctors.length === 1 &&
+              result.doctors[0]._id
+            ) {
+              agent.callBookingSlots.doctorObjectId = String(
+                result.doctors[0]._id,
+              );
+            }
+            updateSlotsFromToolArgs(agent.callBookingSlots, mergedArgs);
+
+            if (
+              name === "create_appointment" &&
+              result &&
+              !result.ok &&
+              result.code === "INVALID_DOCTOR_REF"
+            ) {
+              if (agent.callBookingSlots) {
+                delete agent.callBookingSlots.doctorObjectId;
+              }
+            }
+
+            if (
+              name === "create_appointment" &&
+              result &&
+              result.ok &&
+              result.appointment &&
+              result.appointment.doctor &&
+              isMongoObjectIdString(String(result.appointment.doctor))
+            ) {
+              agent.callBookingSlots.doctorObjectId = String(
+                result.appointment.doctor,
+              );
             }
           }
-        }
 
-        return result;
+          if (name === "create_appointment" && result) {
+            if (agent && result.ok && result.appointment && result.appointment._id) {
+              agent.callBookingSlots.appointmentObjectId = String(
+                result.appointment._id,
+              );
+            }
+            if (agent) {
+              await speakCreateAppointmentResult(agent, result);
+              if (
+                result.ok &&
+                isAutoEndAfterBookingEnabled() &&
+                !agent.autoEndCallStarted
+              ) {
+                agent.autoEndCallStarted = true;
+                scheduleAutoEndAfterBookingConfirmed({ agent });
+              }
+            }
+          }
+
+          return result;
+        } finally {
+          if (agent && isAppointmentBook) {
+            agent.appointmentBookingInFlight = false;
+          }
+        }
       },
     });
   }
@@ -285,12 +281,6 @@ class HospitalVoiceAgent extends voice.Agent {
     instructions,
     hospitalObjectId,
     callerPhone,
-    hospitalName = "",
-    emergencyNumber = "",
-    room = null,
-    roomName = "",
-    agentIdentity = "",
-    shutdownJob = null,
     /** When true, user speech is transcribed by Sarvam and sent as text into OpenAI Realtime (see main.js). */
     routeUserTextThroughRealtime = false,
     /** Optional getter so this agent can pull the per-call logger lazily from main.js. */
@@ -304,22 +294,28 @@ class HospitalVoiceAgent extends voice.Agent {
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
     this._getCallLogger = typeof getCallLogger === "function" ? getCallLogger : null;
-    /** @type {'hi' | 'gu' | 'en'} */
+    /** @type {'hi' | 'en'} */
     this.preferredLanguage = "hi";
-    /** After first confident hi/gu/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
+    /** After first confident hi/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
     this.preferredLanguageLocked = false;
-    this.hospitalName = String(hospitalName || "").trim();
-    this.emergencyNumber = String(emergencyNumber || "").trim();
-    this.room = room || null;
-    this.roomName = String(roomName || "").trim();
-    this._callRoomName = this.roomName;
-    this.agentIdentity = String(agentIdentity || "").trim();
-    this.shutdownJob =
-      typeof shutdownJob === "function" ? shutdownJob : null;
-    /** @type {{ phase: string, emergencyStep: string|null, emergencyLlmActive?: boolean }} */
-    this.callFlow = { phase: "awaiting_language", emergencyStep: null, emergencyLlmActive: false };
-    this._emergencyHangupScheduled = false;
     this.callBookingSlots = createCallBookingSlots();
+    this.appointmentBookingInFlight = false;
+    this.postBookingClosingInFlight = false;
+    this.autoEndCallStarted = false;
+    /** @type {string|null} */
+    this._callRoomName = null;
+    /** @type {null | { name?: string }} */
+    this._hospital = null;
+  }
+
+  shouldSuppressNoInputReprompt() {
+    const slots = this.callBookingSlots || {};
+    return (
+      this.appointmentBookingInFlight ||
+      this.postBookingClosingInFlight ||
+      this.autoEndCallStarted ||
+      Boolean(slots.appointmentObjectId)
+    );
   }
 
   /** Returns the per-call logger if main.js wired one up; null otherwise. */
@@ -392,7 +388,6 @@ class HospitalVoiceAgent extends voice.Agent {
       );
     }
     const textAfter = getPlainTranscript(newMessage);
-    const logger = this.getCallLogger();
 
     if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
       const preview = rawBefore
@@ -410,63 +405,26 @@ class HospitalVoiceAgent extends voice.Agent {
       );
     }
 
-    if (
-      this.callFlow.phase !== "emergency" &&
-      this.callFlow.phase !== "emergency_ending"
-    ) {
-      try {
-        applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
-      } catch (err) {
-        console.warn(
-          "[Agent] applyTranscriptToBookingSlots failed:",
-          err && err.message ? err.message : err,
-        );
-      }
-    }
-    if (
-      this.callFlow.phase === "booking" ||
-      this.callFlow.phase === "awaiting_language" ||
-      this.callFlow.phase === "awaiting_case_type"
-    ) {
-      try {
-        maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
-      } catch (err) {
-        console.warn(
-          "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
-          err && err.message ? err.message : err,
-        );
-      }
-    }
-
-    let callFlowHandled = false;
     try {
-      callFlowHandled = await handleCallFlowTurn({
-        agent: this,
-        rawUser: rawBefore,
-        normalizedUser: textAfter,
-      });
+      applyTranscriptToBookingSlots(this.callBookingSlots, rawBefore);
     } catch (err) {
-      console.error(
-        "[Agent] handleCallFlowTurn failed:",
+      console.warn(
+        "[Agent] applyTranscriptToBookingSlots failed:",
+        err && err.message ? err.message : err,
+      );
+    }
+    try {
+      maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, rawBefore);
+    } catch (err) {
+      console.warn(
+        "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
         err && err.message ? err.message : err,
       );
     }
 
-    if (callFlowHandled) {
-      if (logger) {
-        logger.log("stop_response", { reason: "call_flow_handled" });
-      }
-      throw new voice.StopResponse();
-    }
-
-    if (this.callFlow.phase === "emergency" || this.callFlow.phase === "emergency_ending") {
-      if (logger) {
-        logger.log("stop_response", { reason: "emergency_flow_active" });
-      }
-      throw new voice.StopResponse();
-    }
-
     if (!this._routeUserTextThroughRealtime) return;
+
+    const logger = this.getCallLogger();
 
     if (!rawBefore.trim()) {
       if (logger) {
@@ -492,32 +450,6 @@ class HospitalVoiceAgent extends voice.Agent {
       }
       if (logger) {
         logger.log("stop_response", { reason: "empty_stt" });
-      }
-      throw new voice.StopResponse();
-    }
-
-    if (this.callFlow.phase !== "booking") {
-      const { buildCaseTypeQuestion } = require("./emergencyFlow");
-      const lang = this.preferredLanguage || "hi";
-      let preBookingIx;
-      if (this.callFlow.phase === "awaiting_case_type") {
-        preBookingIx =
-          `Ask exactly one short line in the caller's language: "${buildCaseTypeQuestion(lang)}" — do NOT start appointment booking.`;
-      } else {
-        preBookingIx =
-          "The caller has not clearly chosen Hindi or Gujarati yet. Ask once more which language they prefer — Hindi or Gujarati only. Do NOT offer English. Do NOT start booking or ask about symptoms.";
-      }
-      try {
-        this.session.generateReply({
-          toolChoice: "none",
-          instructions: preBookingIx,
-        });
-      } catch (err) {
-        const msg = err && err.message ? err.message : String(err);
-        console.warn("[Agent] pre-booking generateReply error:", msg);
-      }
-      if (logger) {
-        logger.log("stop_response", { reason: "not_booking_phase" });
       }
       throw new voice.StopResponse();
     }
