@@ -331,3 +331,5 @@ Tool and internal names are for **you** — **never** say them aloud.
 }
 
 module.exports = { HOSPITAL_PROMPT, getHospitalInstructions };
+
+// optimised the flow.
