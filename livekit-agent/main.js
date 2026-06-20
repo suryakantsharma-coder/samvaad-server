@@ -20,6 +20,7 @@ const { extractSipCallerPhoneFromRoom } = require("./sipCallerPhone");
 const { attachNoInputReprompt } = require("./attachNoInputReprompt");
 const { getNoInputMissingTopic } = require("./bookingTurnInstructions");
 const { attachCallLogger } = require("./callLogger");
+const { resolveHospitalId } = require("./resolveHospitalId");
 
 const AGENT_NAME = process.env.AGENT_NAME || "phone-agent";
 const OPENAI_REALTIME_MODEL =
@@ -158,21 +159,6 @@ function buildOpenAiChatLlm() {
     opts.temperature = 0.45;
   }
   return new openai.LLM(opts);
-}
-
-/**
- * Resolves the hospital Mongo id from a LiveKit room name.
- * Supports plain `hospital-{objectId}` and common trunk/SIP forms like
- * `hospital-{objectId}-call-...` (only the 24-hex id segment is used).
- */
-function parseHospitalIdFromRoom(roomName) {
-  const s = String(roomName || "").trim();
-  if (!s.startsWith("hospital-")) return null;
-  const after = s.slice("hospital-".length);
-  const m = after.match(/^([0-9a-fA-F]{24})(?:$|-)/);
-  if (!m) return null;
-  const id = m[1];
-  return mongoose.isValidObjectId(id) ? id : null;
 }
 
 function redactToken(token) {
@@ -376,12 +362,13 @@ const agentDef = defineAgent({
           ? String(ctx.room.name)
           : "";
 
-    const hospitalId = parseHospitalIdFromRoom(roomName);
-    if (!hospitalId) {
+    const hospitalResolved = resolveHospitalId(ctx, roomName);
+    if (!hospitalResolved) {
       throw new Error(
-        `[LiveKit Agent] Invalid room name "${roomName}". Expected hospital-{mongoObjectId} (optional suffix after a second hyphen, e.g. -call-…).`,
+        `[LiveKit Agent] Hospital not found for room "${roomName}". Set room or job metadata to {"hospitalId":"<mongoObjectId>"}, or use room name hospital-{mongoObjectId} (optional -call-… suffix).`,
       );
     }
+    const { id: hospitalId, source: hospitalIdSource } = hospitalResolved;
 
     // Connect first. Anything awaited before connect (e.g. logging + getSid) delays the
     // agent participant, so the caller can be in the room with no agent visible.
@@ -468,6 +455,7 @@ const agentDef = defineAgent({
       await logCallConnection(ctx, "hospital_and_caller_resolved", {
         roomName: roomName || "(unknown)",
         hospitalId,
+        hospitalIdSource,
         hospitalName: hospital.name,
         callerPhone,
         callerPhoneSource,
