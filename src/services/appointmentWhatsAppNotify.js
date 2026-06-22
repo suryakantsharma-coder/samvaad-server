@@ -1,6 +1,13 @@
 const Appointment = require("../models/appointment.model");
 const Hospital = require("../models/hospital.model");
 const WhatsApp = require("../models/whatsapp.model");
+// Register the models this service populates (patient, doctor, paymentId) so it
+// works in standalone worker processes (e.g. the appointment-confirmation worker),
+// not just in the API where the full app loads every model. Without these,
+// .populate() throws "Schema hasn't been registered for model ...".
+require("../models/patient.model");
+require("../models/doctor.model");
+require("../models/paymentHistory.model");
 const env = require("../config/env");
 const {
   getResolvedHospitalMessagingSettings,
