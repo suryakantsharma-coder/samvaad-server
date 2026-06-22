@@ -385,5 +385,8 @@ cli.runApp(
     numIdleProcesses: parseEnvInt('QUEUE_NUM_IDLE_PROCESSES', 1),
     initializeProcessTimeout: parseEnvMs('LIVEKIT_INIT_PROCESS_TIMEOUT_MS', 45000),
     loadThreshold: parseEnvFloat('LIVEKIT_LOAD_THRESHOLD', 0.75),
+    // Own health-check port so it does not collide with the phone-agent worker,
+    // which uses LiveKit's production default 8081 (avoids EADDRINUSE crash-loop).
+    port: parseEnvInt('QUEUE_WORKER_HTTP_PORT', 8082),
   }),
 );
