@@ -19,7 +19,9 @@ function parseHospitalIdFromRoom(roomName) {
   const s = String(roomName || "").trim();
   if (!s.startsWith("hospital-")) return null;
   const after = s.slice("hospital-".length);
-  const m = after.match(/^([0-9a-fA-F]{24})(?:$|-)/);
+  // Accept any non-hex delimiter after the ObjectId (-, _, space, end-of-string, etc.)
+  // SIP trunk rooms use underscore: hospital-{id}_+91phone_callId
+  const m = after.match(/^([0-9a-fA-F]{24})(?=[^0-9a-fA-F]|$)/);
   if (!m) return null;
   const id = m[1];
   return mongoose.isValidObjectId(id) ? id : null;

@@ -94,10 +94,11 @@ const apiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Meta WhatsApp / Razorpay webhooks can burst; do not throttle verification or event delivery.
+  // Webhooks must not be rate-limited — LiveKit/WhatsApp/Razorpay can burst on call events.
   skip: (req) =>
     req.originalUrl.includes("/whatsapp/webhook") ||
-    req.originalUrl.includes("/api/razorpay/webhook"),
+    req.originalUrl.includes("/api/razorpay/webhook") ||
+    req.originalUrl.includes("/api/queue/webhook"),
 });
 
 // WhatsApp webhook: larger body limit + raw buffer for X-Hub-Signature-256 (must run before global json).
@@ -126,6 +127,22 @@ const razorpayWebhookJson = express.json({
 app.use("/api/razorpay/webhook", (req, res, next) => {
   if (req.method === "POST") {
     return razorpayWebhookJson(req, res, next);
+  }
+  next();
+});
+
+// LiveKit queue webhook: raw body required for HMAC-SHA256 signature verification.
+// Must run BEFORE the global 10kb JSON parser which would consume the stream without capturing rawBody.
+const queueWebhookJson = express.json({
+  limit: "64kb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+});
+
+app.use("/api/queue/webhook", (req, res, next) => {
+  if (req.method === "POST") {
+    return queueWebhookJson(req, res, next);
   }
   next();
 });
@@ -181,6 +198,9 @@ app.use((req, res, next) => {
   }
   if (req.method === "POST" && req.path === "/whatsapp/webhook") {
     return next();
+  }
+  if (req.method === "POST" && req.path === "/api/queue/webhook") {
+    return next(); // rawBody already captured by queueWebhookJson above
   }
   // Do not run express.json on multipart — it can interfere with multer reading the stream.
   const ct = req.headers["content-type"] || "";

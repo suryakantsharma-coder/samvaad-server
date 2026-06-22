@@ -427,6 +427,7 @@ const agentDef = defineAgent({
       const {
         useSamvaadVoiceLlmPipeline,
         SarvamTTS: SarvamTTSClass,
+        preferredLangToSarvamCode,
       } = require("./sarvamTts");
       const useSamvaadLlmTts = useSarvamStt && useSamvaadVoiceLlmPipeline();
 
@@ -638,6 +639,11 @@ const agentDef = defineAgent({
               ? hospitalAgent.shouldSuppressNoInputReprompt()
               : false,
           onReprompt: (info) => {
+            if (useSamvaadLlmTts && samvaadTts && info && info.lang) {
+              samvaadTts._targetLanguageCode = preferredLangToSarvamCode(
+                info.lang,
+              );
+            }
             if (callLogger) {
               callLogger.log("reprompt", {
                 reason: "no_input",
@@ -654,12 +660,9 @@ const agentDef = defineAgent({
         session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
           if (!ev || !ev.isFinal) return;
           hospitalAgent.updateLanguageFromTranscript(ev.transcript || "");
-          samvaadTts._targetLanguageCode =
-            hospitalAgent.preferredLanguage === "en"
-              ? "en-IN"
-              : hospitalAgent.preferredLanguage === "gu"
-                ? "gu-IN"
-                : "hi-IN";
+          samvaadTts._targetLanguageCode = preferredLangToSarvamCode(
+            hospitalAgent.preferredLanguage,
+          );
         });
       } else if (useSarvamStt) {
         /**

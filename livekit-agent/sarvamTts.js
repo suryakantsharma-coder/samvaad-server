@@ -16,6 +16,64 @@ function normalizeTtsMessage(raw) {
   };
 }
 
+const HINDI_SCRIPT_RE = /[\u0900-\u097F]/;
+const GUJARATI_SCRIPT_RE = /[\u0A80-\u0AFF]/;
+const LATIN_LETTER_RE = /[A-Za-z]/;
+
+/** @param {'hi'|'gu'|'en'|null|undefined} lang */
+function preferredLangToSarvamCode(lang) {
+  if (lang === "en") return "en-IN";
+  if (lang === "gu") return "gu-IN";
+  return "hi-IN";
+}
+
+/**
+ * Infer Sarvam BCP-47 code from text script. Falls back when no script is present yet.
+ * @param {string} text
+ * @param {string} [defaultCode]
+ */
+function inferSarvamTargetLanguageCode(text, defaultCode = "hi-IN") {
+  const s = String(text || "");
+  if (GUJARATI_SCRIPT_RE.test(s)) return "gu-IN";
+  if (HINDI_SCRIPT_RE.test(s)) return "hi-IN";
+  if (LATIN_LETTER_RE.test(s)) return "en-IN";
+  return defaultCode;
+}
+
+/**
+ * Sarvam rejects chunks with no characters in the configured language.
+ * @param {string} text
+ * @param {string} langCode
+ */
+function textHasAllowedLanguageChars(text, langCode) {
+  const s = String(text || "");
+  if (!s.trim()) return false;
+  if (langCode.startsWith("gu")) return GUJARATI_SCRIPT_RE.test(s);
+  if (langCode.startsWith("hi")) return HINDI_SCRIPT_RE.test(s);
+  if (langCode.startsWith("en")) return LATIN_LETTER_RE.test(s);
+  return true;
+}
+
+/** @param {SarvamTTS} tts @param {string} langCode */
+function buildSarvamConnectionConfig(tts, langCode) {
+  return {
+    target_language_code: langCode,
+    speaker: tts._speaker,
+    output_audio_codec: "linear16",
+    speech_sample_rate: tts._speechSampleRate,
+    loudness: tts._apiLoudness,
+    enable_preprocessing: false,
+    min_buffer_size: Math.max(
+      1,
+      Math.min(50, Number(process.env.SARVAM_TTS_MIN_BUFFER) || 12),
+    ),
+    max_chunk_length: Math.max(
+      30,
+      Math.min(500, Number(process.env.SARVAM_TTS_MAX_CHUNK) || 200),
+    ),
+  };
+}
+
 /**
  * Sarvam `configureConnection.loudness` — API range 0.3–3.0 (may be ignored for bulbul:v3; still sent as max).
  * @param {string | undefined} [raw]
@@ -150,30 +208,60 @@ class SarvamSynthesizeStream extends SynthesizeStream {
     ttsLog(
       "stream: WebSocket open, model=",
       tts._model,
-      "lang=",
+      "defaultLang=",
       tts._targetLanguageCode,
       "pcmGain=",
       tts._outputGain,
       "apiLoudness=",
       tts._apiLoudness,
     );
-    ttsSocket.configureConnection({
-      target_language_code: tts._targetLanguageCode,
-      speaker: tts._speaker,
-      output_audio_codec: "linear16",
-      speech_sample_rate: tts._speechSampleRate,
-      /** bulbul:v2; v3 may ignore but sending max 3.0 is harmless */
-      loudness: tts._apiLoudness,
-      enable_preprocessing: false,
-      min_buffer_size: Math.max(
-        1,
-        Math.min(50, Number(process.env.SARVAM_TTS_MIN_BUFFER) || 12),
-      ),
-      max_chunk_length: Math.max(
-        30,
-        Math.min(500, Number(process.env.SARVAM_TTS_MAX_CHUNK) || 200),
-      ),
-    });
+
+    let activeLang = tts._targetLanguageCode;
+    let configuredLang = null;
+    let accumulatedText = "";
+    let pendingConvertText = "";
+    let socketDead = false;
+
+    const ensureConfigured = (langCode) => {
+      if (socketDead) return;
+      if (configuredLang === langCode) return;
+      ttsSocket.configureConnection(buildSarvamConnectionConfig(tts, langCode));
+      configuredLang = langCode;
+      activeLang = langCode;
+      ttsLog("stream: configured lang=", langCode);
+    };
+
+    const flushPendingConvert = () => {
+      if (socketDead || !pendingConvertText) return;
+      const lang = inferSarvamTargetLanguageCode(
+        accumulatedText,
+        tts._targetLanguageCode,
+      );
+      ensureConfigured(lang);
+      if (!textHasAllowedLanguageChars(pendingConvertText, activeLang)) {
+        return;
+      }
+      ttsSocket.convert(pendingConvertText);
+      pendingConvertText = "";
+    };
+
+    const queueConvertText = (chunk) => {
+      if (socketDead) return;
+      const piece = String(chunk);
+      if (!piece) return;
+      accumulatedText += piece;
+      pendingConvertText += piece;
+      const lang = inferSarvamTargetLanguageCode(
+        accumulatedText,
+        tts._targetLanguageCode,
+      );
+      ensureConfigured(lang);
+      if (!textHasAllowedLanguageChars(pendingConvertText, activeLang)) {
+        return;
+      }
+      ttsSocket.convert(pendingConvertText);
+      pendingConvertText = "";
+    };
 
     const bstream = new AudioByteStream(tts._speechSampleRate, 1);
     const requestId = shortuuid("tts_");
@@ -221,6 +309,8 @@ class SarvamSynthesizeStream extends SynthesizeStream {
 
       if (type === "error" && data) {
         const m = (data && data.message) || "Sarvam TTS error";
+        socketDead = true;
+        ttsLog("stream API error:", m);
         this.emitError({
           error: new APIError(m, { retryable: true }),
           recoverable: true,
@@ -260,6 +350,7 @@ class SarvamSynthesizeStream extends SynthesizeStream {
     });
 
     ttsSocket.on("error", (err) => {
+      socketDead = true;
       this.emitError({
         error: err instanceof Error ? err : new Error(String(err)),
         recoverable: true,
@@ -269,17 +360,22 @@ class SarvamSynthesizeStream extends SynthesizeStream {
 
     try {
       for await (const item of this.input) {
-        if (this.abortController.signal.aborted) break;
+        if (this.abortController.signal.aborted || socketDead) break;
         if (item === SynthesizeStream.FLUSH_SENTINEL) {
+          flushPendingConvert();
+          if (socketDead) break;
           ttsSocket.flush();
           await withFinalTimeout(waitNextFinal(), 6e4);
         } else if (item) {
-          ttsSocket.convert(String(item));
+          queueConvertText(item);
         }
       }
     } catch (e) {
-      ttsLog("input loop error", e);
-      throw e;
+      if (!socketDead) {
+        ttsLog("input loop error", e);
+        throw e;
+      }
+      ttsLog("input loop stopped after socket error:", e && e.message ? e.message : e);
     } finally {
       try {
         ttsSocket.close();
@@ -330,14 +426,8 @@ class SarvamTTSChunked extends ChunkedStream {
     });
     ttsSocket.connect();
     await ttsSocket.waitForOpen();
-    ttsSocket.configureConnection({
-      target_language_code: tts._targetLanguageCode,
-      speaker: tts._speaker,
-      output_audio_codec: "linear16",
-      speech_sample_rate: tts._speechSampleRate,
-      enable_preprocessing: false,
-      loudness: tts._apiLoudness,
-    });
+    const langCode = inferSarvamTargetLanguageCode(text, tts._targetLanguageCode);
+    ttsSocket.configureConnection(buildSarvamConnectionConfig(tts, langCode));
 
     const bstream = new AudioByteStream(tts._speechSampleRate, 1);
     const requestId = shortuuid("tts_");
@@ -406,4 +496,9 @@ function useSamvaadVoiceLlmPipeline() {
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
-module.exports = { SarvamTTS, useSamvaadVoiceLlmPipeline };
+module.exports = {
+  SarvamTTS,
+  useSamvaadVoiceLlmPipeline,
+  preferredLangToSarvamCode,
+  inferSarvamTargetLanguageCode,
+};
