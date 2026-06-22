@@ -45,6 +45,18 @@ function getAutoEndStableIdleMs() {
 }
 
 /**
+ * Max time to wait for the post-booking confirmation reply to BEGIN speaking
+ * before we start measuring idle. Covers the gap between the tool returning and
+ * the Realtime model emitting the first audio of the confirmation (function-output
+ * submission + response generation latency). Without this, the idle window during
+ * that gap can satisfy the stable-idle threshold and cut the call before — or
+ * during — the confirmation. Set to 0 to disable the wait-for-speech guard.
+ */
+function getAutoEndSpeechStartMaxMs() {
+  return parseEnvMs("AGENT_AUTO_END_SPEECH_START_MAX_MS", 8000);
+}
+
+/**
  * Deletes the LiveKit room so the SIP trunk receives BYE and the caller's phone disconnects.
  * @param {string} roomName
  */
@@ -126,6 +138,32 @@ async function waitForStableAgentIdle(session, stableMs, maxMs = 180000) {
 }
 
 /**
+ * Wait until the agent LEAVES the idle/listening state — i.e. the confirmation
+ * reply has actually started (speaking/thinking). Returns true if speech started,
+ * false if it timed out or the session is closing. Used before measuring stable
+ * idle so we never hang up in the gap before the confirmation begins.
+ * @param {import('@livekit/agents').voice.AgentSession | null | undefined} session
+ * @param {number} maxMs
+ */
+async function waitForAgentSpeechStart(session, maxMs) {
+  if (!session || !(maxMs > 0)) return false;
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (session.closing) return false;
+    const st = session.agentState;
+    if (st && st !== "listening" && st !== "idle") return true;
+    await delay(50);
+  }
+  console.warn(
+    LOG_TAG,
+    "waitForAgentSpeechStart: confirmation reply did not start within",
+    maxMs,
+    "ms",
+  );
+  return false;
+}
+
+/**
  * After confirmation playout, wait until the agent is idle, then delete the room.
  * No fixed timer by default — booking may take as long as the caller needs; we only
  * hang up once the post-booking status + thank-you lines have finished playing.
@@ -144,6 +182,20 @@ async function autoEndCallAfterBooking(opts = {}) {
   const logger = opts.logger;
 
   if (session) {
+    // 1) Wait for the booking-confirmation reply to actually START speaking so we
+    //    do not measure "idle" during the gap before it begins (which would cut
+    //    the call before/during confirmation).
+    const started = await waitForAgentSpeechStart(
+      session,
+      getAutoEndSpeechStartMaxMs(),
+    );
+    if (logger && typeof logger.log === "function") {
+      logger.log("auto_end_speech_start", {
+        roomName: roomName || null,
+        confirmationStarted: started,
+      });
+    }
+    // 2) Then wait until it has finished playing (continuous idle).
     await waitForStableAgentIdle(session, getAutoEndStableIdleMs());
   }
 
@@ -354,6 +406,8 @@ module.exports = {
   endPhoneCallByDeletingRoom,
   waitForAgentSpeechIdle,
   waitForStableAgentIdle,
+  waitForAgentSpeechStart,
+  getAutoEndSpeechStartMaxMs,
   autoEndCallAfterBooking,
   autoEndCallAfterEmergency,
   scheduleAutoEndAfterBookingConfirmed,

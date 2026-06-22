@@ -26,33 +26,118 @@ const {
   isAutoEndAfterBookingEnabled,
   scheduleAutoEndAfterBookingConfirmed,
 } = require("./endPhoneCall");
-const { maybeScheduleEmergencyEndFromCallerNoted } = require("./emergencyCallEnd");
+const {
+  maybeScheduleEmergencyEndFromCallerNoted,
+} = require("./emergencyCallEnd");
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
 
 const EN_BOOKING_WAIT_LINE =
   "I'm booking that for you now — one moment, please stay on the line.";
-const HI_BOOKING_WAIT_LINE =
-  "मैं अभी बुक कर रही हूँ — एक मिनट लाइन पर रहिएगा।";
+const HI_BOOKING_WAIT_LINE = "मैं अभी बुक कर रही हूँ — एक मिनट लाइन पर रहिएगा।";
 
 /**
- * Strip Hindi/Gujarati tool copy from Realtime tool results on English calls
- * so the model does not read messageHindi aloud after booking.
+ * Exact confirmation text spoken after a successful booking.
+ * Bilingual (Hindi first, then English) so ALL callers hear confirmation
+ * regardless of detected language.
+ */
+const BOOKING_CONFIRMATION_HI =
+  "आपकी अपॉइंटमेंट सफलतापूर्वक बुक हो गई है। आपकी अपॉइंटमेंट की पूरी जानकारी आपको जल्द ही WhatsApp पर मिल जाएगी। यदि आपको समय बदलना हो, तो आप आसानी से WhatsApp के माध्यम से इसे बदल सकते हैं। धन्यवाद।";
+const BOOKING_CONFIRMATION_EN =
+  "Your appointment has been successfully booked. All details will be sent to your WhatsApp shortly. If you need to change the timing, you can easily reschedule it via WhatsApp. Thank you.";
+
+/**
+ * Build the exact text the agent must speak as its post-tool reply for a
+ * create_appointment result. The OpenAI Realtime model has no separate TTS, so
+ * the only reliable way to deliver a scripted confirmation is to put the verbatim
+ * text into the function-call output `message`: the framework generates a reply
+ * from that output (agent_activity executeTools -> realtime reply), so the model
+ * reads it aloud. We instruct it to speak word-for-word with nothing added.
+ * @param {{ ok?: boolean, appointmentUpdated?: boolean, message?: string, messageHindi?: string, messageGujarati?: string, messageEnglish?: string }} result
+ * @param {'hi'|'en'} lang
+ * @returns {string}
+ */
+function buildCreateAppointmentSpokenMessage(result, lang) {
+  const isEn = lang === "en";
+  const DEV = /[\u0900-\u097F]/;
+
+  if (result.ok && !result.appointmentUpdated) {
+    const text = isEn
+      ? BOOKING_CONFIRMATION_EN
+      : BOOKING_CONFIRMATION_HI + " " + BOOKING_CONFIRMATION_EN;
+    return (
+      "BOOKING SUCCESSFUL. The appointment is confirmed in the system. " +
+      "Speak the confirmation below to the caller as your ENTIRE reply -- word for word, " +
+      "no additions, no omissions, no rephrasing, and nothing before or after it. " +
+      "Do NOT say 'thank you for calling' or any other closing; the text below already ends the call politely:\n\n" +
+      text
+    );
+  }
+
+  if (result.ok && result.appointmentUpdated) {
+    const updEn =
+      "Your appointment has been successfully updated. All details will be sent to your WhatsApp shortly. If you need to change the timing again, you can easily reschedule it via WhatsApp. Thank you.";
+    const updHi =
+      "आपकी अपॉइंटमेंट सफलतापूर्वक अपडेट हो गई है। आपकी अपॉइंटमेंट की पूरी जानकारी आपको जल्द ही WhatsApp पर मिल जाएगी। यदि आपको दोबारा समय बदलना हो, तो आप आसानी से WhatsApp के माध्यम से इसे बदल सकते हैं। धन्यवाद।";
+    const text = isEn ? updEn : updHi + " " + updEn;
+    return (
+      "APPOINTMENT UPDATED. Speak the text below to the caller as your ENTIRE reply -- " +
+      "word for word, no additions, no omissions, and nothing before or after it. " +
+      "Do NOT add any extra closing line:\n\n" +
+      text
+    );
+  }
+
+  // Failure
+  let primary;
+  if (isEn) {
+    primary =
+      result.messageEnglish && !DEV.test(result.messageEnglish)
+        ? result.messageEnglish
+        : "We could not complete the booking right now. Please try again in a moment, or our team will reach out to you on WhatsApp.";
+  } else {
+    primary =
+      result.messageHindi ||
+      result.messageGujarati ||
+      "माफ़ कीजिए, अभी बुकिंग पूरी नहीं हो सकी। कृपया थोड़ी देर बाद दोबारा प्रयास करें, या हमारी टीम आपसे WhatsApp पर संपर्क करेगी।";
+  }
+  return (
+    "BOOKING FAILED. Calmly tell the caller in " +
+    (isEn ? "English" : "Hindi") +
+    " exactly the line below and reassure them about next steps. " +
+    "Do NOT read any technical or internal text:\n" +
+    primary
+  );
+}
+
+/**
+ * Shape Realtime tool results so the model reads the right thing aloud.
+ * For create_appointment we replace `message` with the exact scripted confirmation
+ * (see buildCreateAppointmentSpokenMessage). For other tools we strip Hindi/Gujarati
+ * copy on English calls so the model does not read it aloud.
  * @param {Record<string, unknown> | null | undefined} result
  * @param {'hi'|'gu'|'en'} lang
  * @param {string} toolName
  */
 function sanitizeToolResultForCallerLanguage(result, lang, toolName) {
-  if (!result || typeof result !== "object" || lang !== "en") return result;
+  if (!result || typeof result !== "object") return result;
   const out = { ...result };
   delete out.messageHindi;
   delete out.messageGujarati;
 
-  if (toolName === "create_appointment" && out.ok) {
-    out.message =
-      "SUCCESS — do NOT speak to the caller. The runtime already delivered the English booking confirmation and thank-you. Stay completely silent.";
+  if (toolName === "create_appointment") {
+    // The confirmation/failure line the agent speaks is built here and delivered
+    // via the framework's post-tool reply. Drop raw localized copy so the model
+    // only sees the single scripted instruction below.
+    delete out.messageEnglish;
+    out.message = buildCreateAppointmentSpokenMessage(
+      result,
+      lang === "en" ? "en" : "hi",
+    );
     return out;
   }
+
+  if (lang !== "en") return out;
 
   if (out.messageEnglish) {
     out.message = out.messageEnglish;
@@ -75,7 +160,8 @@ function sanitizeToolResultForCallerLanguage(result, lang, toolName) {
 function redactToolArgsForLog(name, args) {
   if (!args || typeof args !== "object") return {};
   const a = { ...args };
-  if (a.phoneNumber) a.phoneNumber = String(a.phoneNumber).replace(/\d(?=\d{4})/g, "*");
+  if (a.phoneNumber)
+    a.phoneNumber = String(a.phoneNumber).replace(/\d(?=\d{4})/g, "*");
   return a;
 }
 
@@ -86,14 +172,109 @@ function redactToolArgsForLog(name, args) {
 async function speakCreateAppointmentResult(agent, result) {
   if (!agent || !result || !agent.session) return;
 
+  // For success cases, use the exact required bilingual confirmation message.
+  // This avoids relying on tool-result messageHindi (which varies) and prevents
+  // the LLM from skipping the booking status and only reading the closing line.
+  if (result.ok && !result.appointmentUpdated) {
+    const logger =
+      typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
+    const lang = agent.preferredLanguage === "en" ? "en" : "hi";
+    const confirmationText =
+      lang === "en"
+        ? BOOKING_CONFIRMATION_EN
+        : BOOKING_CONFIRMATION_HI + " " + BOOKING_CONFIRMATION_EN;
+    const instructions =
+      "Appointment booked successfully. Speak WORD FOR WORD the confirmation below. " +
+      "Do NOT add anything before or after it. Do NOT say 'thank you for calling' or any extra closing. " +
+      "Do NOT skip any part. Do NOT rephrase.\n\n" +
+      confirmationText;
+    if (logger) {
+      logger.log("generate_reply", { purpose: "post_booking_status", lang });
+    }
+    try {
+      const handle = agent.session.generateReply({
+        toolChoice: "none",
+        instructions,
+      });
+      if (handle && typeof handle.waitForPlayout === "function") {
+        await handle.waitForPlayout();
+      } else if (handle && typeof handle.then === "function") {
+        await handle;
+      }
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      console.error("[Agent] post-booking generateReply error:", msg);
+      if (logger) {
+        logger.log("generate_reply_error", {
+          purpose: "post_booking_status",
+          errorMessage: msg,
+        });
+      }
+    }
+    return;
+  }
+
   const lang = agent.preferredLanguage === "en" ? "en" : "hi";
 
+  // Updated appointment path
+  if (result.ok && result.appointmentUpdated) {
+    let primary =
+      lang === "en"
+        ? result.messageEnglish ||
+          "Your appointment has been updated. Details will be sent to your WhatsApp."
+        : result.messageHindi ||
+          result.messageGujarati ||
+          result.messageEnglish ||
+          result.message;
+    if (!primary) return;
+    const hospitalName =
+      agent._hospital && agent._hospital.name
+        ? String(agent._hospital.name)
+        : "";
+    const thankYou = getThankYouLine(lang, hospitalName);
+    const langLabel = lang === "en" ? "English" : "Hindi";
+    const instructions =
+      "The appointment was updated. Speak EXACTLY the status line below in " +
+      langLabel +
+      ", then the thank-you closing line. Do NOT change wording.\nStatus: " +
+      primary +
+      "\nThank-you: " +
+      thankYou;
+    const logger =
+      typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
+    if (logger) {
+      logger.log("generate_reply", { purpose: "post_update_status", lang });
+    }
+    try {
+      const handle = agent.session.generateReply({
+        toolChoice: "none",
+        instructions,
+      });
+      if (handle && typeof handle.waitForPlayout === "function") {
+        await handle.waitForPlayout();
+      } else if (handle && typeof handle.then === "function") {
+        await handle;
+      }
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      console.error("[Agent] post-update generateReply error:", msg);
+      if (logger) {
+        logger.log("generate_reply_error", {
+          purpose: "post_update_status",
+          errorMessage: msg,
+        });
+      }
+    }
+    return;
+  }
+
+  // Failure path — tell caller what went wrong
   let primary;
   if (lang === "en") {
     primary = result.messageEnglish || null;
     if (!primary || /[\u0900-\u097F]/.test(primary)) {
       primary =
-        "Your appointment is booked. A confirmation will reach you on WhatsApp shortly.";
+        "We were unable to complete the booking. Please try again or contact the hospital.";
     }
   } else {
     primary =
@@ -102,45 +283,18 @@ async function speakCreateAppointmentResult(agent, result) {
       result.messageEnglish ||
       result.message;
   }
-
   if (!primary) return;
 
-  const hospitalName =
-    agent._hospital && agent._hospital.name ? String(agent._hospital.name) : "";
-  const thankYou = getThankYouLine(lang, hospitalName);
   const langLabel = lang === "en" ? "English" : "Hindi";
-
-  const instructions = result.ok
-    ? (result.appointmentUpdated
-        ? "The appointment was updated (ok: true). Speak EXACTLY the status line below in " +
-          langLabel +
-          ", then the thank-you closing line. Do NOT say the update failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
-          `Status: ${primary}\n` +
-          `Thank-you: ${thankYou}`
-        : "The appointment is booked (ok: true). Speak EXACTLY the booking status line below in " +
-          langLabel +
-          ", then the thank-you closing line. Do NOT say booking failed. Do NOT ask the caller to hang up or cut the call. Do NOT read internal English instructions. Do NOT change wording.\n" +
-          `Booking status: ${primary}\n` +
-          `Thank-you: ${thankYou}\n` +
-          "Speak the thank-you line as your FINAL sentence — do NOT ask if they need anything else afterward. Do NOT offer further help after the thank-you.")
-    : "Booking failed (ok: false). Speak EXACTLY the line below in " +
-      langLabel +
-      ". Explain calmly what they can do next. Do not read raw technical English.\n" +
-      `Failure line: ${primary}`;
-
+  const instructions =
+    "Booking failed (ok: false). Speak EXACTLY the line below in " +
+    langLabel +
+    ". Explain calmly what they can do next. Do not read raw technical English.\nFailure line: " +
+    primary;
   const logger =
-    agent && typeof agent.getCallLogger === "function"
-      ? agent.getCallLogger()
-      : null;
+    typeof agent.getCallLogger === "function" ? agent.getCallLogger() : null;
   if (logger) {
-    logger.log("generate_reply", {
-      purpose: result.ok
-        ? result.appointmentUpdated
-          ? "post_update_status"
-          : "post_booking_status"
-        : "post_booking_failure",
-      lang,
-    });
+    logger.log("generate_reply", { purpose: "post_booking_failure", lang });
   }
   try {
     const handle = agent.session.generateReply({
@@ -149,19 +303,20 @@ async function speakCreateAppointmentResult(agent, result) {
     });
     if (handle && typeof handle.waitForPlayout === "function") {
       await handle.waitForPlayout();
+    } else if (handle && typeof handle.then === "function") {
+      await handle;
     }
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    console.error("[Agent] post-booking generateReply error:", msg);
+    console.error("[Agent] post-booking-failure generateReply error:", msg);
     if (logger) {
       logger.log("generate_reply_error", {
-        purpose: "post_booking_status",
+        purpose: "post_booking_failure",
         errorMessage: msg,
       });
     }
   }
 }
-
 /**
  * Build LiveKit function tools from OpenAI-style definitions, backed by runHospitalTool.
  */
@@ -212,7 +367,8 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           return {
             ok: false,
             code: "EMERGENCY_NO_BOOKING",
-            message: "Emergency path — appointment booking is not allowed on this call.",
+            message:
+              "Emergency path — appointment booking is not allowed on this call.",
           };
         }
 
@@ -223,17 +379,13 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
         try {
           let result;
           try {
-            result = await runHospitalTool(
-              hospitalObjectId,
-              name,
-              mergedArgs,
-              {
-                callerPhone: callerPhone || null,
-                callBookingSlots: agent ? agent.callBookingSlots : null,
-              },
-            );
+            result = await runHospitalTool(hospitalObjectId, name, mergedArgs, {
+              callerPhone: callerPhone || null,
+              callBookingSlots: agent ? agent.callBookingSlots : null,
+            });
           } catch (toolErr) {
-            const msg = toolErr && toolErr.message ? toolErr.message : String(toolErr);
+            const msg =
+              toolErr && toolErr.message ? toolErr.message : String(toolErr);
             console.error(`[Agent] tool ${name} threw:`, msg);
             if (logger) {
               logger.log("tool_end", {
@@ -254,11 +406,15 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
               durationMs: Date.now() - toolStart,
               code: result && result.code ? String(result.code) : null,
               errorMessage:
-                result && !result.ok && result.message ? String(result.message) : null,
+                result && !result.ok && result.message
+                  ? String(result.message)
+                  : null,
               hasMessageHindi: Boolean(result && result.messageHindi),
               hasMessageGujarati: Boolean(result && result.messageGujarati),
               appointmentId:
-                result && result.appointment ? result.appointment.appointmentId : null,
+                result && result.appointment
+                  ? result.appointment.appointmentId
+                  : null,
             });
           }
 
@@ -270,7 +426,9 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
               result.patient &&
               result.patient._id
             ) {
-              agent.callBookingSlots.patientObjectId = String(result.patient._id);
+              agent.callBookingSlots.patientObjectId = String(
+                result.patient._id,
+              );
             }
             if (
               (name === "list_doctors" || name === "search_doctors") &&
@@ -312,21 +470,33 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
           }
 
           if (name === "create_appointment" && result) {
-            if (agent && result.ok && result.appointment && result.appointment._id) {
+            if (
+              agent &&
+              result.ok &&
+              result.appointment &&
+              result.appointment._id
+            ) {
               agent.callBookingSlots.appointmentObjectId = String(
                 result.appointment._id,
               );
             }
-            if (agent) {
-              await speakCreateAppointmentResult(agent, result);
-              if (
-                result.ok &&
-                isAutoEndAfterBookingEnabled() &&
-                !agent.autoEndCallStarted
-              ) {
-                agent.autoEndCallStarted = true;
-                scheduleAutoEndAfterBookingConfirmed({ agent });
-              }
+            // The spoken confirmation is delivered by the framework's post-tool
+            // reply, which reads the scripted text we put in the tool `message`
+            // (see sanitizeToolResultForCallerLanguage). We must NOT call
+            // generateReply here: at this point the function-call output has not
+            // been submitted to the Realtime session yet, so a manual reply races
+            // with — and is dropped in favour of — the framework reply, leaving
+            // the caller with no confirmation. For a successful booking we only
+            // arm the auto-hangup, which waits for that confirmation reply to
+            // finish playing before deleting the room.
+            if (
+              agent &&
+              result.ok &&
+              isAutoEndAfterBookingEnabled() &&
+              !agent.autoEndCallStarted
+            ) {
+              agent.autoEndCallStarted = true;
+              scheduleAutoEndAfterBookingConfirmed({ agent });
             }
           }
 
@@ -367,7 +537,8 @@ class HospitalVoiceAgent extends voice.Agent {
     });
     agentRef.current = this;
     this._routeUserTextThroughRealtime = routeUserTextThroughRealtime;
-    this._getCallLogger = typeof getCallLogger === "function" ? getCallLogger : null;
+    this._getCallLogger =
+      typeof getCallLogger === "function" ? getCallLogger : null;
     /** @type {'hi' | 'en'} */
     this.preferredLanguage = "hi";
     /** After first confident hi/en detection (or explicit switch), STT heuristics must not flip language mid-call. */
@@ -437,20 +608,22 @@ class HospitalVoiceAgent extends voice.Agent {
   /** Internal: small summary of captured slots (booleans only) for log lines. */
   _slotsSummaryForLog() {
     const s = this.callBookingSlots || {};
-    return [
-      s.caseType ? `case:${s.caseType}` : null,
-      s.fullName ? "name" : null,
-      s.age != null ? "age" : null,
-      s.gender ? "gender" : null,
-      s.reason ? "reason" : null,
-      s.doctorObjectId ? "doctor" : null,
-      s.appointmentDateTimeISO ? "datetime" : null,
-      s.patientObjectId ? "patient" : null,
-      s.appointmentObjectId ? "appointment" : null,
-      s.emergencyNotedConfirmed ? "emergencyNoted" : null,
-    ]
-      .filter(Boolean)
-      .join(",") || "(none)";
+    return (
+      [
+        s.caseType ? `case:${s.caseType}` : null,
+        s.fullName ? "name" : null,
+        s.age != null ? "age" : null,
+        s.gender ? "gender" : null,
+        s.reason ? "reason" : null,
+        s.doctorObjectId ? "doctor" : null,
+        s.appointmentDateTimeISO ? "datetime" : null,
+        s.patientObjectId ? "patient" : null,
+        s.appointmentObjectId ? "appointment" : null,
+        s.emergencyNotedConfirmed ? "emergencyNoted" : null,
+      ]
+        .filter(Boolean)
+        .join(",") || "(none)"
+    );
   }
 
   /**
@@ -509,7 +682,10 @@ class HospitalVoiceAgent extends voice.Agent {
     }
     const textAfter = getPlainTranscript(newMessage);
 
-    if (this._routeUserTextThroughRealtime && process.env.SARVAM_STT_DEBUG !== "0") {
+    if (
+      this._routeUserTextThroughRealtime &&
+      process.env.SARVAM_STT_DEBUG !== "0"
+    ) {
       const preview = rawBefore
         ? `"${rawBefore.slice(0, 200)}${rawBefore.length > 200 ? "…" : ""}"`
         : "(empty — reprompting caller)";
@@ -548,7 +724,9 @@ class HospitalVoiceAgent extends voice.Agent {
       try {
         this.session.generateReply({
           toolChoice: "none",
-          instructions: getEmptyInputRepromptInstructions(this.preferredLanguage),
+          instructions: getEmptyInputRepromptInstructions(
+            this.preferredLanguage,
+          ),
         });
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
@@ -596,9 +774,8 @@ class HospitalVoiceAgent extends voice.Agent {
         purpose: "user_turn",
         lang: this.preferredLanguage,
         slotsSummary: this._slotsSummaryForLog(),
-        userText: rawBefore.length > 200
-          ? `${rawBefore.slice(0, 200)}…`
-          : rawBefore,
+        userText:
+          rawBefore.length > 200 ? `${rawBefore.slice(0, 200)}…` : rawBefore,
       });
     }
 
@@ -620,12 +797,16 @@ class HospitalVoiceAgent extends voice.Agent {
       try {
         this.session.generateReply({
           toolChoice: "none",
-          instructions: getEmptyInputRepromptInstructions(this.preferredLanguage),
+          instructions: getEmptyInputRepromptInstructions(
+            this.preferredLanguage,
+          ),
         });
       } catch (fallbackErr) {
         console.warn(
           "[Agent] fallback reprompt also failed:",
-          fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr,
+          fallbackErr && fallbackErr.message
+            ? fallbackErr.message
+            : fallbackErr,
         );
       }
     }
