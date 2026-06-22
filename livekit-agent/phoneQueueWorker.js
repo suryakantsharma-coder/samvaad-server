@@ -43,6 +43,13 @@ const { parseEnvInt, parseEnvMs, parseEnvFloat } = require('./agentEnv');
 const QUEUE_AGENT_NAME = queueConfig.queueAgentName;
 const PHONE_AGENT_NAME = queueConfig.phoneAgentName;
 
+// After the transfer message finishes, wait this long so the SIP/RTP buffer
+// flushes the tail of the message to the caller before the booking agent speaks.
+const QUEUE_TRANSFER_DRAIN_MS = parseEnvMs('QUEUE_TRANSFER_DRAIN_MS', 800);
+// Fallback wait used only when TTS playout could not be confirmed, so a
+// partly-spoken transfer message is never cut off by an early dispatch.
+const QUEUE_TRANSFER_FALLBACK_MS = parseEnvMs('QUEUE_TRANSFER_FALLBACK_MS', 6000);
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -71,24 +78,50 @@ async function dispatchPhoneAgent(roomName, metadata) {
 /**
  * Build a minimal TTS-only AgentSession for playing waiting messages.
  * No STT, no LLM conversation — just speaks the text we give it.
+ *
+ * Voice config is kept consistent with the booking agent (livekit-agent/main.js
+ * uses the OpenAI Realtime model with voice "sage"), so the caller hears the same
+ * voice and tone throughout queue → booking. Defaults can be overridden via env.
+ * "sage" requires the gpt-4o-mini-tts model (tts-1 only supports the legacy voices),
+ * and that model also honours `instructions` for matching the receptionist's tone.
  */
 function buildWaitingSession() {
   return new voice.AgentSession({
     tts: new openai.TTS({
-      voice: process.env.QUEUE_TTS_VOICE || 'nova',
-      model: process.env.QUEUE_TTS_MODEL || 'tts-1',
+      voice: process.env.QUEUE_TTS_VOICE || 'sage',
+      model: process.env.QUEUE_TTS_MODEL || 'gpt-4o-mini-tts',
+      instructions:
+        process.env.QUEUE_TTS_INSTRUCTIONS ||
+        'Speak as a calm, polite, professional female hospital receptionist. ' +
+          'Warm and reassuring, clear and unhurried. Speak Hindi and English naturally.',
     }),
   });
 }
 
+/**
+ * Speak `text` and wait until the audio has FULLY played out.
+ * Returns true only if playout completed; false if say failed or no awaitable
+ * handle was returned (caller can then fall back to a timed wait before any
+ * call transfer, so we never cut a message short).
+ * @param {import('@livekit/agents').voice.AgentSession} session
+ * @param {string} text
+ * @returns {Promise<boolean>}
+ */
 async function saySafe(session, text) {
   try {
     const handle = session.say(text);
     if (handle && typeof handle.waitForPlayout === 'function') {
       await handle.waitForPlayout();
+      return true;
     }
+    if (handle && typeof handle.then === 'function') {
+      await handle;
+      return true;
+    }
+    return false;
   } catch (err) {
     console.warn('[Queue Worker] TTS say failed:', err && err.message ? err.message : err);
+    return false;
   }
 }
 
@@ -230,10 +263,23 @@ const agentDef = defineAgent({
 
       // ── Slot acquired after wait ─────────────────────────────────────────
       console.log(`[Queue Worker] Slot acquired after wait — dispatching ${PHONE_AGENT_NAME} → room: ${roomName}`);
-      // Stop hold music before playing connecting message so it's crystal clear
+      // Stop hold music before the transfer message so it's crystal clear.
       if (holdAudio) { await holdAudio.stop(); holdAudio = null; }
-      await saySafe(session, queueAudio.getConnectingMessage('hi'));
-      await sleep(1500);
+
+      // Play the FULL bilingual transfer message and wait for TTS playout to
+      // complete BEFORE dispatching the booking agent. Transferring while this
+      // message is still playing cuts it off, so the dispatch is strictly gated
+      // behind playout completion.
+      const transferSpoken = await saySafe(session, queueAudio.getTransferMessage());
+      if (!transferSpoken) {
+        // saySafe could not confirm playout (no awaitable handle / say failed).
+        // Fall back to a timed wait so a partly-spoken message is not cut off.
+        console.warn('[Queue Worker] Transfer message playout not confirmed — using timed fallback wait');
+        await sleep(QUEUE_TRANSFER_FALLBACK_MS);
+      }
+      // Small extra drain so the SIP/RTP buffer flushes the message tail to the
+      // caller before the booking agent starts speaking.
+      await sleep(QUEUE_TRANSFER_DRAIN_MS);
 
       // Dispatch first — THEN close the session and release slot on disconnect.
       // Closing the session before dispatch races the room teardown.
@@ -328,7 +374,8 @@ console.log(
 console.log(
   `[Queue Worker] Dispatches to: ${PHONE_AGENT_NAME}`,
   '| Env: QUEUE_AGENT_NAME, PHONE_AGENT_NAME, QUEUE_MAX_CONCURRENT_CALLS,',
-  'QUEUE_MAX_SIZE, QUEUE_TIMEOUT_MS, QUEUE_TTS_VOICE, QUEUE_TTS_MODEL',
+  'QUEUE_MAX_SIZE, QUEUE_TIMEOUT_MS, QUEUE_TTS_VOICE, QUEUE_TTS_MODEL,',
+  'QUEUE_TTS_INSTRUCTIONS, QUEUE_TRANSFER_DRAIN_MS, QUEUE_TRANSFER_FALLBACK_MS',
 );
 
 cli.runApp(

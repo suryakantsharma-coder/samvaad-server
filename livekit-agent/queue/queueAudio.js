@@ -44,6 +44,20 @@ const CONNECTING = {
   en: 'Thank you for waiting. Connecting you to an agent now.',
 };
 
+/**
+ * Transfer message — spoken IN FULL right before the call is handed to the
+ * booking agent. Bilingual: Hindi first, then English. The dispatch must wait
+ * until this has finished playing (see phoneQueueWorker wait path).
+ */
+const TRANSFER = {
+  hi: 'प्रतीक्षा करने के लिए धन्यवाद। अब हम आपकी कॉल हमारे एजेंट से जोड़ रहे हैं।',
+  en: 'Thank you for your patience. We are now connecting your call to our agent.',
+};
+
+function getTransferMessage() {
+  return `${TRANSFER.hi} ${TRANSFER.en}`;
+}
+
 const TIMEOUT = {
   hi: 'क्षमा करें, अभी हम आपकी call नहीं ले पा रहे हैं। कृपया कुछ समय बाद call करें।',
   en: 'We are sorry, we are unable to take your call right now. Please call again later.',
@@ -91,6 +105,7 @@ module.exports = {
   getReassuranceMessage,
   getWaitingMessage,
   getConnectingMessage,
+  getTransferMessage,
   getTimeoutMessage,
   getQueueFullMessage,
   getPositionMessage,
