@@ -40,9 +40,14 @@ module.exports = {
         LIVEKIT_NUM_IDLE_PROCESSES: "1",
         LIVEKIT_INIT_PROCESS_TIMEOUT_MS: "45000",
         LIVEKIT_LOAD_THRESHOLD: "0.85",
-        SARVAM_STT_STREAMING: "1",
+        // Batch REST STT (streaming WS endpoint rejects saaras:v3). Set "1" only
+        // after configuring a streaming model your Sarvam account supports.
+        SARVAM_STT_STREAMING: "0",
         AGENT_COMPACT_HOSPITAL_PROMPT: "1",
         AGENT_SKIP_POSTCALL_IF_BOOKED: "1",
+        // Quiet the LiveKit framework's info-level pino logs in production.
+        // Use "info" or "debug" locally to see everything.
+        LOG_LEVEL: "warn",
       },
     },
     {
@@ -59,6 +64,7 @@ module.exports = {
         QUEUE_NUM_IDLE_PROCESSES: "1",
         LIVEKIT_INIT_PROCESS_TIMEOUT_MS: "45000",
         LIVEKIT_LOAD_THRESHOLD: "0.85",
+        LOG_LEVEL: "warn",
       },
     },
     {

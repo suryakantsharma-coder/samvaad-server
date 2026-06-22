@@ -894,6 +894,9 @@ const agentDef = defineAgent({
 module.exports = agentDef;
 
 console.log("[LiveKit Agent] Starting worker, agent name:", AGENT_NAME);
+// Verbose startup/help banner: shown in development (or when
+// AGENT_VERBOSE_CONNECTION_LOGS=1), suppressed in production to keep logs clean.
+if (isVerboseConnectionLogs()) {
 console.log(
   "[LiveKit Agent] Worker pool: LIVEKIT_NUM_IDLE_PROCESSES=" +
     parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 1) +
@@ -943,6 +946,7 @@ if (useSarvamStt && !process.env.USE_SAMVAAD_VOICE_LLM) {
     "[LiveKit Agent] Realtime output loudness: default OPENAI_REALTIME_OUTPUT_PCM_GAIN=1.85 (empty env). Override: OPENAI_REALTIME_OUTPUT_PCM_GAIN=2.5, or LIVEKIT_AGENT_OUTPUT_PCM_GAIN=2 (all voice pipelines). See startup log after each job for applied gain.",
   );
 }
+} // end verbose startup banner (isVerboseConnectionLogs)
 cli.runApp(
   new ServerOptions({
     agent: __filename,
