@@ -7,12 +7,56 @@ const env = require('../config/env');
 
 const SLOTS = ['breakfast', 'lunch', 'dinner'];
 
-/** Local wall-clock times for each slot (production, Asia/Kolkata via process TZ). */
-const SLOT_HOURS = {
-  breakfast: { hour: 9, minute: 0, second: 0, ms: 0 },
-  lunch: { hour: 14, minute: 0, second: 0, ms: 0 },
-  dinner: { hour: 20, minute: 0, second: 0, ms: 0 },
-};
+/**
+ * Parse a meal-time env value into a wall-clock {hour, minute}.
+ * Accepts a window "HH:MM-HH:MM" (uses the START of the window) or a single "HH:MM".
+ * Falls back to `fallback` when the value is missing/invalid.
+ * @param {string} value
+ * @param {{hour:number, minute:number}} fallback
+ * @returns {{ hour: number, minute: number, second: number, ms: number }}
+ */
+function parseSlotTime(value, fallback) {
+  const raw = String(value || '').trim();
+  const start = raw.includes('-') ? raw.split('-')[0].trim() : raw;
+  const m = start.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) {
+    const hour = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return { hour, minute, second: 0, ms: 0 };
+    }
+  }
+  return { hour: fallback.hour, minute: fallback.minute, second: 0, ms: 0 };
+}
+
+/**
+ * Wall-clock times for each slot, configurable via BREAKFAST_TIME / LUNCH_TIME /
+ * DINNER_TIME (window "HH:MM-HH:MM" → fires at START). Times are in the process
+ * timezone (set from REMINDER_TIMEZONE at startup; default Asia/Kolkata).
+ * Read fresh each call so env changes/tests are reflected without re-import.
+ * @returns {{ breakfast: object, lunch: object, dinner: object }}
+ */
+function getSlotHours() {
+  return {
+    breakfast: parseSlotTime(env.BREAKFAST_TIME, { hour: 8, minute: 0 }),
+    lunch: parseSlotTime(env.LUNCH_TIME, { hour: 13, minute: 0 }),
+    dinner: parseSlotTime(env.DINNER_TIME, { hour: 20, minute: 0 }),
+  };
+}
+
+/** Static snapshot for backward-compatible imports; live values come from getSlotHours(). */
+const SLOT_HOURS = getSlotHours();
+
+/**
+ * Global reminder scheduler switch (REMINDER_SYSTEM_ENABLED). Default ON; only
+ * an explicit "0"/"false"/"off"/"no" disables it.
+ * @returns {boolean}
+ */
+function isReminderSystemEnabled() {
+  const v = String(env.REMINDER_SYSTEM_ENABLED || '').trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+  return true;
+}
 
 /**
  * Test mode: each logical "day" lasts TEST_DAY_SPACING_MS; slots fall in the first ~50 minutes of that window.
@@ -81,7 +125,7 @@ function getScheduledDateTimeForSlot(anchorDate, dayOffset, slot, scheduleRefere
   const start = getStartOfLocalDay(anchorDate);
   const t = new Date(start.getTime());
   t.setDate(t.getDate() + dayOffset);
-  const parts = SLOT_HOURS[slot];
+  const parts = getSlotHours()[slot];
   if (!parts) {
     throw new Error(`Invalid slot: ${slot}`);
   }
@@ -194,6 +238,9 @@ function getFeedbackScheduledAt(
 module.exports = {
   SLOTS,
   SLOT_HOURS,
+  getSlotHours,
+  parseSlotTime,
+  isReminderSystemEnabled,
   TEST_DAY_SPACING_MS,
   TEST_SLOT_MINUTES_FROM_DAY_START,
   isReminderTestMode,

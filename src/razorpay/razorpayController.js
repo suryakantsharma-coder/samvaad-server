@@ -3,7 +3,7 @@ const env = require("../config/env");
 const { upsertFromRazorpayWebhook } = require("../services/paymentHistory.service");
 const { upsertPaymentTransactionFromWebhook } = require("../services/paymentTransactionWebhook.service");
 const { tryBookVideoCallOnPaymentCaptured } = require("../services/razorpayAppointmentBooking.service");
-const { notifyAppointmentBooked } = require("../services/appointmentWhatsAppNotify");
+const { enqueueAppointmentConfirmation } = require("../services/appointmentConfirmationDispatch");
 const { getRazorpayInstance } = require("./client");
 const { verifyRazorpayWebhookSignature } = require("./verifyWebhookSignature");
 
@@ -379,12 +379,10 @@ const webhook = async (req, res) => {
         storedPaymentHistory
       );
       if (populated) {
-        notifyAppointmentBooked(populated).catch((err) =>
-          console.error(
-            "[Razorpay webhook] WhatsApp notify:",
-            err.message,
-            err.details || ""
-          )
+        // Reliable confirmation: queued with retry (falls back to direct send if Redis is down).
+        enqueueAppointmentConfirmation(populated._id, { kind: "created" }).catch(
+          (err) =>
+            console.error("[Razorpay webhook] WhatsApp dispatch:", err.message)
         );
         if (verbose) {
           console.log(

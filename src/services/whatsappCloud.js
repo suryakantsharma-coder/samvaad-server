@@ -83,10 +83,19 @@ async function graphSendMessages({ phoneNumberId, accessToken, payload, apiVersi
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data.error?.message || `WhatsApp API HTTP ${res.status}`;
+    // Meta nests the actionable reason under error.error_data.details
+    // (e.g. "number of parameters does not match"). Surface it in the message.
+    const nestedDetail =
+      data.error?.error_data?.details ||
+      (Array.isArray(data.error?.error_data)
+        ? data.error.error_data[0]?.details
+        : "");
+    const baseMsg = data.error?.message || `WhatsApp API HTTP ${res.status}`;
+    const msg = nestedDetail ? `${baseMsg} — ${nestedDetail}` : baseMsg;
     const err = new Error(msg);
     err.status = res.status;
     err.details = data;
+    err.apiDetail = nestedDetail || null;
     throw err;
   }
   return data;

@@ -11,14 +11,26 @@ require('dotenv').config({
   path: path.resolve(__dirname, '..', '..', '.env'),
 });
 
+// Keep reminder slot wall-clock times in the configured timezone.
+if (!process.env.TZ) {
+  process.env.TZ = (process.env.REMINDER_TIMEZONE || 'Asia/Kolkata').trim();
+}
+
 const connectDB = require('../config/db');
 const { startReminderWorker, stopReminderWorker } = require('./reminder.worker');
 const {
   startDoctorHolidayWorker,
   stopDoctorHolidayWorker,
 } = require('./doctorHoliday.worker');
+const {
+  startAppointmentConfirmationWorker,
+  stopAppointmentConfirmationWorker,
+} = require('./appointmentConfirmation.worker');
 const { closeReminderQueue } = require('../queues/reminder.queue');
 const { closeDoctorHolidayQueue } = require('../queues/doctorHoliday.queue');
+const {
+  closeAppointmentConfirmationQueue,
+} = require('../queues/appointmentConfirmation.queue');
 
 let exiting = false;
 
@@ -37,6 +49,11 @@ async function graceful(signal) {
     console.error('[DoctorHoliday] Worker stop error:', err.message);
   }
   try {
+    await stopAppointmentConfirmationWorker();
+  } catch (err) {
+    console.error('[ApptConfirm] Worker stop error:', err.message);
+  }
+  try {
     await closeReminderQueue();
   } catch (err) {
     console.error('[Reminder] Queue close error:', err.message);
@@ -45,6 +62,11 @@ async function graceful(signal) {
     await closeDoctorHolidayQueue();
   } catch (err) {
     console.error('[DoctorHoliday] Queue close error:', err.message);
+  }
+  try {
+    await closeAppointmentConfirmationQueue();
+  } catch (err) {
+    console.error('[ApptConfirm] Queue close error:', err.message);
   }
   process.exit(0);
 }
@@ -60,11 +82,12 @@ connectDB()
       process.exit(1);
     }
     const h = await startDoctorHolidayWorker();
-    if (h) {
-      console.log('[Reminder] Standalone workers ready (reminders + doctor holidays)');
-    } else {
-      console.warn('[Reminder] Doctor holiday worker did not start (see logs). Reminders only.');
-    }
+    const c = await startAppointmentConfirmationWorker();
+    console.log('[Reminder] Standalone workers ready', {
+      reminders: true,
+      doctorHolidays: Boolean(h),
+      appointmentConfirmations: Boolean(c),
+    });
   })
   .catch((err) => {
     console.error('[Reminder] Startup failed:', err);

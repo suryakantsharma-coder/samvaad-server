@@ -7,6 +7,9 @@ const AppointmentModel = require("../models/appointment.model");
 const DoctorModel = require("../models/doctor.model");
 const PatientModel = require("../models/patient.model");
 const {
+  enqueueAppointmentConfirmation,
+} = require("../services/appointmentConfirmationDispatch");
+const {
   parseAppointmentDateTimeAsIST,
   formatInstantAsISTIso,
   normalizeAppointmentDateTimeISOForBooking,
@@ -161,6 +164,34 @@ async function countPatientsInHourSlot(
     null,
   );
   return counts.get(hourBucketStartMinIST(dt)) || 0;
+}
+
+/**
+ * Trigger the WhatsApp confirmation for an appointment booked by the voice agent.
+ * The API and Razorpay paths enqueue the same confirmation; the agent's
+ * create_appointment tool previously did NOT, so agent-booked appointments never
+ * received a WhatsApp confirmation.
+ *
+ * Routes through the reliable queue (retry + persistence; falls back to a direct
+ * send if Redis is down). Non-blocking — never delays or fails the voice flow.
+ * Hospital messaging permissions and WhatsApp creds are enforced downstream.
+ * @param {string} appointmentMongoId
+ * @param {'created'|'rescheduled'} kind
+ * @param {string|null} [fallbackPhone] caller/session number — used only if the patient has no phone
+ */
+function triggerAgentAppointmentWhatsApp(appointmentMongoId, kind, fallbackPhone) {
+  if (!appointmentMongoId) return;
+  Promise.resolve()
+    .then(() =>
+      enqueueAppointmentConfirmation(appointmentMongoId, { kind, fallbackPhone }),
+    )
+    .catch((err) => {
+      console.error(
+        logTag,
+        "[create_appointment] WhatsApp confirmation dispatch failed:",
+        err && err.message ? err.message : err,
+      );
+    });
 }
 
 function buildCreateAppointmentSuccessResult({
@@ -880,6 +911,13 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           }),
         );
 
+        // Reschedule confirmed → resend the updated details on WhatsApp.
+        triggerAgentAppointmentWhatsApp(
+          String(updatedDoc._id),
+          "rescheduled",
+          effectiveSessionPhone10(options),
+        );
+
         return buildCreateAppointmentSuccessResult({
           appointmentDoc: updatedDoc,
           doctorName: doctorNameU,
@@ -1093,6 +1131,13 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
           slotCapacity,
           durationMs: Date.now() - startedAt,
         }),
+      );
+      // Send the WhatsApp appointment confirmation for this agent booking.
+      // Fall back to the caller's session number if the patient record has no phone.
+      triggerAgentAppointmentWhatsApp(
+        String(appointment._id),
+        "created",
+        effectiveSessionPhone10(options),
       );
       return buildCreateAppointmentSuccessResult({
         appointmentDoc: appointment,

@@ -11,7 +11,7 @@ const {
   istTomorrowRange,
 } = require('../utils/queryDateRange');
 const { generateAppointmentId } = require('../utils/appointmentId');
-const { notifyAppointmentBooked } = require('../services/appointmentWhatsAppNotify');
+const { enqueueAppointmentConfirmation } = require('../services/appointmentConfirmationDispatch');
 const { findHolidayCoveringYmd, toYyyyMmDdLocal } = require('../utils/doctorHoliday');
 
 const DEFAULT_PAGE = 1;
@@ -347,8 +347,9 @@ const create = async (req, res, next) => {
 
     res.status(201).json({ success: true, data: { appointment: populated } });
 
-    notifyAppointmentBooked(populated).catch((err) =>
-      console.error('[WhatsApp] appointment booked notify:', err.message, err.details || '')
+    // Reliable confirmation: queued with retry (falls back to direct send if Redis is down).
+    enqueueAppointmentConfirmation(populated._id, { kind: 'created' }).catch((err) =>
+      console.error('[WhatsApp] appointment booked dispatch:', err.message)
     );
   } catch (err) {
     next(err);

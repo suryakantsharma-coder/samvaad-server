@@ -13,6 +13,10 @@ const {
   stopDoctorHolidayWorker,
 } = require('./src/workers/doctorHoliday.worker');
 const {
+  startAppointmentConfirmationWorker,
+  stopAppointmentConfirmationWorker,
+} = require('./src/workers/appointmentConfirmation.worker');
+const {
   startHourlyPayoutCron,
   stopHourlyPayoutCron,
 } = require('./src/cron/hourlyPayout/hourlyPayoutCron');
@@ -22,6 +26,9 @@ const {
 } = require('./src/cron/exotel/exotelMonthlySyncCron');
 const { closeReminderQueue } = require('./src/queues/reminder.queue');
 const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
+const {
+  closeAppointmentConfirmationQueue,
+} = require('./src/queues/appointmentConfirmation.queue');
 
 let shuttingDown = false;
 
@@ -38,6 +45,11 @@ async function shutdown(signal) {
     await stopDoctorHolidayWorker();
   } catch (err) {
     console.error('[Samvaad] Doctor holiday worker stop:', err.message);
+  }
+  try {
+    await stopAppointmentConfirmationWorker();
+  } catch (err) {
+    console.error('[Samvaad] Appointment confirmation worker stop:', err.message);
   }
   try {
     stopHourlyPayoutCron();
@@ -58,6 +70,11 @@ async function shutdown(signal) {
     await closeDoctorHolidayQueue();
   } catch (err) {
     console.error('[Samvaad] Doctor holiday queue close:', err.message);
+  }
+  try {
+    await closeAppointmentConfirmationQueue();
+  } catch (err) {
+    console.error('[Samvaad] Appointment confirmation queue close:', err.message);
   }
   stopLiveKitWorker();
   stopQueueWorker();
@@ -92,6 +109,7 @@ const start = async () => {
     /* For multiple worker processes: set REMINDER_WORKER_DISABLED=1 here and run `npm run reminder-worker`. */
     await startReminderWorker();
     await startDoctorHolidayWorker();
+    await startAppointmentConfirmationWorker();
     console.log('[Samvaad] Starting hourly payout cron…');
     startHourlyPayoutCron();
     console.log('[Samvaad] Starting Exotel monthly sync cron…');

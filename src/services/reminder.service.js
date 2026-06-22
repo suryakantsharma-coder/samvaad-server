@@ -6,6 +6,7 @@ const {
   computeDelayMs,
   getFeedbackScheduledAt,
   isReminderTestMode,
+  isReminderSystemEnabled,
 } = require('../utils/time.util');
 
 const JOB_SEND_REMINDER = 'send-reminder';
@@ -83,6 +84,14 @@ function compactMedicineForJob(medicine) {
  * @returns {Promise<{ reminderJobs: number, feedbackScheduled: boolean }>}
  */
 async function schedulePrescriptionReminders(prescription) {
+  if (!isReminderSystemEnabled()) {
+    console.log(
+      '[Reminder] Skipping schedule: REMINDER_SYSTEM_ENABLED is off',
+      String(prescription && prescription._id),
+    );
+    return { reminderJobs: 0, feedbackScheduled: false };
+  }
+
   const queue = getReminderQueue();
   const followUpVal = prescription.followUp && typeof prescription.followUp.value === 'number'
     ? prescription.followUp.value

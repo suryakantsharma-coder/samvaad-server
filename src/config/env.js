@@ -98,6 +98,13 @@ const env = {
     (process.env.APPOINTMENT_TEMPLATE_NAME || "").trim() ||
     (process.env.WHATSAPP_APPOINTMENT_TEMPLATE_NAME || "").trim(),
   APPOINTMENT_TEMPLATE_LANG: process.env.APPOINTMENT_TEMPLATE_LANG || "en_US",
+  /**
+   * Appointment template body parameter format: "named" ({{patient_name}}, {{appointment_datetime}}, …) or
+   * "positional" ({{1}}, {{2}}, …). Must match how the Meta template was created;
+   * a mismatch causes "(#100) Invalid parameter". Default "named".
+   */
+  APPOINTMENT_TEMPLATE_PARAM_FORMAT:
+    (process.env.APPOINTMENT_TEMPLATE_PARAM_FORMAT || "named").trim().toLowerCase(),
   /** prescription_created_message — patient_name, doctor_name, prescription_link, hospital_name */
   PRESCRIPTION_TEMPLATE_NAME: (process.env.PRESCRIPTION_TEMPLATE_NAME || "").trim(),
   PRESCRIPTION_TEMPLATE_LANG: process.env.PRESCRIPTION_TEMPLATE_LANG || "en_US",
@@ -159,6 +166,21 @@ const env = {
    * and each follow-up day is 1 hour apart (good for local testing). Leave unset in production.
    */
   REMINDER_TEST_MODE: process.env.REMINDER_TEST_MODE || "",
+  /**
+   * Global kill-switch for the medicine reminder scheduler. Default ON.
+   * Set to "0"/"false"/"off"/"no" to stop scheduling new reminder jobs system-wide
+   * (independent of the per-hospital `medicinesReminder` setting, which still applies).
+   */
+  REMINDER_SYSTEM_ENABLED: (process.env.REMINDER_SYSTEM_ENABLED || "").trim(),
+  /** IANA timezone for reminder wall-clock slot times. Applied to process.env.TZ at startup. */
+  REMINDER_TIMEZONE: (process.env.REMINDER_TIMEZONE || "Asia/Kolkata").trim(),
+  /**
+   * Daily meal reminder windows, "HH:MM-HH:MM" (the reminder fires at the window START)
+   * or a single "HH:MM". Defaults match the product spec.
+   */
+  BREAKFAST_TIME: (process.env.BREAKFAST_TIME || "08:00-09:00").trim(),
+  LUNCH_TIME: (process.env.LUNCH_TIME || "13:00-14:00").trim(),
+  DINNER_TIME: (process.env.DINNER_TIME || "20:00-21:00").trim(),
   /**
    * WhatsAPI (self-hosted) outbound — when all three are set, the chat agent sends replies via WhatsAPI
    * instead of Meta Cloud Graph. @see https://whatsapi-docs.vercel.app/docs/sending-messages
