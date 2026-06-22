@@ -36,6 +36,8 @@ const {
   formatHourSlotLabelForVoice,
   loadHourBucketCounts,
   hourBucketStartMinIST,
+  isHourBucketWithinAvailability,
+  isSundayIST,
 } = require("../utils/bookingSlotRules");
 const {
   resolveHourBucketCapacity,
@@ -116,6 +118,157 @@ function buildBookingSuccessVoiceMessages(
     messageHindi: `मैंने आपकी अपॉइंटमेंट बुक कर ली है। अपॉइंटमेंट नंबर: ${appointmentId}। डॉ. ${doctorName}, ${slotHi}।${sharedNoteHi} थोड़ी देर में WhatsApp पर पुष्टि आ जाएगी। अगर बाद में अपॉइंटमेंट का समय बदलवाना हो तो WhatsApp पर संपर्क करें।`,
     messageGujarati: `મેં તમારી મુલાકાત બુક કરી દીધી છે. રેફરન્સ નંબર ${appointmentId}. ડૉ. ${doctorName}, ${slotGu}.${sharedNoteGu} થોડી વારમાં WhatsApp પર વિગત મળી જશે. અગર મુલાકાતનો સમય બદલાવવો હોય તો WhatsApp પર સંપર્ક કરજો.`,
     messageEnglish: `Your appointment is booked. Reference number ${appointmentId}. Dr. ${doctorName}, ${slotEn}.${sharedNoteEn} A confirmation will reach you on WhatsApp shortly. To reschedule later, contact us on WhatsApp.`,
+  };
+}
+
+const SLOT_HOUR_MINUTES = 60;
+const IST_OFFSET = "+05:30";
+
+/** Conversational 12-hour slot label, e.g. 15 → "3–4 PM" (never 24h). */
+function shortHourSlotLabelEN(startHour) {
+  const to12 = (h) => {
+    const period = h % 24 < 12 ? "AM" : "PM";
+    let hh = h % 12;
+    if (hh === 0) hh = 12;
+    return { hh, period };
+  };
+  const s = to12(startHour);
+  const e = to12(startHour + 1);
+  return s.period === e.period
+    ? `${s.hh}–${e.hh} ${s.period}`
+    : `${s.hh} ${s.period}–${e.hh} ${e.period}`;
+}
+
+/** YYYY-MM-DD that is `addDays` after `ymd`, in IST. */
+function addDaysToYmdIST(ymd, addDays) {
+  const startMs = new Date(`${ymd}T00:00:00.000${IST_OFFSET}`).getTime();
+  return formatCalendarDateIST(new Date(startMs + addDays * 24 * 60 * 60 * 1000));
+}
+
+/** Long IST label for a day, e.g. "Monday, 23 June". */
+function dayLabelIST(ymd) {
+  const d = new Date(`${ymd}T12:00:00.000${IST_OFFSET}`);
+  return new Intl.DateTimeFormat("en-IN", {
+    timeZone: IST,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(d);
+}
+
+/**
+ * Open future appointment slots for ONE doctor on ONE IST day:
+ *   doctor working hours  −  past hour-buckets (vs server `now`)  −  full buckets.
+ * Capacity is per-doctor (resolveHourBucketCapacity), matching create_appointment.
+ * @returns {Promise<{ slots: { startHour:number, isoStart:string, labelEnglish:string }[], availabilityLabel:string }>}
+ */
+async function computeOpenSlotsForDay({
+  hospitalObjectId,
+  doctorObjectId,
+  doctor,
+  ymd,
+  now,
+}) {
+  const win = parseDoctorAvailabilityWindow(doctor && doctor.availability);
+  const capacity = resolveHourBucketCapacity(doctor);
+  const counts = await loadHourBucketCounts(
+    hospitalObjectId,
+    doctorObjectId,
+    ymd,
+    null,
+  );
+  const todayYmd = formatCalendarDateIST(now);
+  const slots = [];
+  for (
+    let bucket = 0;
+    bucket < 24 * SLOT_HOUR_MINUTES;
+    bucket += SLOT_HOUR_MINUTES
+  ) {
+    if (!isHourBucketWithinAvailability(bucket, win.ranges)) continue; // inside doctor hours
+    if ((counts.get(bucket) || 0) >= capacity) continue; // not already full
+    const startHour = bucket / SLOT_HOUR_MINUTES;
+    const iso = `${ymd}T${String(startHour).padStart(2, "0")}:00:00${IST_OFFSET}`;
+    const start = parseAppointmentDateTimeAsIST(iso);
+    if (!start || Number.isNaN(start.getTime())) continue;
+    // Future only: a slot that starts at or before "now" has already begun/passed,
+    // so the earliest offerable slot today starts at the next full clock hour.
+    if (ymd === todayYmd && start.getTime() <= now.getTime()) continue;
+    slots.push({ startHour, isoStart: iso, labelEnglish: shortHourSlotLabelEN(startHour) });
+  }
+  return { slots, availabilityLabel: win.label };
+}
+
+/**
+ * list_available_slots tool: returns the doctor's open future slots for a date.
+ * If the requested date (default today) has none, auto-advances to the next
+ * working day (skipping Sundays and the doctor's leave/holidays), up to 8 days.
+ */
+async function listAvailableSlots(hospitalObjectId, args, now = new Date()) {
+  const rawId = String(args.doctorObjectId || "").trim();
+  if (!mongoose.isValidObjectId(rawId)) {
+    return {
+      ok: false,
+      code: "INVALID_DOCTOR_REF",
+      message:
+        "Need a valid doctorObjectId. Call list_doctors first and reuse the id from the chosen doctor's line.",
+    };
+  }
+  const doctor = await DoctorModel.findOne({
+    _id: rawId,
+    hospital: hospitalObjectId,
+  }).lean();
+  if (!doctor) {
+    return {
+      ok: false,
+      code: "DOCTOR_NOT_FOUND",
+      message: "Doctor not found for this hospital. Use list_doctors to pick a valid doctor.",
+    };
+  }
+
+  const todayYmd = formatCalendarDateIST(now);
+  let baseYmd = String(args.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(baseYmd)) baseYmd = todayYmd;
+
+  for (let i = 0; i < 8; i += 1) {
+    const ymd = addDaysToYmdIST(baseYmd, i);
+    const probe = new Date(`${ymd}T12:00:00.000${IST_OFFSET}`);
+    if (isSundayIST(probe)) continue; // no Sunday bookings
+    if (findHolidayCoveringYmdIST(doctor.holidays || [], ymd)) continue; // on leave
+    const { slots, availabilityLabel } = await computeOpenSlotsForDay({
+      hospitalObjectId,
+      doctorObjectId: rawId,
+      doctor,
+      ymd,
+      now,
+    });
+    if (slots.length > 0) {
+      const movedToNextDay = ymd !== baseYmd;
+      const list = slots.map((s) => s.labelEnglish).join(", ");
+      const dayLabel = dayLabelIST(ymd);
+      const messageEnglish = movedToNextDay
+        ? `No slots remain for ${dayLabelIST(baseYmd)}. The next available day for Dr. ${doctor.fullName} is ${dayLabel}: ${list}. Offer these and confirm one.`
+        : `Open slots for Dr. ${doctor.fullName} on ${dayLabel}: ${list}. Offer ONLY these and confirm one.`;
+      return {
+        ok: true,
+        doctorName: doctor.fullName,
+        availability: availabilityLabel,
+        date: ymd,
+        movedToNextDay,
+        requestedDate: baseYmd,
+        slots,
+        message: messageEnglish,
+        messageEnglish,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    doctorName: doctor.fullName,
+    date: baseYmd,
+    slots: [],
+    noSlots: true,
+    message: `No open slots for Dr. ${doctor.fullName} in the next several working days. Suggest contacting the hospital or trying another doctor.`,
   };
 }
 
@@ -610,6 +763,10 @@ async function runHospitalTool(hospitalObjectId, name, args, options = {}) {
         averagePatientTime: d.averagePatientTime,
       }));
       return { ok: true, doctors: doctorsPayload };
+    }
+
+    if (name === "list_available_slots") {
+      return await listAvailableSlots(hospitalObjectId, args || {});
     }
 
     if (name === "create_appointment") {

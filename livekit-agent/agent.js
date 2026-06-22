@@ -57,33 +57,49 @@ const BOOKING_CONFIRMATION_EN =
  * @param {'hi'|'en'} lang
  * @returns {string}
  */
-function buildCreateAppointmentSpokenMessage(result, lang) {
+function buildCreateAppointmentSpokenMessage(result, lang, hospitalName) {
   const isEn = lang === "en";
   const DEV = /[\u0900-\u097F]/;
+  // Closing thank-you spoken as the FINAL sentence, e.g.
+  // "Thank you for calling <Hospital>." / "<Hospital> ko call karne ke liye dhanyavaad."
+  const thankYou = getThankYouLine(isEn ? "en" : "hi", hospitalName);
 
   if (result.ok && !result.appointmentUpdated) {
-    const text = isEn
-      ? BOOKING_CONFIRMATION_EN
-      : BOOKING_CONFIRMATION_HI + " " + BOOKING_CONFIRMATION_EN;
+    // Speak the slot-aware success line built by the booking tool
+    // (buildBookingSuccessVoiceMessages: appointment number, doctor, slot,
+    // WhatsApp confirmation + reschedule note). Fall back to the generic
+    // scripted line only if the tool did not provide one.
+    const body = isEn
+      ? result.messageEnglish && !DEV.test(result.messageEnglish)
+        ? result.messageEnglish
+        : BOOKING_CONFIRMATION_EN
+      : result.messageHindi || BOOKING_CONFIRMATION_HI;
+    const text = thankYou ? `${body} ${thankYou}` : body;
     return (
       "BOOKING SUCCESSFUL. The appointment is confirmed in the system. " +
-      "Speak the confirmation below to the caller as your ENTIRE reply -- word for word, " +
+      "Speak the text below to the caller as your ENTIRE reply -- word for word, " +
       "no additions, no omissions, no rephrasing, and nothing before or after it. " +
-      "Do NOT say 'thank you for calling' or any other closing; the text below already ends the call politely:\n\n" +
+      "The thank-you line at the end must be your FINAL sentence; say nothing after it:\n\n" +
       text
     );
   }
 
   if (result.ok && result.appointmentUpdated) {
+    // Speak the slot-aware update line built by the booking tool; generic line is fallback.
     const updEn =
       "Your appointment has been successfully updated. All details will be sent to your WhatsApp shortly. If you need to change the timing again, you can easily reschedule it via WhatsApp. Thank you.";
     const updHi =
       "आपकी अपॉइंटमेंट सफलतापूर्वक अपडेट हो गई है। आपकी अपॉइंटमेंट की पूरी जानकारी आपको जल्द ही WhatsApp पर मिल जाएगी। यदि आपको दोबारा समय बदलना हो, तो आप आसानी से WhatsApp के माध्यम से इसे बदल सकते हैं। धन्यवाद।";
-    const text = isEn ? updEn : updHi + " " + updEn;
+    const body = isEn
+      ? result.messageEnglish && !DEV.test(result.messageEnglish)
+        ? result.messageEnglish
+        : updEn
+      : result.messageHindi || updHi;
+    const text = thankYou ? `${body} ${thankYou}` : body;
     return (
       "APPOINTMENT UPDATED. Speak the text below to the caller as your ENTIRE reply -- " +
       "word for word, no additions, no omissions, and nothing before or after it. " +
-      "Do NOT add any extra closing line:\n\n" +
+      "The thank-you line at the end must be your FINAL sentence; say nothing after it:\n\n" +
       text
     );
   }
@@ -119,7 +135,7 @@ function buildCreateAppointmentSpokenMessage(result, lang) {
  * @param {'hi'|'gu'|'en'} lang
  * @param {string} toolName
  */
-function sanitizeToolResultForCallerLanguage(result, lang, toolName) {
+function sanitizeToolResultForCallerLanguage(result, lang, toolName, hospitalName) {
   if (!result || typeof result !== "object") return result;
   const out = { ...result };
   delete out.messageHindi;
@@ -133,6 +149,7 @@ function sanitizeToolResultForCallerLanguage(result, lang, toolName) {
     out.message = buildCreateAppointmentSpokenMessage(
       result,
       lang === "en" ? "en" : "hi",
+      hospitalName,
     );
     return out;
   }
@@ -505,6 +522,9 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
               result,
               agent.preferredLanguage,
               name,
+              agent._hospital && agent._hospital.name
+                ? String(agent._hospital.name)
+                : "",
             );
           }
 

@@ -102,6 +102,21 @@ function getRealtimeTools() {
     },
     {
       type: "function",
+      name: "list_available_slots",
+      description:
+        "Return the doctor's OPEN, future appointment slots for a date — computed by the server from the doctor's working hours MINUS already-passed hours (vs current IST time) MINUS already-booked/full hour buckets. **Call this before offering or confirming ANY appointment time.** Pass the chosen doctor's **doctorObjectId** (24-hex _id from the doctor list / list_doctors) and an optional **date** (YYYY-MM-DD, IST; defaults to today). Returns `slots` (each with `isoStart` and a spoken `labelEnglish` like \"3–4 PM\") plus `date`, `doctorName`, `availability`, and `movedToNextDay`. If the requested date has no open slots, it AUTOMATICALLY advances to the next working day (skipping Sundays and the doctor's leave) and returns that day's slots with `movedToNextDay: true` and the resolved `date`. Offer ONLY the returned slots; never invent times. Use the chosen slot's `isoStart` as appointmentDateTimeISO in create_appointment.",
+      parameters: {
+        type: "object",
+        properties: {
+          doctorObjectId: { type: "string" },
+          date: { type: "string" },
+        },
+        required: ["doctorObjectId"],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: "function",
       name: "create_appointment",
       description:
         "Create or update an appointment linking patient and doctor by their database **MongoDB _id** values only. **Order for a new patient:** (1) Call **create_patient** and wait for ok:true; (2) call **create_appointment** with **patientObjectId = that tool's `patient._id`** (24 hex), **never** before step 1 succeeds. For an existing patient, call **fetch_patient_by_patientId** or **fetch_patient_by_phone** first, then use returned `patient._id` as patientObjectId. reason must be the illness/symptom the caller stated during this call, in English. If the caller said an English disease name (e.g. piles, diabetes, BP, fever), use that exact word; otherwise use the English equivalent of what they said. **Same phone call — corrections:** If an appointment was **already booked successfully earlier in this same call** and the caller wants to change doctor, date, time, or reason, call this tool again with the **new** fields; the server will **update that same appointment** (same appointment number) instead of creating a second one. The voice session may inject existingAppointmentObjectId after the first success. Before calling this tool, the assistant must say a short wait line in the caller's locked language (Hindi or English; feminine tone as Neha), then call this function. On success (ok: true) the appointment is booked or updated — read messageHindi, messageEnglish, or messageGujarati once as booking status only; never tell the caller booking failed when ok is true. On failure: messageHindi, messageEnglish, messageGujarati, code — always address the caller in their chosen language, never read raw internal English to them. **Server-side checks (in order):** (a) no Sunday (IST); (b) today requires a future clock time (IST); (c) doctor must not be on a holiday/leave that day and the requested clock time must be within the doctor's availability ranges; (d) **one-hour capacity** — appointments are grouped by clock-hour bucket (e.g. an 11:30 booking sits in the 11:00–12:00 bucket) and each bucket allows `floor(60 / AVG_PATIENT_CHECKUP_DURATION)` patients (default 6). If the requested hour is full the response includes `code: \"HOUR_BUCKET_FULL\"` and the next available one-hour slot inside the doctor's hours — read that suggested time aloud once and let the caller confirm.",
