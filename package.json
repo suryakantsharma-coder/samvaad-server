@@ -10,6 +10,8 @@
     "dev": "node index.js",
     "livekit:dev": "node livekit-agent/main.js dev",
     "livekit:start": "node livekit-agent/main.js start",
+    "queue:dev": "node livekit-agent/phoneQueueWorker.js dev",
+    "queue:start": "node livekit-agent/phoneQueueWorker.js start",
     "tunnel": "node scripts/start-cloudflare-tunnel.js",
     "tunnel:bash": "bash scripts/start-cloudflare-tunnel.sh",
     "tunnel:quick": "bash scripts/quick-tunnel.sh",

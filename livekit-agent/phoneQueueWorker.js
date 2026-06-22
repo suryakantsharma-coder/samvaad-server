@@ -382,8 +382,8 @@ cli.runApp(
   new ServerOptions({
     agent: __filename,
     agentName: QUEUE_AGENT_NAME,
-    numIdleProcesses: parseEnvInt('QUEUE_NUM_IDLE_PROCESSES', 5),
-    initializeProcessTimeout: parseEnvMs('LIVEKIT_INIT_PROCESS_TIMEOUT_MS', 20000),
+    numIdleProcesses: parseEnvInt('QUEUE_NUM_IDLE_PROCESSES', 1),
+    initializeProcessTimeout: parseEnvMs('LIVEKIT_INIT_PROCESS_TIMEOUT_MS', 45000),
     loadThreshold: parseEnvFloat('LIVEKIT_LOAD_THRESHOLD', 0.75),
   }),
 );

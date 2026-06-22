@@ -896,9 +896,9 @@ module.exports = agentDef;
 console.log("[LiveKit Agent] Starting worker, agent name:", AGENT_NAME);
 console.log(
   "[LiveKit Agent] Worker pool: LIVEKIT_NUM_IDLE_PROCESSES=" +
-    parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 2) +
+    parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 1) +
     ", LIVEKIT_INIT_PROCESS_TIMEOUT_MS=" +
-    parseEnvMs("LIVEKIT_INIT_PROCESS_TIMEOUT_MS", 20000) +
+    parseEnvMs("LIVEKIT_INIT_PROCESS_TIMEOUT_MS", 45000) +
     ", LIVEKIT_LOAD_THRESHOLD=" +
     parseEnvFloat("LIVEKIT_LOAD_THRESHOLD", 0.75),
 );
@@ -947,10 +947,10 @@ cli.runApp(
   new ServerOptions({
     agent: __filename,
     agentName: AGENT_NAME,
-    numIdleProcesses: parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 2),
+    numIdleProcesses: parseEnvInt("LIVEKIT_NUM_IDLE_PROCESSES", 1),
     initializeProcessTimeout: parseEnvMs(
       "LIVEKIT_INIT_PROCESS_TIMEOUT_MS",
-      20000,
+      45000,
     ),
     loadThreshold: parseEnvFloat("LIVEKIT_LOAD_THRESHOLD", 0.75),
   }),

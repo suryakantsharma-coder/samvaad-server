@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const path = require("path");
+const { shouldEmbedLiveKitWorker } = require("./workerEmbedPolicy");
 
 let child = null;
 let intentionalShutdown = false;
@@ -97,13 +98,9 @@ function spawnWorker() {
 }
 
 function startLiveKitWorker() {
-  if (
-    process.env.LIVEKIT_WORKER_DISABLED === "1" ||
-    process.env.LIVEKIT_WORKER_DISABLED === "true"
-  ) {
-    console.log(
-      "[Samvaad] LiveKit worker skipped (LIVEKIT_WORKER_DISABLED)",
-    );
+  const embed = shouldEmbedLiveKitWorker();
+  if (!embed.embed) {
+    console.log(`[Samvaad] LiveKit worker skipped (${embed.reason})`);
     return;
   }
 

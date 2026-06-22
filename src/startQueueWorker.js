@@ -6,11 +6,13 @@
  * NOT modified; this is a standalone manager for the queue agent only.
  *
  * Enable by setting LIVEKIT_QUEUE_ENABLED=1 in .env.
- * The queue worker also needs LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.
+ * In production, run as `samvaad-queue-worker` PM2 app (see ecosystem.config.cjs).
+ * Set QUEUE_WORKER_DISABLED=1 on the API process to avoid duplicate workers.
  */
 
 const { spawn } = require('child_process');
 const path = require('path');
+const { shouldEmbedQueueWorker } = require('./workerEmbedPolicy');
 
 let child = null;
 let intentionalShutdown = false;
@@ -29,7 +31,7 @@ function isConfigured() {
   );
 }
 
-function isEnabled() {
+function isQueueFeatureEnabled() {
   return (
     process.env.LIVEKIT_QUEUE_ENABLED === '1' ||
     process.env.LIVEKIT_QUEUE_ENABLED === 'true'
@@ -106,7 +108,13 @@ function spawnQueueWorker() {
 }
 
 function startQueueWorker() {
-  if (!isEnabled()) {
+  const embed = shouldEmbedQueueWorker();
+  if (!embed.embed) {
+    console.log(`[Samvaad] Queue worker skipped (${embed.reason})`);
+    return;
+  }
+
+  if (!isQueueFeatureEnabled()) {
     console.log('[Samvaad] Queue worker skipped (LIVEKIT_QUEUE_ENABLED not set to 1)');
     return;
   }
