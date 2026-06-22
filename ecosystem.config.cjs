@@ -1,9 +1,24 @@
+/** Shared PM2 options for voice worker processes (heavy Silero VAD preload). */
+const voiceWorkerPm2 = {
+  instances: 1,
+  exec_mode: "fork",
+  autorestart: true,
+  max_restarts: 20,
+  min_uptime: "30s",
+  restart_delay: 5000,
+  kill_timeout: 15000,
+};
+
 module.exports = {
   apps: [
     {
       name: "samvaad-api",
       script: "index.js",
       cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      kill_timeout: 10000,
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
@@ -18,6 +33,7 @@ module.exports = {
       script: "livekit-agent/main.js",
       args: "start",
       cwd: __dirname,
+      ...voiceWorkerPm2,
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
@@ -34,6 +50,7 @@ module.exports = {
       script: "livekit-agent/phoneQueueWorker.js",
       args: "start",
       cwd: __dirname,
+      ...voiceWorkerPm2,
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",
@@ -48,6 +65,10 @@ module.exports = {
       name: "samvaad-reminder-worker",
       script: "src/workers/reminderWorkerEntry.js",
       cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      kill_timeout: 10000,
       env: {
         NODE_ENV: "production",
         TZ: "Asia/Kolkata",

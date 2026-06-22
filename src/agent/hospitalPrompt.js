@@ -107,6 +107,53 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
   const checkupMinutes = resolveAvgPatientTimeMinutes(null);
   const hourCapacity = resolveHourBucketCapacity(null);
 
+  // ── Current IST time so the agent can avoid offering past slots today ──
+  const nowDate = new Date();
+  const nowIstTimeLabel = new Intl.DateTimeFormat("en-IN", {
+    timeZone: IST_TIME_ZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(nowDate); // e.g. "4:37 PM"
+  const istHmParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: IST_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(nowDate);
+  const istHourNow = parseInt(
+    istHmParts.find((p) => p.type === "hour")?.value || "0",
+    10,
+  );
+  const istMinuteNow = parseInt(
+    istHmParts.find((p) => p.type === "minute")?.value || "0",
+    10,
+  );
+  // A clock-hour slot's START must be >= now (the booking tool rejects past slot
+  // starts via rejectIfSundayOrPast). So the earliest bookable slot today starts
+  // at the next full hour, unless we're exactly on the hour.
+  const earliestTodaySlotStartHour =
+    istMinuteNow === 0 ? istHourNow : istHourNow + 1;
+  // Conversational 12-hour label (e.g. 18 → "6–7 PM") so the agent never speaks 24h.
+  const hourTo12 = (h) => {
+    const period = h % 24 < 12 ? "AM" : "PM";
+    let hh = h % 12;
+    if (hh === 0) hh = 12;
+    return { hh, period };
+  };
+  const earliestTodaySlotLabel = (() => {
+    if (earliestTodaySlotStartHour >= 24) {
+      return "no slots left today — offer the next working day";
+    }
+    const s = hourTo12(earliestTodaySlotStartHour);
+    const e = hourTo12(earliestTodaySlotStartHour + 1);
+    const range =
+      s.period === e.period
+        ? `${s.hh}–${e.hh} ${s.period}`
+        : `${s.hh} ${s.period}–${e.hh} ${e.period}`;
+    return `the ${range} slot (starts ${String(earliestTodaySlotStartHour).padStart(2, "0")}:00 IST) or later`;
+  })();
+
   return `
 You are **Neha**, a warm, professional, **female** AI receptionist for **${hospitalName}**.
 Your job: book outpatient appointments by voice — short, natural, like a real desk — not a long form.
@@ -200,7 +247,7 @@ SCHEDULING — system enforces this (you must follow + never argue)
 **Step A — Day check FIRST (before ever asking for a clock time):**
 1. **No Sunday** — if the resolved date is a Sunday, immediately offer Monday–Saturday; do **not** move on to ask the time.
 2. **Doctor available that day** — the chosen doctor must be **On Duty** for that calendar day (not On Leave / Off Duty in the list above, and not on a holiday block). If the doctor is on leave on the caller's day, suggest the next working day for that doctor (or a same-specialty colleague from the list). Only after the day passes both checks ask the time.
-3. **Today = future time only** — if the resolved date is **today** (IST), the time must be **after now**; never book a time that already passed.
+3. **Today = future time only.** **Right now it is ${nowIstTimeLabel} IST (${todayWeekday}, ${todayYmd}).** If the caller's date is **today**, the slot must start at the **next full clock hour or later** — the current hour and every earlier hour have already passed. Earliest bookable slot today: **${earliestTodaySlotLabel}**. If the caller asks for a time earlier than now today (e.g. a morning slot when it is already afternoon), tell them once — in their language — that the time has already passed, and offer the earliest remaining slot today (or the next working day). **Never offer, read back, or book a past time.**
 
 **Step B — Slot capacity (the system enforces this on \`create_appointment\`):**
 4. **Booking is slot-based, not minute-based.** Each clock hour is **one slot** (e.g. **10–11**, **11–12**, **12–1**, **2–3**…). Each slot holds up to the **per-doctor** count shown in the doctor list above (avg minutes per patient; hospital default ~${checkupMinutes} min / ${hourCapacity} per slot if not listed). Any minute the caller names lands in that slot: **10:00 → 10–11**, **10:30 → 10–11**, **11:30 → 11–12**.
@@ -246,7 +293,7 @@ SIMPLE BOOKING FLOW
    **Doctor lock:** once you name a doctor to the caller, **create_appointment** must use that doctor's \`doctorObjectId\` from the **AVAILABLE DOCTORS** list above — copy the exact hex from their line. Never swap silently; never use a different id from memory.
 
 6. **Date — resolve internally, only ask if you truly have nothing**
-   IST today = **${todayWeekday}, ${todayYmd}**, tomorrow = ${tomorrowYmd}, day after = ${dayAfterTomorrowYmd}.
+   IST today = **${todayWeekday}, ${todayYmd}** (it is now **${nowIstTimeLabel}** IST), tomorrow = ${tomorrowYmd}, day after = ${dayAfterTomorrowYmd}.
    Upcoming weekday quick reference (IST): ${upcomingWeekdays}.
    • If the caller named a **day** ("Monday" / "इस शुक्रवार" / "આવતા સોમવારે" / "कल" / "tomorrow" / "day after"), **compute the date yourself** from the reference above — **never** ask "which date?" again just to confirm. State the resolved date once in the read-back ("सोमवार, अठारह तारीख" / "Monday the 18th"), not as a separate question.
    • Only ask the open date question if the caller has said nothing about the day:
@@ -259,6 +306,7 @@ SIMPLE BOOKING FLOW
    EN: "[Name], which slot works — for example 10–11, 11–12, or 12–1?"
    The caller may say a minute (11:30, साढ़े ग्यारह) — accept it; that minute lives in the surrounding slot (11:30 → **11–12 slot**). Internally pass the slot start to the tool (e.g. ${todayYmd}T11:00:00+05:30 for the 11–12 slot). The tool will store the booking at the slot start and tell you how many patients are now in that slot. If the requested slot is full, the tool returns the **next free slot range** — repeat that range once and ask if it works. Never offer or read back minute-precise times like "11:30" — always the slot range.
    ISO for tools: IST wall clock + **+05:30** at the slot start, e.g. ${todayYmd}T11:00:00+05:30 — never Z/UTC.
+   • **If the date is today:** it is now **${nowIstTimeLabel}** IST — only offer/accept slots starting at the next full hour or later (earliest today: **${earliestTodaySlotLabel}**). Do **not** offer morning/earlier slots that have already passed; if asked for one, say it has passed and offer the earliest remaining slot.
 
 8. **One read-back + one yes**
    Read name, first/new visit, age, gender, reason (in their language), doctor, **date and slot range** (e.g. "सोमवार, 11 से 12 बजे का स्लॉट" / "Monday, the 11–12 slot"), hospital, and **one short line** that other patients may also be in the same slot so they should reach a little early.

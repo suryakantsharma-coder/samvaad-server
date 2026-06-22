@@ -29,8 +29,14 @@ const { closeDoctorHolidayQueue } = require('./src/queues/doctorHoliday.queue');
 const {
   closeAppointmentConfirmationQueue,
 } = require('./src/queues/appointmentConfirmation.queue');
+const {
+  shouldEmbedLiveKitWorker,
+  shouldEmbedQueueWorker,
+} = require('./src/workerEmbedPolicy');
 
 let shuttingDown = false;
+/** @type {import('http').Server | null} */
+let httpServer = null;
 
 async function shutdown(signal) {
   if (shuttingDown) return;
@@ -78,6 +84,14 @@ async function shutdown(signal) {
   }
   stopLiveKitWorker();
   stopQueueWorker();
+
+  if (httpServer) {
+    await new Promise((resolve) => {
+      httpServer.close(() => resolve());
+    });
+    httpServer = null;
+  }
+
   process.exit(0);
 }
 
@@ -102,8 +116,13 @@ const start = async () => {
     console.warn('[Samvaad] RAZORPAY_WEBHOOK_SECRET is empty — webhook signature verification will fail until you set it.');
   }
 
-  const server = app.listen(env.PORT, async () => {
+  httpServer = app.listen(env.PORT, async () => {
     console.log(`[Samvaad] Server running on port ${env.PORT} (${env.NODE_ENV})`);
+    const livekitEmbed = shouldEmbedLiveKitWorker();
+    const queueEmbed = shouldEmbedQueueWorker();
+    console.log(
+      `[Samvaad] Voice workers: livekit=${livekitEmbed.embed ? "embedded" : "skipped"} (${livekitEmbed.reason}), queue=${queueEmbed.embed ? "embedded" : "skipped"} (${queueEmbed.reason})`,
+    );
     startLiveKitWorker();
     startQueueWorker();
     /* For multiple worker processes: set REMINDER_WORKER_DISABLED=1 here and run `npm run reminder-worker`. */
@@ -116,13 +135,16 @@ const start = async () => {
     startExotelMonthlySyncCron();
   });
 
-  server.on('error', (err) => {
+  httpServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.error(
-        `[Samvaad] Port ${env.PORT} is already in use (another process is listening).`
+        `[Samvaad] Port ${env.PORT} is already in use (another process is listening).`,
       );
       console.error(
-        `[Samvaad] Fix: close that terminal / stop the old server, or run: lsof -i :${env.PORT}  then  kill <PID>`
+        `[Samvaad] Fix: pm2 stop samvaad-api  OR  fuser -k ${env.PORT}/tcp  OR  lsof -ti :${env.PORT} | xargs kill`,
+      );
+      console.error(
+        `[Samvaad] Do not run "npm run dev" while PM2 samvaad-api is already on port ${env.PORT}.`,
       );
       console.error(`[Samvaad] Or use a different port: PORT=3001 npm run dev`);
     } else {
