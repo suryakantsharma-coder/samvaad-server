@@ -27,5 +27,12 @@ const medicineSchema = new mongoose.Schema(
 
 medicineSchema.index({ medicineName: 1 });
 medicineSchema.index({ createdAt: -1 });
+// Case-insensitive index for fast prefix (starts-with) name search.
+// The /medicines/search query uses a range [term, term+￿) with this same
+// collation, so MongoDB serves it as an indexed range scan (no collection scan).
+medicineSchema.index(
+  { medicineName: 1 },
+  { name: 'medicineName_ci_prefix', collation: { locale: 'en', strength: 2 } },
+);
 
 module.exports = mongoose.model('Medicine', medicineSchema);

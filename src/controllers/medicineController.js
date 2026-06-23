@@ -8,13 +8,24 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function buildSearchFilter(q) {
+/**
+ * Case-insensitive collation. Combined with the `{ medicineName: 1 }` collation
+ * index on the Medicine model, the prefix RANGE query below runs as an indexed
+ * range scan (no full collection scan) and is case-insensitive.
+ */
+const NAME_CI_COLLATION = { locale: 'en', strength: 2 };
+
+/**
+ * Prefix (starts-with) filter on medicineName ONLY.
+ * Uses a range [term, term + ￿) instead of a regex so it can use the
+ * collation index. ￿ is the highest BMP code point, so it bounds any
+ * string that starts with `term`. Returns {} for an empty term (browse all).
+ * @param {string} q
+ */
+function buildNamePrefixFilter(q) {
   const term = (q || '').trim();
   if (!term) return {};
-  const regex = { $regex: term, $options: 'i' };
-  return {
-    $or: [{ medicineName: regex }, { type: regex }, { unit: regex }],
-  };
+  return { medicineName: { $gte: term, $lt: `${term}￿` } };
 }
 
 /**
@@ -57,6 +68,8 @@ const getAll = async (req, res, next) => {
 
 /**
  * @route GET /api/medicines/search?q=...
+ * Prefix (starts-with) search on medicineName ONLY — case-insensitive.
+ * Index-backed (collation range scan); does NOT search type/unit or any other field.
  */
 const search = async (req, res, next) => {
   try {
@@ -65,10 +78,16 @@ const search = async (req, res, next) => {
     const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(req.query.limit, 10) || DEFAULT_LIMIT));
     const skip = (page - 1) * limit;
 
-    const filter = buildSearchFilter(q);
+    const filter = buildNamePrefixFilter(q);
+    // Sort by medicineName so the collation index serves BOTH range + sort.
     const [medicines, total] = await Promise.all([
-      Medicine.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      Medicine.countDocuments(filter),
+      Medicine.find(filter)
+        .collation(NAME_CI_COLLATION)
+        .sort({ medicineName: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Medicine.countDocuments(filter).collation(NAME_CI_COLLATION),
     ]);
 
     res.json({

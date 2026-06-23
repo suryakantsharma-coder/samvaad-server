@@ -11,6 +11,8 @@ const {
 } = require('../services/reminderWhatsAppNotify');
 const Prescription = require('../models/prescription.model');
 require('../models/doctor.model');
+require('../models/patient.model');
+require('../models/appointment.model');
 const env = require('../config/env');
 const { isReminderTestMode } = require('../utils/time.util');
 

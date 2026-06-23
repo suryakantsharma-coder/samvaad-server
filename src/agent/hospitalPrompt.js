@@ -146,7 +146,8 @@ async function getHospitalInstructions(hospital, callerPhone = null) {
   // doctor's working hours; if the doctor has already closed for today, there is
   // no slot today and the agent must move to the next working day.
   const earliestTodaySlotHourLabel = (() => {
-    if (earliestTodaySlotStartHour >= 24) return "after midnight (no slots left today)";
+    if (earliestTodaySlotStartHour >= 24)
+      return "after midnight (no slots left today)";
     const s = hourTo12(earliestTodaySlotStartHour);
     const e = hourTo12(earliestTodaySlotStartHour + 1);
     return s.period === e.period
