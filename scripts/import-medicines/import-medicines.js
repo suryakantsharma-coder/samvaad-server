@@ -37,6 +37,8 @@ const connectDB = require("../../src/config/db");
 const Medicine = require("../../src/models/medicine.model");
 const {
   FIELD_MAPPING,
+  QTY_COLUMN,
+  DEFAULT_TYPE,
   DEFAULT_BATCH_SIZE,
   DEFAULT_SHEET,
   PROGRESS_EVERY,
@@ -48,7 +50,12 @@ const LOG = "[ImportMedicines]";
 
 /** Minimal --key=value parser. Returns { file, batch, sheet, dryRun }. */
 function parseArgs(argv) {
-  const out = { file: null, batch: DEFAULT_BATCH_SIZE, sheet: DEFAULT_SHEET, dryRun: false };
+  const out = {
+    file: null,
+    batch: DEFAULT_BATCH_SIZE,
+    sheet: DEFAULT_SHEET,
+    dryRun: false,
+  };
   for (const arg of argv.slice(2)) {
     if (arg === "--dry-run") out.dryRun = true;
     else if (arg.startsWith("--file=")) out.file = arg.slice(7);
@@ -66,13 +73,17 @@ function parseArgs(argv) {
 function cellText(value) {
   if (value == null) return "";
   if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value).trim();
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "object") {
     if (typeof value.text === "string") return value.text.trim();
     if (value.result != null) return String(value.result).trim();
     if (Array.isArray(value.richText)) {
-      return value.richText.map((r) => (r && r.text) || "").join("").trim();
+      return value.richText
+        .map((r) => (r && r.text) || "")
+        .join("")
+        .trim();
     }
     if (typeof value.hyperlink === "string") return value.hyperlink.trim();
   }
@@ -81,7 +92,69 @@ function cellText(value) {
 
 /** Normalised key for case-insensitive duplicate / header matching. */
 function norm(s) {
-  return String(s || "").trim().toLowerCase();
+  return String(s || "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Strip leading category breadcrumb from medicine names.
+ * e.g. "Home > Stomach Care > Indigestion > Crocin 500mg Tablet" → "Crocin 500mg Tablet"
+ */
+function stripCategoryPrefix(name) {
+  const parts = name.split(">");
+  return parts[parts.length - 1].trim();
+}
+
+/** Common dose / volume units (case-insensitive). */
+const KNOWN_UNIT = /^(mcg|mg|iu|ml|gm|g|kg|l|units?|tabs?|caps?)$/i;
+
+function normalizeUnit(u) {
+  const raw = String(u || "").trim().toLowerCase();
+  if (raw === "iu") return "IU";
+  if (raw === "g") return "gm";
+  if (raw === "l") return "ml";
+  return raw;
+}
+
+/**
+ * Parse the Qty cell into { value, unit } for MongoDB.
+ *
+ * Rules:
+ *   "20 mg"  → { value: "20", unit: "mg" }
+ *   "20"     → { value: "20", unit: null }
+ *   "mg"     → { value: "0",  unit: "mg" }
+ *   ""       → { value: null, unit: null }
+ *   non-numeric text → { value: "0", unit: null }
+ *
+ * @param {string|number|null|undefined} raw
+ * @returns {{ value: string | null, unit: string | null }}
+ */
+function parseQtyField(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { value: null, unit: null };
+
+  // Number + optional unit (e.g. "20 mg", "500gm", "10.5 ml")
+  const numWithUnit = s.match(/^(\d+(?:\.\d+)?)\s*([a-zA-Z][a-zA-Z0-9/%.\-]*)\s*$/);
+  if (numWithUnit) {
+    return {
+      value: numWithUnit[1],
+      unit: normalizeUnit(numWithUnit[2]),
+    };
+  }
+
+  // Number only
+  if (/^\d+(?:\.\d+)?$/.test(s)) {
+    return { value: s, unit: null };
+  }
+
+  // Known unit only, no number → value 0
+  if (KNOWN_UNIT.test(s)) {
+    return { value: "0", unit: normalizeUnit(s) };
+  }
+
+  // Unrecognised text — no number, no known unit
+  return { value: "0", unit: null };
 }
 
 /**
@@ -99,10 +172,21 @@ function buildHeaderIndex(headerValues) {
   }
   const fieldToCol = {};
   const missing = [];
+  const optionalFields = new Set(["type"]);
+
   for (const [field, header] of Object.entries(FIELD_MAPPING)) {
     const idx = headerByNorm.get(norm(header));
-    if (idx == null) missing.push(`${field} → "${header}"`);
-    else fieldToCol[field] = idx;
+    if (idx == null) {
+      if (optionalFields.has(field)) fieldToCol[field] = null;
+      else missing.push(`${field} → "${header}"`);
+    } else {
+      fieldToCol[field] = idx;
+    }
+  }
+
+  fieldToCol._qty = headerByNorm.get(norm(QTY_COLUMN)) ?? null;
+  if (fieldToCol._qty == null) {
+    missing.push(`Qty column → "${QTY_COLUMN}"`);
   }
   if (missing.length) {
     throw new Error(
@@ -131,7 +215,9 @@ async function getWorksheetStream(filePath, sheetName, onWorksheet) {
   }
   if (!handled) {
     throw new Error(
-      sheetName ? `Worksheet "${sheetName}" not found in the file.` : "No worksheet found in the file.",
+      sheetName
+        ? `Worksheet "${sheetName}" not found in the file.`
+        : "No worksheet found in the file.",
     );
   }
 }
@@ -166,7 +252,8 @@ function printProgress(stats, total, startedAt) {
   const pct = total > 0 ? ((stats.processed / total) * 100).toFixed(1) : "0.0";
   const elapsed = Date.now() - startedAt;
   const rate = stats.processed / (elapsed / 1000 || 1); // rows/sec
-  const remaining = total > 0 && rate > 0 ? ((total - stats.processed) / rate) * 1000 : NaN;
+  const remaining =
+    total > 0 && rate > 0 ? ((total - stats.processed) / rate) * 1000 : NaN;
   console.log(
     `${LOG} Processed: ${stats.processed} / ${total} (${pct}%) | ` +
       `imported ${stats.imported} · duplicate ${stats.duplicates} · ` +
@@ -180,7 +267,9 @@ async function main() {
   const args = parseArgs(process.argv);
 
   if (!args.file) {
-    console.error(`${LOG} Missing --file. Usage: node scripts/import-medicines/import-medicines.js --file=/path/to/medicines.xlsx`);
+    console.error(
+      `${LOG} Missing --file. Usage: node scripts/import-medicines/import-medicines.js --file=/path/to/medicines.xlsx`,
+    );
     process.exit(1);
   }
   const filePath = path.resolve(args.file);
@@ -190,7 +279,9 @@ async function main() {
   }
 
   console.log(`${LOG} Reading file... ${filePath}`);
-  console.log(`${LOG} Batch size: ${args.batch}${args.dryRun ? " | DRY RUN (no writes)" : ""}`);
+  console.log(
+    `${LOG} Batch size: ${args.batch}${args.dryRun ? " | DRY RUN (no writes)" : ""}`,
+  );
 
   // Connect (reuses env.MONGODB_URI). connectDB exits the process on failure.
   await connectDB();
@@ -213,7 +304,13 @@ async function main() {
     process.exit(0);
   }
 
-  const stats = { processed: 0, imported: 0, duplicates: 0, skipped: 0, failed: 0 };
+  const stats = {
+    processed: 0,
+    imported: 0,
+    duplicates: 0,
+    skipped: 0,
+    failed: 0,
+  };
   const startedAt = Date.now();
   let batch = [];
 
@@ -236,7 +333,9 @@ async function main() {
       stats.imported += insertedCount;
       const failedCount = docs.length - insertedCount;
       stats.failed += failedCount;
-      console.error(`${LOG} Batch insert error (${failedCount} failed): ${err.message}`);
+      console.error(
+        `${LOG} Batch insert error (${failedCount} failed): ${err.message}`,
+      );
     }
   }
 
@@ -257,23 +356,29 @@ async function main() {
       stats.processed += 1;
       const values = row.values || [];
 
-      const medicineName = cellText(values[fieldToCol.medicineName]);
-      const type = cellText(values[fieldToCol.type]);
-      const unit = cellText(values[fieldToCol.unit]);
+      const rawName = cellText(values[fieldToCol.medicineName]);
+      const medicineName = rawName ? stripCategoryPrefix(rawName) : "";
+      const typeCol =
+        fieldToCol.type != null ? cellText(values[fieldToCol.type]) : "";
+      const type = typeCol || DEFAULT_TYPE;
+
+      const rawQty =
+        fieldToCol._qty != null ? cellText(values[fieldToCol._qty]) : "";
+      const { value, unit } = parseQtyField(rawQty);
 
       // Fully empty row → skip silently.
-      if (!medicineName && !type && !unit) {
+      if (!medicineName && !rawQty && !rawName) {
         stats.skipped += 1;
       } else {
-        // Validate required fields (schema requires all three).
+        // Only medicineName is required; type falls back to DEFAULT_TYPE.
         const missing = [];
         if (!medicineName) missing.push("medicineName");
-        if (!type) missing.push("type");
-        if (!unit) missing.push("unit");
 
         if (missing.length) {
           stats.failed += 1;
-          console.error(`${LOG} Row ${rowNumber}: skipped — missing ${missing.join(", ")}`);
+          console.error(
+            `${LOG} Row ${rowNumber}: skipped — missing ${missing.join(", ")}`,
+          );
         } else {
           const key = norm(medicineName);
           if (existing.has(key)) {
@@ -281,13 +386,14 @@ async function main() {
             stats.duplicates += 1;
           } else {
             existing.add(key); // prevent in-file duplicates too
-            batch.push({ medicineName, type, unit });
+            batch.push({ medicineName, type, value, unit });
             if (batch.length >= args.batch) await flushBatch();
           }
         }
       }
 
-      if (stats.processed % PROGRESS_EVERY === 0) printProgress(stats, total, startedAt);
+      if (stats.processed % PROGRESS_EVERY === 0)
+        printProgress(stats, total, startedAt);
     }
   });
 
@@ -299,7 +405,9 @@ async function main() {
   console.log(`\n${LOG} ===== Import complete =====`);
   console.log(`${LOG} Total rows     : ${total}`);
   console.log(`${LOG} Processed      : ${stats.processed}`);
-  console.log(`${LOG} Imported       : ${stats.imported}${args.dryRun ? " (dry run)" : ""}`);
+  console.log(
+    `${LOG} Imported       : ${stats.imported}${args.dryRun ? " (dry run)" : ""}`,
+  );
   console.log(`${LOG} Duplicates     : ${stats.duplicates}`);
   console.log(`${LOG} Skipped (empty): ${stats.skipped}`);
   console.log(`${LOG} Failed         : ${stats.failed}`);

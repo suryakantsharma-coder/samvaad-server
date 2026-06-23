@@ -12,9 +12,16 @@ const medicineSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    value: {
+      type: String,
+      required: false,
+      default: '',
+      trim: true,
+    },
     unit: {
       type: String,
-      required: true,
+      required: false,
+      default: '',
       trim: true,
     },
   },
