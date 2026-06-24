@@ -17,18 +17,13 @@ const {
   createCallBookingSlots,
   updateSlotsFromToolArgs,
   mergeToolArgsWithSlots,
-  maybeCaptureCaseTypeFromTranscript,
   maybeCaptureVisitReasonFromTranscript,
-  isEmergencyFlowActive,
   isMongoObjectIdString,
 } = require("./callBookingSlots");
 const {
   isAutoEndAfterBookingEnabled,
   scheduleAutoEndAfterBookingConfirmed,
 } = require("./endPhoneCall");
-const {
-  maybeScheduleEmergencyEndFromCallerNoted,
-} = require("./emergencyCallEnd");
 
 const SLOT_MERGE_TOOLS = new Set(["create_patient", "create_appointment"]);
 
@@ -367,27 +362,6 @@ function buildHospitalTools(hospitalObjectId, callerPhone, agentRef) {
         }
 
         const isAppointmentBook = name === "create_appointment";
-        if (
-          agent &&
-          (isEmergencyFlowActive(agent.callBookingSlots) ||
-            agent._emergencyFlowArmed) &&
-          (name === "create_patient" || name === "create_appointment")
-        ) {
-          if (logger) {
-            logger.log("tool_end", {
-              name,
-              ok: false,
-              durationMs: Date.now() - toolStart,
-              code: "EMERGENCY_NO_BOOKING",
-            });
-          }
-          return {
-            ok: false,
-            code: "EMERGENCY_NO_BOOKING",
-            message:
-              "Emergency path — appointment booking is not allowed on this call.",
-          };
-        }
 
         if (agent && isAppointmentBook) {
           agent.appointmentBookingInFlight = true;
@@ -567,7 +541,6 @@ class HospitalVoiceAgent extends voice.Agent {
     this.appointmentBookingInFlight = false;
     this.postBookingClosingInFlight = false;
     this.autoEndCallStarted = false;
-    this._emergencyFlowArmed = false;
     /** @type {string|null} */
     this._callRoomName = null;
     /** @type {null | { name?: string }} */
@@ -580,9 +553,7 @@ class HospitalVoiceAgent extends voice.Agent {
       this.appointmentBookingInFlight ||
       this.postBookingClosingInFlight ||
       this.autoEndCallStarted ||
-      Boolean(slots.appointmentObjectId) ||
-      Boolean(slots.emergencyNotedConfirmed) ||
-      isEmergencyFlowActive(slots)
+      Boolean(slots.appointmentObjectId)
     );
   }
 
@@ -630,7 +601,6 @@ class HospitalVoiceAgent extends voice.Agent {
     const s = this.callBookingSlots || {};
     return (
       [
-        s.caseType ? `case:${s.caseType}` : null,
         s.fullName ? "name" : null,
         s.age != null ? "age" : null,
         s.gender ? "gender" : null,
@@ -639,7 +609,6 @@ class HospitalVoiceAgent extends voice.Agent {
         s.appointmentDateTimeISO ? "datetime" : null,
         s.patientObjectId ? "patient" : null,
         s.appointmentObjectId ? "appointment" : null,
-        s.emergencyNotedConfirmed ? "emergencyNoted" : null,
       ]
         .filter(Boolean)
         .join(",") || "(none)"
@@ -647,7 +616,7 @@ class HospitalVoiceAgent extends voice.Agent {
   }
 
   /**
-   * STT side-channel: capture case type, booking slots, emergency-noted, etc.
+   * STT side-channel: capture booking slots from caller transcript.
    * Called from onUserTurnCompleted and from main.js Sarvam STT hook.
    * @param {string} rawText
    */
@@ -656,35 +625,22 @@ class HospitalVoiceAgent extends voice.Agent {
     if (!text) return;
 
     try {
-      maybeCaptureCaseTypeFromTranscript(this.callBookingSlots, text);
+      applyTranscriptToBookingSlots(this.callBookingSlots, text);
     } catch (err) {
       console.warn(
-        "[Agent] maybeCaptureCaseTypeFromTranscript failed:",
+        "[Agent] applyTranscriptToBookingSlots failed:",
         err && err.message ? err.message : err,
       );
     }
 
-    if (!isEmergencyFlowActive(this.callBookingSlots)) {
-      try {
-        applyTranscriptToBookingSlots(this.callBookingSlots, text);
-      } catch (err) {
-        console.warn(
-          "[Agent] applyTranscriptToBookingSlots failed:",
-          err && err.message ? err.message : err,
-        );
-      }
-
-      try {
-        maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, text);
-      } catch (err) {
-        console.warn(
-          "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
-          err && err.message ? err.message : err,
-        );
-      }
+    try {
+      maybeCaptureVisitReasonFromTranscript(this.callBookingSlots, text);
+    } catch (err) {
+      console.warn(
+        "[Agent] maybeCaptureVisitReasonFromTranscript failed:",
+        err && err.message ? err.message : err,
+      );
     }
-
-    maybeScheduleEmergencyEndFromCallerNoted(this, text);
   }
 
   /**

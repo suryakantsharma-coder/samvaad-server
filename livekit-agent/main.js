@@ -405,7 +405,6 @@ const agentDef = defineAgent({
     await ctx.connect();
 
     let session = null;
-    let detachEmergencyEnd = null;
     let detachNoInput = null;
     let samvaadTts = null;
     let hospitalAgent = null;
@@ -618,9 +617,6 @@ const agentDef = defineAgent({
         })(),
       });
 
-      const { attachEmergencyCallEndBridge } = require("./emergencyCallEnd");
-      detachEmergencyEnd = attachEmergencyCallEndBridge(session, hospitalAgent);
-
       const noInputRepromptMs = parseEnvMs("AGENT_NO_INPUT_REPROMPT_MS", 4000);
       if (noInputRepromptMs > 0) {
         detachNoInput = attachNoInputReprompt(session, {
@@ -698,10 +694,6 @@ const agentDef = defineAgent({
       }
 
       session.once(voice.AgentSessionEventTypes.Close, () => {
-        if (detachEmergencyEnd) {
-          detachEmergencyEnd();
-          detachEmergencyEnd = null;
-        }
         if (detachNoInput) {
           detachNoInput();
           detachNoInput = null;
@@ -832,10 +824,6 @@ const agentDef = defineAgent({
         }
       }
 
-      if (detachEmergencyEnd) {
-        detachEmergencyEnd();
-        detachEmergencyEnd = null;
-      }
       if (detachNoInput) {
         detachNoInput();
         detachNoInput = null;
